@@ -1,0 +1,6 @@
+tags:
+  relay:
+    # Integrační testy vyžadující běžící lokální relay (SEPOT_RELAY)
+  tor:
+    # Živý smoke transportu přes Tor — potřebuje SOCKS proxy na 127.0.0.1:9050
+    # (Orbot/tor). Bez ní se testy samy skipnou.

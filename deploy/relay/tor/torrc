@@ -1,0 +1,15 @@
+# Tor onion vstup pro sepot-relay (onion služba je výchozí přístupový bod)
+#
+# Klíče hidden service žijí ve volume `tor-keys` — ZÁLOHOVAT, ztráta
+# klíčů = nová onion adresa pro všechny klienty.
+DataDirectory /var/lib/tor
+HiddenServiceDir /var/lib/tor/sepot
+HiddenServiceVersion 3
+# port 80 uvnitř onion → relay v docker síti; onion vrstva šifruje,
+# TLS uvnitř není potřeba (standardní praxe)
+HiddenServicePort 80 sepot-relay:8470
+
+# Jen hidden service, žádný SOCKS proxy ven
+SocksPort 0
+# Log bez klientských dat; notice stačí
+Log notice stderr

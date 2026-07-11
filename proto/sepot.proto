@@ -1,0 +1,153 @@
+// Šepot wire protokol v1 — jediný zdroj pravdy pro Rust (prost) i Dart.
+//
+// Sémantika:
+// server vidí JEN routing (dst_address, msg_uuid, content_hint); payload je
+// opaque sealed-sender ciphertext, odesílatel i obsah jsou uvnitř.
+// Žádné pole nesmí nést PII ani IP.
+
+syntax = "proto3";
+
+package sepot.v1;
+
+// ── Obálka zprávy (klient→server i server→klient při DELIVER) ─────────
+
+enum ContentHint {
+  CONTENT_HINT_DEFAULT = 0;       // běžná zpráva
+  CONTENT_HINT_RESYNC = 1;        // řízení retry po session poruše
+  CONTENT_HINT_SUPPLEMENTARY = 2; // doprovodná (receipt apod.)
+}
+
+message Envelope {
+  bytes dst_address = 1;          // 32 B rotovatelný routing token příjemce
+  bytes msg_uuid = 2;             // 16 B, generuje odesílatel; dedup/fanout
+  ContentHint content_hint = 3;
+  bytes payload = 4;              // OPAQUE sealed-sender ciphertext (≤256 KiB)
+}
+
+// ── Potvrzení a stavy ──────────────────────────────────────────────────
+
+message Ack {
+  bytes msg_uuid = 1;             // klient potvrzuje vyzvednutí DELIVER
+}
+
+message Receipt {
+  enum Status {
+    STATUS_QUEUED = 0;
+    STATUS_DELIVERED_ONLINE = 1;
+    STATUS_STORED_OFFLINE = 2;
+  }
+  bytes msg_uuid = 1;
+  Status status = 2;
+}
+
+// ── Autentizace zařízení (podpis výzvy, žádné heslo/PII) ────────
+
+message Auth {
+  bytes device_uuid = 1;          // 16 B
+  bytes nonce_client = 2;         // 16 B
+}
+
+message Challenge {
+  bytes nonce_server = 1;         // 32 B
+}
+
+message AuthProof {
+  // XEdDSA podpis device klíčem nad: nonce_client || nonce_server || "sepot-auth-v1"
+  bytes signature = 1;            // 64 B
+}
+
+// ── Provozní rámce ─────────────────────────────────────────────────────
+
+message PrekeysLow {
+  uint32 remaining = 1;           // hint: zbývající one-time prekeys
+}
+
+message Error {
+  uint32 code = 1;
+  string message = 2;
+}
+
+message Ping {}
+message Pong {}
+
+// Potvrzení úspěšné WS autentizace — teprve po něm smí klient hlásit
+// „připojeno" a posílat obálky (fronta se vylévá hned po něm).
+message AuthOk {}
+
+// ── Push registrace ───────────────────────────────────────────────
+// Posílá se JEN přes autentizovaný WS (endpoint se nikdy neposílá
+// neautentizovaně a jde stejnou cestou jako provoz — klidně přes Tor).
+// Relay endpoint NIKDY neloguje. Budíček je vždy prázdný „ťuk" — žádný
+// obsah ani odesílatel neopustí sealed-sender kanál.
+message RegisterPush {
+  enum Platform {
+    PLATFORM_NONE = 0;         // vypnout push (anonymní režim) — smaže token
+    PLATFORM_FCM = 1;          // opt-in fast mode (vystaví token Googlu)
+    PLATFORM_APNS = 2;         // opt-in fast mode (Apple)
+    PLATFORM_UNIFIEDPUSH = 3;  // default — endpoint distributora (ntfy)
+    PLATFORM_WEBPUSH = 4;      // RFC 8030 endpoint
+  }
+  Platform platform = 1;
+  // UnifiedPush/WebPush endpoint URL (utf-8 bytes), nebo FCM/APNs token.
+  // Prázdné, když platform=NONE.
+  bytes endpoint = 2;
+}
+
+// ── Prekey typy (REST /v1/register, /v1/keys — sdílené s bundle fetch) ─
+
+message SignedPreKey {
+  uint32 key_id = 1;
+  bytes public_key = 2;           // 32 B Curve25519
+  bytes signature = 3;            // 64 B XEdDSA podpis identity klíčem
+}
+
+message KyberPreKey {
+  uint32 key_id = 1;
+  bytes public_key = 2;           // Kyber-1024, ~1569 B
+  bytes signature = 3;
+  bool is_last_resort = 4;        // last-resort se nespotřebovává
+}
+
+message OneTimePreKey {
+  uint32 key_id = 1;
+  bytes public_key = 2;           // 32 B Curve25519
+}
+
+message PreKeyBundle {
+  uint32 registration_id = 1;
+  uint32 device_id = 2;
+  bytes identity_key = 3;         // 33 B (type byte + Curve25519)
+  SignedPreKey signed_prekey = 4;
+  KyberPreKey kyber_prekey = 5;
+  OneTimePreKey one_time_prekey = 6; // chybí, když OTP došly (povolený fallback)
+}
+
+// Bundle pro všechna zařízení identity (multi-device fanout).
+message PreKeyBundles {
+  repeated PreKeyBundle devices = 1;
+}
+
+// ── Vrcholové rámce na WS (subprotocol "sepot.v1") ────────────────────
+
+message ClientFrame {
+  oneof frame {
+    Auth auth = 1;
+    AuthProof auth_proof = 2;
+    Envelope envelope = 3;
+    Ack ack = 4;
+    Pong pong = 5;
+    RegisterPush register_push = 6;
+  }
+}
+
+message ServerFrame {
+  oneof frame {
+    Challenge challenge = 1;
+    Receipt receipt = 2;
+    Envelope deliver = 3;
+    PrekeysLow prekeys_low = 4;
+    Ping ping = 5;
+    Error error = 6;
+    AuthOk auth_ok = 7;
+  }
+}

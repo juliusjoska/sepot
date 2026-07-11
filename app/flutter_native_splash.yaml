@@ -1,0 +1,10 @@
+# Native splash — tmavé pozadí + brand mark (sjednoceno s launcher ikonou).
+# Regenerace: dart run flutter_native_splash:create
+flutter_native_splash:
+  color: "#0b0c12"
+  image: assets/icon/maskable-fg-512.png
+  android_12:
+    color: "#0b0c12"
+    image: assets/icon/maskable-fg-512.png
+  color_dark: "#0b0c12"
+  image_dark: assets/icon/maskable-fg-512.png

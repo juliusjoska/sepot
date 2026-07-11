@@ -1,0 +1,5 @@
+/* Šepot — texty oprávnění iOS (čeština) */
+"NSCameraUsageDescription" = "Kamera slouží ke skenování QR kódů kontaktů a focení příloh.";
+"NSPhotoLibraryUsageDescription" = "Galerie slouží k výběru fotek pro odeslání v konverzaci.";
+"NSFaceIDUsageDescription" = "Face ID odemyká aplikaci místo PINu.";
+"NSMicrophoneUsageDescription" = "Šepot potřebuje mikrofon pro nahrávání hlasových zpráv.";

@@ -1,0 +1,5 @@
+/* Šepot — testi delle autorizzazioni iOS (italiano) */
+"NSCameraUsageDescription" = "La fotocamera serve a scansionare i codici QR dei contatti e a scattare foto per gli allegati.";
+"NSPhotoLibraryUsageDescription" = "La libreria foto serve a scegliere le foto da inviare in una conversazione.";
+"NSFaceIDUsageDescription" = "Face ID sblocca l'app al posto del PIN.";
+"NSMicrophoneUsageDescription" = "Šepot ha bisogno del microfono per registrare i messaggi vocali.";

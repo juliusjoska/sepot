@@ -1,0 +1,51 @@
+[package]
+name = "sepot-relay"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sepot-proto = { path = "../sepot-proto" }
+prost = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+axum = { version = "0.8", features = ["ws"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "postgres",
+    "runtime-tokio",
+    "tls-rustls",
+    "chrono",
+    "migrate",
+    "macros",
+] }
+dashmap = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+hex = "0.4"
+chrono = "0.4"
+rand = "0.9"
+futures-util = "0.3"
+# Streaming download příloh z disku (ReaderStream)
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Oficiální Signal krypto — POUZE pro roli certifikační autority sealed
+# senderu (ServerCertificate/SenderCertificate) a ověření XEdDSA podpisů
+# při AUTH. Relay NIKDY nešifruje/nedešifruje zprávy (hloupý relay).
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.96.4" }
+libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.96.4" }
+tower_governor = "0.8.0"
+tower-http = { version = "0.7.0", features = ["timeout"] }
+
+# Push budíčky (UnifiedPush/WebPush = POST na endpoint). rustls, ať build
+# zůstane bez OpenSSL (stejně jako sqlx tls-rustls). Bez default featur —
+# nechceme native-tls ani zbytečné kodeky.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# FCM fast mode: RS256 JWT pro OAuth2 service account flow
+jsonwebtoken = "9"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

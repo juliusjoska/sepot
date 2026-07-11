@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["sepot-proto", "sepot-relay"]
+
+[workspace.package]
+edition = "2021"
+license = "AGPL-3.0"
+repository = "https://gitea.ajtak.it/julius.joska/sepot"
+
+[workspace.dependencies]
+prost = "0.13"
+prost-build = "0.13"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Zrcadlo [patch.crates-io] z signalapp/libsignal v0.96.4 — jejich workspace
+# patch se na git závislost nepropaguje, bez něj se libsignal-protocol
+# nesestaví proti crates.io verzi curve25519-dalek.
+[patch.crates-io]
+curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }

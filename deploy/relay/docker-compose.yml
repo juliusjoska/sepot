@@ -1,0 +1,104 @@
+# sepot-relay produkční stack: relay + PostgreSQL 16 + Tor onion
+#
+# Nasazení: viz README.md. Kontext buildu = kořen monorepa (../..).
+# Secrets: .env vedle tohoto souboru (POSTGRES_PASSWORD) — NIKDY do gitu.
+#
+# Sítě:
+#   backend  (internal) — jen relay ↔ db, bez internetu
+#   tornet             — tor ↔ relay; tor potřebuje egress do Tor sítě
+# Relay publikuje 8470 na loopback hostitele — postav před něj vlastní
+# reverzní proxy (Caddy/Traefik/nginx) s TLS a forwardni na 127.0.0.1:8470.
+
+name: sepot-relay
+
+services:
+  sepot-relay:
+    build:
+      context: ../..
+      dockerfile: deploy/relay/Dockerfile
+    container_name: sepot-relay
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://sepot:${POSTGRES_PASSWORD}@db:5432/sepot_relay
+      SEPOT_BIND: 0.0.0.0:8470
+      SEPOT_ATTACHMENTS_DIR: /var/lib/sepot/attachments
+      # FCM fast mode (opt-in budíčky přes Google) — SA key ŽIJE JEN NA
+      # serveru (fcm-sa.json vedle .env, chmod 600, NIKDY do gitu)
+      SEPOT_FCM_CREDENTIALS: /etc/sepot/fcm-sa.json
+      # APNs (nativní iOS push, bez Googlu) — auth key .p8 + IDs. Klíč
+      # žije JEN na serveru (apns-key.p8 vedle .env). Bez těchto proměnných
+      # zůstane APNs vypnutý.
+      SEPOT_APNS_CREDENTIALS: /etc/sepot/apns-key.p8
+      # Key ID a Team ID nejsou tajné (tajný je jen .p8) → přímo v compose
+      SEPOT_APNS_KEY_ID: ${SEPOT_APNS_KEY_ID}
+      SEPOT_APNS_TEAM_ID: ${SEPOT_APNS_TEAM_ID}
+      SEPOT_APNS_TOPIC: ${SEPOT_APNS_TOPIC}
+      # log bez obsahu/IP je vynucený v kódu; info stačí
+      RUST_LOG: info
+    volumes:
+      # šifrované bloby příloh (TTL 30 d) — NEzálohují se: efemérní data,
+      # klíče k nim mají jen klienti; ztráta = nedoručené přílohy vyprší
+      - attachments-data:/var/lib/sepot/attachments
+      # VOLITELNÉ push mounty — odkomentuj JEN při zapnutém FCM/APNs push,
+      # zároveň s příslušnými SEPOT_FCM_/SEPOT_APNS_ proměnnými výše.
+      # Bez nich compose běží normálně (rychlý start bez push konfigurace);
+      # necháš-li je odkomentované bez existujících souborů, start selže.
+      # - ./fcm-sa.json:/etc/sepot/fcm-sa.json:ro
+      # - ./apns-key.p8:/etc/sepot/apns-key.p8:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    # Publikováno jen na loopback — reverzní proxy s TLS forwardni sem.
+    ports:
+      - "127.0.0.1:8470:8470"
+    networks:
+      - backend
+      - tornet
+    logging: &log
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  db:
+    image: postgres:16-alpine
+    container_name: sepot-relay-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sepot_relay
+      POSTGRES_USER: sepot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # Drží i relay_keys (trust root CA!) — záloha = pg_dump, viz README
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sepot -d sepot_relay"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *log
+
+  tor:
+    build: ./tor
+    container_name: sepot-relay-tor
+    restart: unless-stopped
+    volumes:
+      # onion klíče — ZÁLOHOVAT (ztráta = nová onion adresa)
+      - tor-keys:/var/lib/tor
+    depends_on:
+      - sepot-relay
+    networks:
+      - tornet
+    logging: *log
+
+networks:
+  backend:
+    internal: true
+  tornet: {}
+
+volumes:
+  db-data:
+  tor-keys:
+  attachments-data:

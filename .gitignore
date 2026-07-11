@@ -1,0 +1,29 @@
+# Dart / Flutter
+.dart_tool/
+.packages
+build/
+*.iml
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Rust
+target/
+
+# Prostředí a tajemství
+.env
+.env.*
+!.env.example
+!*/.env.example
+*.pem
+*.key
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+deploy/relay/fcm-sa.json
+app/android/key.properties
+app/android/sepot-release.keystore
+deploy/relay/apns-key.p8
+/rust/.dev-attachments/
+/rust/attachments/

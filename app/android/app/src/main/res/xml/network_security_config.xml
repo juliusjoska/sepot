@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Produkce: VŠECHNO přes HTTPS/WSS, žádný cleartext…
+     …s jednou výjimkou pro Tor: onion vstup relaye + lokální SOCKS proxy
+     (Orbot) jedou přes cleartext http/ws, protože šifruje sama Tor obálka.
+     Provoz k .onion nikdy neopustí zařízení v plaintextu — jde do Orbotu
+     na 127.0.0.1. (dart:io sockety NSC stejně neřídí, tohle je pojistka
+     a doklad záměru.)
+     Dev build proti lokálnímu dev relayi používá samostatný
+     debug manifest (src/debug/res/xml), tenhle release nikdy. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">cipjsctoeyf4fcrntvdvt22o2ansgr73qvthmewo246vuntd7cqmykyd.onion</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
