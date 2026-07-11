@@ -4,7 +4,12 @@ Všechny podstatné změny v aplikaci Šepot. Formát dle
 [Keep a Changelog](https://keepachangelog.com/cs/1.1.0/),
 verzování dle [ajtak standardu](#verzování).
 
-## [Nevydáno]
+## [1.0.0] – 2026-07-11
+
+První ostrá verze. Šepot je od 11. 7. 2026 open source — kompletní
+zdrojový kód aplikace i serveru je veřejný na
+[gitea.ajtak.it/julius.joska/sepot](https://gitea.ajtak.it/julius.joska/sepot)
+(zrcadlo [github.com/juliusjoska/sepot](https://github.com/juliusjoska/sepot)).
 
 ### Přidáno
 - **Aplikace mluví pěti jazyky: česky, anglicky, německy, rusky
