@@ -12,7 +12,7 @@ void main() {
     await SepotCrypto.init();
   });
 
-  group('S1: fingerprint a ID z klíče', () {
+  group('fingerprint a ID z klíče', () {
     test('fingerprint má 52 znaků Crockford base32, SEP- zkratka 14', () async {
       final identity = await LocalIdentity.create('Alice');
       expect(identity.fingerprint.display, hasLength(52));
@@ -36,7 +36,7 @@ void main() {
       );
       final fp = SepotFingerprint.ofPublicKey(pubkey);
       expect(fp.display, hasLength(52));
-      // KAT hodnota vygenerovaná při zavedení S1 (2026-07-03) — pokud se
+      // KAT hodnota zafixovaná při zavedení fingerprintů — pokud se
       // změní, změnil se hash vstup/algoritmus a VŠECHNA ID uživatelů
       expect(
         fp.display,
@@ -53,7 +53,8 @@ void main() {
 
     test('serializovaný privátní klíč je clamping-stabilní', () {
       // deserialize→serialize musí být identita na už serializovaných
-      // bajtech — na tom stojí mnemonic roundtrip (MASTER-DESIGN §3, F-3)
+      // bajtech — mnemonic kóduje serializovaný (clampnutý) privátní klíč,
+      // takže nestabilní serializace by rozbila obnovu účtu ze slov
       for (var i = 0; i < 20; i++) {
         final keys = SepotCrypto.generateIdentityKeys();
         final roundtrip = SepotCrypto.derivePublicKey(keys.privateKey);
@@ -67,7 +68,7 @@ void main() {
     });
   });
 
-  group('S2: mnemonic recovery', () {
+  group('mnemonic recovery', () {
     test('recover z mnemonic obnoví identický klíč i fingerprint', () async {
       final original = await LocalIdentity.create('Alice');
       final words = original.mnemonic;

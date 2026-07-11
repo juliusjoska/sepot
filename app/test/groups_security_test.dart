@@ -12,9 +12,12 @@ import 'package:sepot/models/contact.dart';
 import 'package:sepot/models/group.dart';
 import 'package:sepot/models/identity.dart';
 
-/// Bezpečnostní pravidla skupin (GROUPS-V1.md §Bezpečnostní pravidla).
-/// Útočné scénáře: podvržený roster, cizí odesílatel, přepis identity
-/// klíče, pozvánka bez příjemce, roster přes strop.
+/// Bezpečnostní pravidla skupin — invarianty příjmové cesty: fingerprint
+/// v rosteru musí odpovídat identity klíči, odesílatel i já musíme být
+/// členy, roster smí měnit jen stávající člen a identity klíč známého
+/// kontaktu se nikdy nepřepisuje (TOFU). Útočné scénáře: podvržený roster,
+/// cizí odesílatel, přepis identity klíče, pozvánka bez příjemce, roster
+/// přes strop.
 void main() {
   late Directory tmp;
   late CryptoDb db;

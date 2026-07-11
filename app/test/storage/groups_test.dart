@@ -9,7 +9,7 @@ import 'package:sepot/models/conversation.dart';
 import 'package:sepot/models/group.dart';
 import 'package:sepot/models/message.dart';
 
-/// Skupiny v1 (GROUPS-V1.md) — perzistence a model. Bezpečnostní pravidla
+/// Skupiny v1 — perzistence a model. Bezpečnostní pravidla
 /// příjmové cesty (roster anti-spoof, membership guard) mají vlastní test
 /// v `test/groups_security_test.dart`, protože nepotřebují DB.
 void main() {
@@ -115,7 +115,7 @@ void main() {
     expect(g.isMember('MALLORY'), isFalse);
   });
 
-  test('strop členů je 128 (MASTER-DESIGN otázka 9)', () {
+  test('strop členů je 128 (párový fanout = N obálek na zprávu)', () {
     expect(Group.maxMembers, 128);
   });
 
