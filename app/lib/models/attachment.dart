@@ -97,6 +97,21 @@ class AttachmentMeta {
     if (size <= 0 || size > 512 * 1024 * 1024) {
       throw const FormatException('implausible attachment size');
     }
+    // Krypto pole MUSÍ být validní base64 (jinak je meta k ničemu);
+    // vyhodí FormatException → zpráva se zahodí jako vadná.
+    base64Decode(wire['k'] as String);
+    base64Decode(wire['n'] as String);
+    base64Decode(wire['d'] as String);
+    // Vadný náhled zprávu nezabíjí — UI ukáže placeholder a ostrá fotka
+    // se stáhne z blobu. base64Decode v build() by shodil celou bublinu.
+    var thumb = wire['th'] as String?;
+    if (thumb != null) {
+      try {
+        base64Decode(thumb);
+      } on FormatException {
+        thumb = null;
+      }
+    }
     return AttachmentMeta(
       blobId: wire['bid'] as String,
       keyB64: wire['k'] as String,
@@ -107,7 +122,7 @@ class AttachmentMeta {
       name: wire['name'] as String?,
       width: wire['w'] as int?,
       height: wire['h'] as int?,
-      thumbB64: wire['th'] as String?,
+      thumbB64: thumb,
       durationMs: wire['dur'] as int?,
       state: AttachmentTransferState.pending,
     );

@@ -348,5 +348,14 @@
   "contactsErrorAlreadyExists": "Contact already exists",
   "commonAppTagline": "Private messenger",
   "commonE2eBadgeCompact": "E2E",
-  "commonE2eBadgeFull": "End-to-end encrypted"
+  "commonE2eBadgeFull": "End-to-end encrypted",
+  "photoPreviewCaptionHint": "Add a caption…",
+  "photoPreviewDraw": "Draw",
+  "photoPreviewAddText": "Add text",
+  "photoPreviewRotate": "Rotate",
+  "photoPreviewUndo": "Undo",
+  "photoPreviewSend": "Send",
+  "photoPreviewTextDialogTitle": "Text on photo",
+  "photoPreviewRemoveText": "Remove",
+  "photoPreviewDecodeFailed": "Couldn't load the photo"
 }

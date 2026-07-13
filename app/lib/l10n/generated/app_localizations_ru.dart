@@ -1282,4 +1282,31 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get commonE2eBadgeFull => 'Сквозное шифрование';
+
+  @override
+  String get photoPreviewCaptionHint => 'Добавить подпись…';
+
+  @override
+  String get photoPreviewDraw => 'Рисовать';
+
+  @override
+  String get photoPreviewAddText => 'Добавить текст';
+
+  @override
+  String get photoPreviewRotate => 'Повернуть';
+
+  @override
+  String get photoPreviewUndo => 'Отменить';
+
+  @override
+  String get photoPreviewSend => 'Отправить';
+
+  @override
+  String get photoPreviewTextDialogTitle => 'Текст на фото';
+
+  @override
+  String get photoPreviewRemoveText => 'Удалить';
+
+  @override
+  String get photoPreviewDecodeFailed => 'Не удалось загрузить фото';
 }

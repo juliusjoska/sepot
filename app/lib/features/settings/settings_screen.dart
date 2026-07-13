@@ -12,6 +12,7 @@ import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/storage/secure_storage.dart';
+import 'package:sepot/models/identity.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/providers/contacts_provider.dart';
 import 'package:sepot/providers/conversations_provider.dart';
@@ -296,7 +297,7 @@ class SettingsScreen extends ConsumerWidget {
     }
   }
 
-  Widget _buildProfileCard(BuildContext context, dynamic identity) {
+  Widget _buildProfileCard(BuildContext context, LocalIdentity identity) {
     return Container(
       margin: const EdgeInsets.all(16),
       padding: const EdgeInsets.all(20),
@@ -311,7 +312,9 @@ class SettingsScreen extends ConsumerWidget {
             radius: 36,
             backgroundColor: SepotColors.ember.withValues(alpha: 0.1),
             child: Text(
-              identity.displayName.substring(0, 1).toUpperCase(),
+              identity.displayName.isEmpty
+                  ? '?'
+                  : identity.displayName.characters.first.toUpperCase(),
               style: const TextStyle(
                 fontFamily: kFontSans,
                 fontSize: 28,
@@ -324,7 +327,7 @@ class SettingsScreen extends ConsumerWidget {
           Text(
             identity.displayName,
             style: const TextStyle(
-              fontFamily: kFontSans,
+                fontFamily: kFontSans,
               fontSize: 20,
               fontWeight: FontWeight.w600,
               color: SepotColors.textPrimary,
@@ -352,7 +355,7 @@ class SettingsScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            context.l10n.settingsFingerprint(identity.fingerprint),
+            context.l10n.settingsFingerprint(identity.fingerprint.display),
             style: SepotTheme.cryptoText.copyWith(fontSize: 11),
           ),
         ],
@@ -368,7 +371,7 @@ class SettingsScreen extends ConsumerWidget {
         child: Text(
           title,
           style: const TextStyle(
-            fontFamily: kFontSans,
+                fontFamily: kFontSans,
             fontSize: 13,
             fontWeight: FontWeight.w600,
             color: SepotColors.textMuted,

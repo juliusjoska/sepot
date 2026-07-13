@@ -1248,4 +1248,31 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get commonE2eBadgeFull => 'End-to-end šifrováno';
+
+  @override
+  String get photoPreviewCaptionHint => 'Přidat popisek…';
+
+  @override
+  String get photoPreviewDraw => 'Kreslit';
+
+  @override
+  String get photoPreviewAddText => 'Přidat text';
+
+  @override
+  String get photoPreviewRotate => 'Otočit';
+
+  @override
+  String get photoPreviewUndo => 'Zpět';
+
+  @override
+  String get photoPreviewSend => 'Poslat';
+
+  @override
+  String get photoPreviewTextDialogTitle => 'Text na fotce';
+
+  @override
+  String get photoPreviewRemoveText => 'Odebrat';
+
+  @override
+  String get photoPreviewDecodeFailed => 'Fotku se nepodařilo načíst';
 }

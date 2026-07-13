@@ -348,5 +348,14 @@
   "contactsErrorAlreadyExists": "Il contatto esiste già",
   "commonAppTagline": "Messenger privato",
   "commonE2eBadgeCompact": "E2E",
-  "commonE2eBadgeFull": "Cifrato end-to-end"
+  "commonE2eBadgeFull": "Cifrato end-to-end",
+  "photoPreviewCaptionHint": "Aggiungi una didascalia…",
+  "photoPreviewDraw": "Disegna",
+  "photoPreviewAddText": "Aggiungi testo",
+  "photoPreviewRotate": "Ruota",
+  "photoPreviewUndo": "Annulla",
+  "photoPreviewSend": "Invia",
+  "photoPreviewTextDialogTitle": "Testo sulla foto",
+  "photoPreviewRemoveText": "Rimuovi",
+  "photoPreviewDecodeFailed": "Impossibile caricare la foto"
 }

@@ -127,7 +127,7 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
                 children: [
                   Container(
                     decoration: const BoxDecoration(
-                      color: Colors.red, // Jakákoliv neprůhledná barva
+                      color: Colors.red, // Jakákoliv nepůhledná barva
                       backgroundBlendMode: BlendMode.dstOut,
                     ),
                   ),
@@ -198,11 +198,9 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
               radius: 32,
               backgroundColor: SepotColors.ember.withValues(alpha: 0.1),
               child: Text(
-                // Naskenovaná identita může mít prázdný displayName
-                // (i podvržený QR); guard proti pádu na substring(0,1).
-                identity.displayName.isNotEmpty
-                    ? identity.displayName.substring(0, 1).toUpperCase()
-                    : '?',
+                identity.displayName.isEmpty
+                    ? '?'
+                    : identity.displayName.characters.first.toUpperCase(),
                 style: const TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.w600,

@@ -2197,6 +2197,60 @@ abstract class AppLocalizations {
   /// In cs, this message translates to:
   /// **'End-to-end šifrováno'**
   String get commonE2eBadgeFull;
+
+  /// hintText pole popisku na obrazovce náhledu fotky před odesláním
+  ///
+  /// In cs, this message translates to:
+  /// **'Přidat popisek…'**
+  String get photoPreviewCaptionHint;
+
+  /// Tooltip nástroje kreslení prstem na náhledu fotky
+  ///
+  /// In cs, this message translates to:
+  /// **'Kreslit'**
+  String get photoPreviewDraw;
+
+  /// Tooltip nástroje přidání textu na fotku
+  ///
+  /// In cs, this message translates to:
+  /// **'Přidat text'**
+  String get photoPreviewAddText;
+
+  /// Tooltip otočení fotky o 90°
+  ///
+  /// In cs, this message translates to:
+  /// **'Otočit'**
+  String get photoPreviewRotate;
+
+  /// Tooltip vrácení posledního tahu kreslení
+  ///
+  /// In cs, this message translates to:
+  /// **'Zpět'**
+  String get photoPreviewUndo;
+
+  /// Tooltip tlačítka odeslání fotky z náhledu
+  ///
+  /// In cs, this message translates to:
+  /// **'Poslat'**
+  String get photoPreviewSend;
+
+  /// Titulek dialogu pro zadání/úpravu textu na fotce
+  ///
+  /// In cs, this message translates to:
+  /// **'Text na fotce'**
+  String get photoPreviewTextDialogTitle;
+
+  /// Tlačítko odebrání textu z fotky v dialogu úpravy
+  ///
+  /// In cs, this message translates to:
+  /// **'Odebrat'**
+  String get photoPreviewRemoveText;
+
+  /// SnackBar, když se vybraná fotka nedá dekódovat — náhled se zavře bez odeslání
+  ///
+  /// In cs, this message translates to:
+  /// **'Fotku se nepodařilo načíst'**
+  String get photoPreviewDecodeFailed;
 }
 
 class _AppLocalizationsDelegate

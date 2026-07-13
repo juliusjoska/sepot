@@ -348,5 +348,14 @@
   "contactsErrorAlreadyExists": "Контакт уже существует",
   "commonAppTagline": "Приватный мессенджер",
   "commonE2eBadgeCompact": "E2E",
-  "commonE2eBadgeFull": "Сквозное шифрование"
+  "commonE2eBadgeFull": "Сквозное шифрование",
+  "photoPreviewCaptionHint": "Добавить подпись…",
+  "photoPreviewDraw": "Рисовать",
+  "photoPreviewAddText": "Добавить текст",
+  "photoPreviewRotate": "Повернуть",
+  "photoPreviewUndo": "Отменить",
+  "photoPreviewSend": "Отправить",
+  "photoPreviewTextDialogTitle": "Текст на фото",
+  "photoPreviewRemoveText": "Удалить",
+  "photoPreviewDecodeFailed": "Не удалось загрузить фото"
 }

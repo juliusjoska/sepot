@@ -19,6 +19,8 @@ import 'package:sepot/features/conversation/widgets/attachment_content.dart';
 import 'package:sepot/models/contact.dart';
 import 'package:sepot/models/conversation.dart';
 import 'package:sepot/models/group.dart';
+import 'package:sepot/models/identity.dart';
+import 'package:sepot/features/conversation/photo_preview_screen.dart';
 import 'package:sepot/models/message.dart';
 import 'package:sepot/providers/contacts_provider.dart';
 import 'package:sepot/providers/conversations_provider.dart';
@@ -83,7 +85,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         .firstOrNull;
     final conversationAsync = ref.watch(conversationProvider(widget.contactId));
     final identity = ref.watch(identityProvider).valueOrNull;
-    // Skupinová konverzace: contactId nese id skupiny (gid)
+    // Skupinová konverzace: contactId == gid
     final group = ref.watch(groupProvider(widget.contactId)).valueOrNull;
 
     if (group != null) {
@@ -266,14 +268,14 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     );
   }
 
-  /// Skupinová konverzace: jména autorů nad cizími
+  /// Skupinová konverzace : jména autorů nad cizími
   /// bublinami, menu Členové / Přejmenovat / Opustit, žádný verify badge
   /// (ověřují se jednotliví členové v Kontaktech).
   Widget _buildGroupScaffold(
     BuildContext context,
     Group group,
     AsyncValue<Conversation?> conversationAsync,
-    dynamic identity, {
+    LocalIdentity? identity, {
     required List<Contact> contacts,
   }) {
     // Fingerprint → jméno pro popisky autorů. Členy, kteří ještě nejsou
@@ -698,7 +700,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           Text(
             context.l10n.chatEmptyEncrypted,
             style: const TextStyle(
-              fontFamily: kFontSans,
+                fontFamily: kFontSans,
               fontSize: 14,
               color: SepotColors.textSecondary,
             ),
@@ -707,7 +709,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           Text(
             context.l10n.chatEmptyNoOneElse,
             style: const TextStyle(
-              fontFamily: kFontSans,
+                fontFamily: kFontSans,
               fontSize: 14,
               color: SepotColors.textSecondary,
             ),
@@ -953,6 +955,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     try {
       // Moc krátké klepnutí — zahoď (uživatel to nechtěl poslat)
       if (dur.inMilliseconds < 800) {
+        await file.delete();
         return;
       }
       final bytes = await file.readAsBytes();
@@ -962,6 +965,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             durationMs: dur.inMilliseconds,
           );
       ref.invalidate(conversationProvider(widget.contactId));
+      await file.delete();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -970,12 +974,6 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                   .chatVoiceSendFailed(describeError(context.l10n, e)))),
         );
       }
-    } finally {
-      // Dočasný audio soubor leží v cache nezašifrovaný — smaž ho ve všech
-      // větvích (odesláno, zahozeno i chyba), ať v ní po pádu nezůstane.
-      try {
-        await file.delete();
-      } catch (_) {}
     }
   }
 
@@ -1252,19 +1250,40 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     Uint8List? bytes;
     var fileName = '';
     String? mime;
+    String? caption;
     try {
       switch (action) {
         case _AttachAction.gallery:
         case _AttachAction.camera:
+          // maxWidth/Height 2048 = strop ImageProcessoru; menší vstup šetří
+          // RAM při náhledu i finálním renderu úprav.
           final picked = await ImagePicker().pickImage(
             source: action == _AttachAction.gallery
                 ? ImageSource.gallery
                 : ImageSource.camera,
+            maxWidth: 2048,
+            maxHeight: 2048,
+            imageQuality: 92,
           );
           if (picked == null) return;
-          bytes = await picked.readAsBytes();
-          fileName = picked.name;
-          mime = picked.mimeType;
+          final pickedBytes = await picked.readAsBytes();
+          if (!mounted) return;
+          // Nic neodchází rovnou z kamery — náhled s úpravami a potvrzením.
+          final preview = await Navigator.of(context).push<PhotoPreviewResult>(
+            MaterialPageRoute(
+              fullscreenDialog: true,
+              builder: (_) => PhotoPreviewScreen(
+                bytes: pickedBytes,
+                fileName: picked.name,
+                mime: picked.mimeType,
+              ),
+            ),
+          );
+          if (preview == null || !mounted) return;
+          bytes = preview.bytes;
+          fileName = preview.fileName;
+          mime = preview.mime;
+          caption = preview.caption;
         case _AttachAction.document:
           final result = await FilePicker.pickFiles(withData: true);
           final file = result?.files.firstOrNull;
@@ -1295,6 +1314,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             bytes: bytes,
             fileName: fileName,
             mime: mime,
+            caption: caption,
           );
       ref.invalidate(conversationProvider(widget.contactId));
     } catch (e) {

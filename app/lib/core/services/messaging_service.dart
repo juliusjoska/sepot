@@ -1045,13 +1045,24 @@ class MessagingService {
     final trustRoot = _trustRoot;
     if (crypto == null || trustRoot == null) return;
 
+    final SepotSealedMessage opened;
     try {
-      final opened = await crypto.sealedDecrypt(
+      opened = await crypto.sealedDecrypt(
         ciphertext: Uint8List.fromList(envelope.payload),
         trustRoot: trustRoot,
         timestampMs: DateTime.now().millisecondsSinceEpoch,
       );
+    } catch (_) {
+      // Nedešifrovatelná/cizí obálka: NEACKovat, ať ji fronta podrží
+      // (může jít o dočasný stav — např. cert refresh).
+      return;
+    }
 
+    // Od tohohle bodu ratchet postoupil — obálku na relayi už NIKDY znovu
+    // nedešifrujeme (duplicitní decrypt libsignal odmítne). Vadný OBSAH se
+    // proto ACKuje a zahazuje: redelivery nemůže nic spravit, jen by
+    // trvale otravovala frontu při každém reconnectu.
+    try {
       final content =
           jsonDecode(utf8.decode(opened.plaintext)) as Map<String, dynamic>;
       final type = content['t'] as String?;
@@ -1059,7 +1070,12 @@ class MessagingService {
         'txt', 'att', 'rx', 'edit', 'del', 'dlv', 'rr', // 1:1 + skupiny
         'ginv', 'gleave', 'gmeta', // správa skupin
       };
-      if (content['v'] != 1 || !known.contains(type)) return;
+      if (content['v'] != 1 || !known.contains(type)) {
+        // Neznámý typ/verze: obsah je pro tuhle verzi navždy nečitelný
+        // a po upgradu ho stejně nejde znovu dešifrovat — ACK a zahodit.
+        _relay?.ack(envelope.msgUuid);
+        return;
+      }
 
       final contact = await _findOrCreateContact(opened, content);
       final senderFp = contact.id;
@@ -1242,9 +1258,18 @@ class MessagingService {
       if (message.attachment != null) {
         unawaited(downloadAttachment(convId, message));
       }
+    } on FormatException {
+      // Malformovaný obsah (ne-UTF-8/ne-JSON plaintext, vadná base64
+      // v profilu či rosteru) — trvale vadné, ACK a zahodit.
+      _relay?.ack(envelope.msgUuid);
+    } on TypeError {
+      // Pole se špatným typem (txt/ttl/id/re/p jako číslo apod.) —
+      // trvale vadné, ACK a zahodit.
+      _relay?.ack(envelope.msgUuid);
     } catch (_) {
-      // Nedešifrovatelná/cizí obálka: NEACKovat, ať ji fronta podrží
-      // (může jít o dočasný stav — např. cert refresh)
+      // Přechodné selhání zpracování (storage apod.): NEACKovat — další
+      // pokus po reconnectu za nic nedá, i když duplicitní decrypt
+      // pravděpodobně selže. Trvalé chyby obsahu řeší větve výše.
     }
   }
 

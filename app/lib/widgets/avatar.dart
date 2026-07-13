@@ -63,11 +63,17 @@ class SepotAvatar extends StatelessWidget {
   }
 
   String _getInitials(String name) {
-    final parts = name.trim().split(' ');
+    // Prázdné díly odfiltrovat — dvojitá mezera ve jméně nesmí shodit render.
+    // Grafémy (characters), ne code units — jméno začínající emoji by se
+    // jinak rozpůlilo na rozbitý surrogate.
+    final parts =
+        name.trim().split(' ').where((p) => p.isNotEmpty).toList();
     if (parts.length >= 2) {
-      return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+      return '${parts[0].characters.first}${parts[1].characters.first}'
+          .toUpperCase();
     }
-    return name.substring(0, name.length >= 2 ? 2 : 1).toUpperCase();
+    if (parts.isEmpty) return '?';
+    return parts[0].characters.take(2).toString().toUpperCase();
   }
 
   Color _colorFromName(String name) {

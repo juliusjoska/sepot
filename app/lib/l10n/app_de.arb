@@ -348,5 +348,14 @@
   "contactsErrorAlreadyExists": "Kontakt existiert bereits",
   "commonAppTagline": "Privater Messenger",
   "commonE2eBadgeCompact": "E2E",
-  "commonE2eBadgeFull": "Ende-zu-Ende-verschlüsselt"
+  "commonE2eBadgeFull": "Ende-zu-Ende-verschlüsselt",
+  "photoPreviewCaptionHint": "Bildunterschrift hinzufügen…",
+  "photoPreviewDraw": "Zeichnen",
+  "photoPreviewAddText": "Text hinzufügen",
+  "photoPreviewRotate": "Drehen",
+  "photoPreviewUndo": "Rückgängig",
+  "photoPreviewSend": "Senden",
+  "photoPreviewTextDialogTitle": "Text auf dem Foto",
+  "photoPreviewRemoveText": "Entfernen",
+  "photoPreviewDecodeFailed": "Foto konnte nicht geladen werden"
 }

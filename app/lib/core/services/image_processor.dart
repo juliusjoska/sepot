@@ -72,9 +72,11 @@ class ImageProcessor {
             : img.copyResize(image, height: maxDimension);
       }
 
-      // PNG s průhledností zůstává PNG (JPEG alfa kanál neumí, a re-encode
-      // PNG→PNG metadata stejně zahodí); vše ostatní JPEG q80.
-      final keepPng = mimeHint == 'image/png' && decoded.numChannels == 4;
+      // PNG s REÁLNOU průhledností zůstává PNG (JPEG alfa kanál neumí,
+      // a re-encode PNG→PNG metadata stejně zahodí); vše ostatní JPEG q80.
+      // Samotný alfa kanál nestačí — plně krytý RGBA PNG (screenshot,
+      // canvas render z editoru fotek) je jako JPEG několikanásobně menší.
+      final keepPng = mimeHint == 'image/png' && _hasTransparency(decoded);
       final bytes = keepPng
           ? Uint8List.fromList(img.encodePng(image))
           : Uint8List.fromList(img.encodeJpg(image, quality: jpegQuality));
@@ -87,6 +89,16 @@ class ImageProcessor {
         thumbnailJpeg: _thumbnail(image),
       );
     });
+  }
+
+  /// Má obraz aspoň jeden ne-plně-krytý pixel? Běží v izolátu spolu se
+  /// zbytkem zpracování, O(n) sken je proti dekódu/enkódu zanedbatelný.
+  static bool _hasTransparency(img.Image image) {
+    if (image.numChannels < 4) return false;
+    for (final pixel in image) {
+      if (pixel.a < pixel.maxChannelValue) return true;
+    }
+    return false;
   }
 
   static Uint8List _thumbnail(img.Image source) {

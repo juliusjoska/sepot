@@ -129,6 +129,7 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
     required Uint8List bytes,
     required String fileName,
     String? mime,
+    String? caption,
   }) async {
     final storage = ref.read(storageProvider);
     final service = ref.read(messagingServiceProvider);
@@ -140,6 +141,7 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
         bytes: bytes,
         fileName: fileName,
         mime: mime,
+        caption: caption,
       );
     } else {
       final contact = await _contact(contactId);
@@ -148,6 +150,7 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
         bytes: bytes,
         fileName: fileName,
         mime: mime,
+        caption: caption,
       );
     }
 

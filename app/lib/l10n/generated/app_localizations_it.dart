@@ -1257,4 +1257,31 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get commonE2eBadgeFull => 'Cifrato end-to-end';
+
+  @override
+  String get photoPreviewCaptionHint => 'Aggiungi una didascalia…';
+
+  @override
+  String get photoPreviewDraw => 'Disegna';
+
+  @override
+  String get photoPreviewAddText => 'Aggiungi testo';
+
+  @override
+  String get photoPreviewRotate => 'Ruota';
+
+  @override
+  String get photoPreviewUndo => 'Annulla';
+
+  @override
+  String get photoPreviewSend => 'Invia';
+
+  @override
+  String get photoPreviewTextDialogTitle => 'Testo sulla foto';
+
+  @override
+  String get photoPreviewRemoveText => 'Rimuovi';
+
+  @override
+  String get photoPreviewDecodeFailed => 'Impossibile caricare la foto';
 }

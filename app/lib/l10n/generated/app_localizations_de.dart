@@ -1270,4 +1270,31 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get commonE2eBadgeFull => 'Ende-zu-Ende-verschlüsselt';
+
+  @override
+  String get photoPreviewCaptionHint => 'Bildunterschrift hinzufügen…';
+
+  @override
+  String get photoPreviewDraw => 'Zeichnen';
+
+  @override
+  String get photoPreviewAddText => 'Text hinzufügen';
+
+  @override
+  String get photoPreviewRotate => 'Drehen';
+
+  @override
+  String get photoPreviewUndo => 'Rückgängig';
+
+  @override
+  String get photoPreviewSend => 'Senden';
+
+  @override
+  String get photoPreviewTextDialogTitle => 'Text auf dem Foto';
+
+  @override
+  String get photoPreviewRemoveText => 'Entfernen';
+
+  @override
+  String get photoPreviewDecodeFailed => 'Foto konnte nicht geladen werden';
 }

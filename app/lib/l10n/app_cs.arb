@@ -1698,5 +1698,41 @@
   "commonE2eBadgeFull": "End-to-end šifrováno",
   "@commonE2eBadgeFull": {
     "description": "Plná varianta badge šifrování (ikona zámku + text), zobrazuje se např. v hlavičce chatu / onboardingu."
+  },
+  "photoPreviewCaptionHint": "Přidat popisek…",
+  "@photoPreviewCaptionHint": {
+    "description": "hintText pole popisku na obrazovce náhledu fotky před odesláním"
+  },
+  "photoPreviewDraw": "Kreslit",
+  "@photoPreviewDraw": {
+    "description": "Tooltip nástroje kreslení prstem na náhledu fotky"
+  },
+  "photoPreviewAddText": "Přidat text",
+  "@photoPreviewAddText": {
+    "description": "Tooltip nástroje přidání textu na fotku"
+  },
+  "photoPreviewRotate": "Otočit",
+  "@photoPreviewRotate": {
+    "description": "Tooltip otočení fotky o 90°"
+  },
+  "photoPreviewUndo": "Zpět",
+  "@photoPreviewUndo": {
+    "description": "Tooltip vrácení posledního tahu kreslení"
+  },
+  "photoPreviewSend": "Poslat",
+  "@photoPreviewSend": {
+    "description": "Tooltip tlačítka odeslání fotky z náhledu"
+  },
+  "photoPreviewTextDialogTitle": "Text na fotce",
+  "@photoPreviewTextDialogTitle": {
+    "description": "Titulek dialogu pro zadání/úpravu textu na fotce"
+  },
+  "photoPreviewRemoveText": "Odebrat",
+  "@photoPreviewRemoveText": {
+    "description": "Tlačítko odebrání textu z fotky v dialogu úpravy"
+  },
+  "photoPreviewDecodeFailed": "Fotku se nepodařilo načíst",
+  "@photoPreviewDecodeFailed": {
+    "description": "SnackBar, když se vybraná fotka nedá dekódovat — náhled se zavře bez odeslání"
   }
 }

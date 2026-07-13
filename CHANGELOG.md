@@ -4,6 +4,37 @@ Všechny podstatné změny v aplikaci Šepot. Formát dle
 [Keep a Changelog](https://keepachangelog.com/cs/1.1.0/),
 verzování dle [ajtak standardu](#verzování).
 
+## [Nevydáno]
+
+### Přidáno
+- **Náhled fotky před odesláním.** Vyfocená nebo vybraná fotka už
+  neodchází okamžitě — otevře se náhled, kde jde fotku otočit, kreslit
+  po ní prstem (7 barev, krok zpět), přidat na ni text (tažením se
+  přesouvá, klepnutím upraví) a připojit popisek. Odejde až po klepnutí
+  na Odeslat; zavření náhledu nic nepošle.
+
+### Opraveno
+- **Nastavení se nevykreslilo** — obrazovka místo obsahu ukazovala
+  chybovou hlášku „Tahle obrazovka se nevykreslila". Profilová karta
+  předávala do překladu otisk klíče jako objekt místo textu.
+- Avatar s iniciálami spadl na prázdném jménu nebo jménu s dvojitou
+  mezerou; iniciály se nově skládají po grafémech, takže nerozpůlí emoji.
+- **Písma se dodávají v aplikaci** (Inter, JetBrains Mono — OFL).
+  Aplikace dřív stahovala fonty za běhu z Google CDN — síťový požadavek
+  na cizí server navíc a binárka odlišná od zveřejněného zdroje.
+- **Trvale vadná příchozí zpráva už neotravuje frontu.** Zpráva, jejíž
+  obsah nejde po dešifrování zpracovat (poškozená pole od upraveného
+  klienta), se potvrdí a zahodí — dřív se doručovala donekonečna při
+  každém připojení. Nedešifrovatelné obálky fronta dál drží.
+- Příloha s poškozeným náhledem od protistrany shodila vykreslení
+  bubliny; vadný náhled se nově zahodí při příjmu a base64 krypto polí
+  příloh se validuje.
+- Zachycení výměny důvěryhodního kořene relaye (signál MITM) na
+  pozadí — dřív tichá neošetřená výjimka, teď příznak čitelný pro UI.
+- PNG bez průhlednosti (screenshoty, upravené fotky) se posílají jako
+  JPEG — několikanásobně menší přenos; PNG zůstává jen pro obrázky se
+  skutečnou průhledností.
+
 ## [1.0.0] – 2026-07-11
 
 První ostrá verze. Šepot je od 11. 7. 2026 open source — kompletní
