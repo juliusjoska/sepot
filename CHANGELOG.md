@@ -4,7 +4,7 @@ Všechny podstatné změny v aplikaci Šepot. Formát dle
 [Keep a Changelog](https://keepachangelog.com/cs/1.1.0/),
 verzování dle [ajtak standardu](#verzování).
 
-## [Nevydáno]
+## [1.1.0] – 2026-07-13
 
 ### Přidáno
 - **Náhled fotky před odesláním.** Vyfocená nebo vybraná fotka už
