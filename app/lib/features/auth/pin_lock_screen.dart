@@ -6,6 +6,8 @@ import 'package:local_auth/local_auth.dart';
 import 'package:sepot/core/crypto/dek_wrap.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
+import 'package:sepot/providers/messaging_provider.dart';
+import 'package:sepot/providers/push_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 import 'package:sepot/widgets/sepot_logo.dart';
 
@@ -43,6 +45,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
       );
       if (!ok) return; // uživatel zrušil → zůstává PIN
       await storage.unlockWithBiometrics();
+      _restartMessagingAfterUnlock();
       if (mounted) context.go('/chats');
     } catch (_) {
       // biometrie nedostupná/selhala — PIN je vždy fallback
@@ -211,6 +214,16 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
     });
   }
 
+  /// Auto-lock službu zastavil a storage zamkl; po odemčení je nutné
+  /// messaging znovu nastartovat. messagingStartProvider drží starou
+  /// „hotovou" hodnotu (start se sám neprovede) → invalidace ho přepočítá
+  /// nad odemčeným storage a spustí start() znovu (jinak žádný příjem ani
+  /// odesílání až do restartu appky).
+  void _restartMessagingAfterUnlock() {
+    ref.invalidate(messagingStartProvider);
+    ref.invalidate(pushInitProvider);
+  }
+
   Future<void> _verifyPin() async {
     setState(() => _isVerifying = true);
 
@@ -218,6 +231,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
       // „Ověření" PINu = Argon2id unwrap DEK + otevření SQLCipher DB.
       // Špatný PIN = GCM tag nesedí = DB zůstává nečitelná.
       await ref.read(storageProvider).unlockWithPin(_pin);
+      _restartMessagingAfterUnlock();
       if (mounted) context.go('/chats');
     } on WrongPinException {
       setState(() {

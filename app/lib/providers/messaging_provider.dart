@@ -23,6 +23,14 @@ final messagingStartProvider = FutureProvider<void>((ref) async {
   final identity = await ref.watch(identityProvider.future);
   if (identity == null) return;
 
+  // Po auto-locku se tenhle provider eager-rebuildne (drží ho pushInitProvider)
+  // ještě NAD zamčeným storage → service.start() by spadl na „Storage is
+  // locked" a provider by uvázl v AsyncError (žádný příjem/odeslání až do
+  // killu procesu). Nad zamčeným storage tiše nic nestartuj; po odemčení
+  // se provider invaliduje (viz unlock cesty) a spustí start znovu.
+  final storage = ref.read(storageProvider);
+  if (!storage.isUnlocked) return;
+
   final service = ref.read(messagingServiceProvider);
   if (service.isStarted) return;
 

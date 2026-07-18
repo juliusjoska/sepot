@@ -375,6 +375,14 @@
   "@errorRelayUnavailable": {
     "description": "StateError z _senderCertificate, když se nepodařilo získat sender certificate (offline relay); propaguje se do odesílací cesty, zobrazuje chat UI při selhání odeslání."
   },
+  "errorNotYetRegistered": "Šepot se ještě připojuje k relayi — zkus zprávu poslat za chvíli.",
+  "@errorNotYetRegistered": {
+    "description": "NotYetRegisteredError z _sendContent, když vlastní registrace na relay ještě nedoběhla (čerstvá instalace). 'Šepot' je značka, nepřekládat."
+  },
+  "errorContactLinkIncomplete": "Odkaz je neúplný — protistrana ho vytvořila dřív, než se stihla připojit. Požádej ji o nový sepot:// odkaz.",
+  "@errorContactLinkIncomplete": {
+    "description": "ContactLinkIncompleteError při přidání kontaktu z odkazu/QR bez routingu (aid+da). 'sepot://' je schéma odkazu, zachovat."
+  },
   "errorAttachmentTooLarge": "Příloha je příliš velká (max {maxMb} MB)",
   "@errorAttachmentTooLarge": {
     "description": "StateError z _prepareAttachment při překročení limitu velikosti přílohy; zobrazuje UI výběru/odeslání přílohy. POZOR: v kódu jde o dva adjacentní literály 'Příloha je příliš velká ' (ř. 448) + '(max ${…} MB)' (ř. 449) — sloučit do jednoho klíče.",
@@ -1418,6 +1426,14 @@
   "qrShareTitle": "Můj Šepot ID",
   "@qrShareTitle": {
     "description": "AppBar titulek obrazovky sdílení vlastního QR/Šepot ID"
+  },
+  "qrShareConnectingTitle": "Připojuji k relayi…",
+  "@qrShareConnectingTitle": {
+    "description": "Titulek na QR obrazovce, když vlastní registrace na relay ještě nedoběhla — routing (aid+da) není hotový, QR by byl neúplný."
+  },
+  "qrShareConnectingBody": "Až se Šepot poprvé připojí, objeví se tvůj QR kód a odkaz. Chvilku strpení — stačí pár sekund.",
+  "@qrShareConnectingBody": {
+    "description": "Vysvětlení pod titulkem qrShareConnectingTitle. 'Šepot' je značka, nepřekládat."
   },
   "qrIdentityNotFound": "Identita nebyla nalezena",
   "@qrIdentityNotFound": {

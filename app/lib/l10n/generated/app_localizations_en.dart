@@ -275,6 +275,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get errorRelayUnavailable => 'Relay unavailable (sender certificate)';
 
   @override
+  String get errorNotYetRegistered =>
+      'Šepot is still connecting to the relay — try sending again in a moment.';
+
+  @override
+  String get errorContactLinkIncomplete =>
+      'This link is incomplete — the other person created it before connecting. Ask them for a new sepot:// link.';
+
+  @override
   String errorAttachmentTooLarge(int maxMb) {
     return 'Attachment is too large (max $maxMb MB)';
   }
@@ -1043,6 +1051,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get qrShareTitle => 'My Šepot ID';
+
+  @override
+  String get qrShareConnectingTitle => 'Connecting to the relay…';
+
+  @override
+  String get qrShareConnectingBody =>
+      'Your QR code and link will appear once Šepot connects for the first time. Just a moment — it only takes a few seconds.';
 
   @override
   String get qrIdentityNotFound => 'Identity not found';

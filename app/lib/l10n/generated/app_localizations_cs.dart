@@ -277,6 +277,14 @@ class AppLocalizationsCs extends AppLocalizations {
   String get errorRelayUnavailable => 'Relay nedostupný (sender certificate)';
 
   @override
+  String get errorNotYetRegistered =>
+      'Šepot se ještě připojuje k relayi — zkus zprávu poslat za chvíli.';
+
+  @override
+  String get errorContactLinkIncomplete =>
+      'Odkaz je neúplný — protistrana ho vytvořila dřív, než se stihla připojit. Požádej ji o nový sepot:// odkaz.';
+
+  @override
   String errorAttachmentTooLarge(int maxMb) {
     return 'Příloha je příliš velká (max $maxMb MB)';
   }
@@ -1047,6 +1055,13 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get qrShareTitle => 'Můj Šepot ID';
+
+  @override
+  String get qrShareConnectingTitle => 'Připojuji k relayi…';
+
+  @override
+  String get qrShareConnectingBody =>
+      'Až se Šepot poprvé připojí, objeví se tvůj QR kód a odkaz. Chvilku strpení — stačí pár sekund.';
 
   @override
   String get qrIdentityNotFound => 'Identita nebyla nalezena';

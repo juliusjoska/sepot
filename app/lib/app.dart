@@ -196,8 +196,12 @@ class _AutoLockGateState extends ConsumerState<_AutoLockGate>
     final kde = _router.state.uri.path;
     if (_bezZamku.contains(kde)) return;
 
+    // Zastavit službu a zamknout DB. messagingStartProvider ZÁMĚRNĚ
+    // neinvalidujeme tady — invalidace by ho eager-rebuildla ještě nad
+    // odemčeným storage (těsně před lock) a messaging by nastartoval nad DB,
+    // kterou hned zavíráme. Restart řeší odemykací obrazovky přes
+    // ref.invalidate(messagingStartProvider) až po úspěšném unlocku.
     await ref.read(messagingServiceProvider).stop();
-    ref.invalidate(messagingStartProvider);
     storage.lock();
     _router.go('/pin-lock');
   }

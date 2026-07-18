@@ -4,6 +4,33 @@ Všechny podstatné změny v aplikaci Šepot. Formát dle
 [Keep a Changelog](https://keepachangelog.com/cs/1.1.0/),
 verzování dle [ajtak standardu](#verzování).
 
+## [1.1.1] – 2026-07-18
+
+### Opraveno
+- **Odeslání první zprávy hned po instalaci už neselže.** Krátce po
+  založení účtu, než se aplikace stihla připojit k relayi, mohla zpráva
+  spadnout s hláškou „Odeslání selhalo". Nově se v tu chvíli ukáže
+  srozumitelné „Šepot se ještě připojuje — zkus to za chvíli" a připojení
+  proběhne na pozadí.
+- **QR kód a odkaz se ukážou až s doručovací adresou.** Když sis chtěl
+  ukázat vlastní QR dřív, než se aplikace poprvé připojila, vygeneroval se
+  neúplný odkaz — protistrana pak nemohla poslat první zprávu („Kontakt
+  nemá doručovací adresu"). Nově se místo neúplného kódu ukáže stav
+  připojování a QR se objeví, jakmile je hotové.
+- **Neúplný odkaz kontaktu se odmítne při přidání**, ne až při prvním
+  odeslání — s jasnou výzvou požádat protistranu o nový odkaz.
+- **Zamčení po nečinnosti už neumlčí aplikaci.** Po automatickém zamknutí
+  a opětovném odemčení se zprávy zase přijímají i odesílají — dřív mohl
+  messaging zůstat po odemčení vypnutý až do restartu aplikace.
+- **Skupinová zpráva se při chybě neodeslání označí jako neodeslaná**
+  místo aby zůstala navždy ve stavu „odesílá se".
+- Ošetřeno vzácné zdvojení spojení s relayem při rychlém přepnutí Toru
+  nebo zamčení během připojování.
+
+### Změněno
+- Interní úklid závislostí notifikací (odstraněna nepoužívaná větev, která
+  komplikovala sestavení verze pro iOS).
+
 ## [1.1.0] – 2026-07-13
 
 ### Přidáno

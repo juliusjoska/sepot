@@ -277,6 +277,14 @@ class AppLocalizationsRu extends AppLocalizations {
   String get errorRelayUnavailable => 'Релей недоступен (sender certificate)';
 
   @override
+  String get errorNotYetRegistered =>
+      'Šepot ещё подключается к релею — попробуйте отправить сообщение через пару секунд.';
+
+  @override
+  String get errorContactLinkIncomplete =>
+      'Ссылка неполная — собеседник создал её до подключения. Попросите у него новую ссылку sepot://.';
+
+  @override
   String errorAttachmentTooLarge(int maxMb) {
     return 'Вложение слишком большое (макс. $maxMb МБ)';
   }
@@ -1071,6 +1079,13 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get qrShareTitle => 'Мой Šepot ID';
+
+  @override
+  String get qrShareConnectingTitle => 'Подключение к релею…';
+
+  @override
+  String get qrShareConnectingBody =>
+      'Ваш QR-код и ссылка появятся, как только Šepot подключится в первый раз. Подождите пару секунд.';
 
   @override
   String get qrIdentityNotFound => 'Идентичность не найдена';

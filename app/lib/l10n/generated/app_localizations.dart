@@ -554,6 +554,18 @@ abstract class AppLocalizations {
   /// **'Relay nedostupný (sender certificate)'**
   String get errorRelayUnavailable;
 
+  /// NotYetRegisteredError z _sendContent, když vlastní registrace na relay ještě nedoběhla (čerstvá instalace). 'Šepot' je značka, nepřekládat.
+  ///
+  /// In cs, this message translates to:
+  /// **'Šepot se ještě připojuje k relayi — zkus zprávu poslat za chvíli.'**
+  String get errorNotYetRegistered;
+
+  /// ContactLinkIncompleteError při přidání kontaktu z odkazu/QR bez routingu (aid+da). 'sepot://' je schéma odkazu, zachovat.
+  ///
+  /// In cs, this message translates to:
+  /// **'Odkaz je neúplný — protistrana ho vytvořila dřív, než se stihla připojit. Požádej ji o nový sepot:// odkaz.'**
+  String get errorContactLinkIncomplete;
+
   /// StateError z _prepareAttachment při překročení limitu velikosti přílohy; zobrazuje UI výběru/odeslání přílohy. POZOR: v kódu jde o dva adjacentní literály 'Příloha je příliš velká ' (ř. 448) + '(max ${…} MB)' (ř. 449) — sloučit do jednoho klíče.
   ///
   /// In cs, this message translates to:
@@ -1861,6 +1873,18 @@ abstract class AppLocalizations {
   /// In cs, this message translates to:
   /// **'Můj Šepot ID'**
   String get qrShareTitle;
+
+  /// Titulek na QR obrazovce, když vlastní registrace na relay ještě nedoběhla — routing (aid+da) není hotový, QR by byl neúplný.
+  ///
+  /// In cs, this message translates to:
+  /// **'Připojuji k relayi…'**
+  String get qrShareConnectingTitle;
+
+  /// Vysvětlení pod titulkem qrShareConnectingTitle. 'Šepot' je značka, nepřekládat.
+  ///
+  /// In cs, this message translates to:
+  /// **'Až se Šepot poprvé připojí, objeví se tvůj QR kód a odkaz. Chvilku strpení — stačí pár sekund.'**
+  String get qrShareConnectingBody;
 
   /// Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)
   ///

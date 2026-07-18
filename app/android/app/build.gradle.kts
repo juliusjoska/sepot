@@ -42,6 +42,14 @@ android {
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
+    // Lint na release buildu vynechán: jeho síťové kontroly (novější verze
+    // závislostí) na omezené build síti visí donekonečna a pro Flutter appku
+    // nemají přínos. Analýzu Dartu dělá `flutter analyze`, Kotlin je minimální.
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+
     defaultConfig {
         applicationId = "cz.sepot.sepot"
         // libsignal binárky vyžadují Android 7.0+ (API 24)

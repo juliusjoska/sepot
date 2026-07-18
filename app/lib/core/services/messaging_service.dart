@@ -496,10 +496,14 @@ class MessagingService {
 
   Map<String, dynamic> _profile() {
     final identity = _identity!;
+    final da = myDeliveryAddress;
     return {
       'n': identity.displayName,
-      'aid': accountId,
-      'da': base64Encode(myDeliveryAddress!),
+      'aid': ?accountId,
+      // Do doběhnutí vlastní registrace na relay ještě routing nemáme —
+      // pole vynecháme (protistrana ho doplní z pozdějšího profilu), NIKDY
+      // `da!` (null-check pád = „Null check operator used on a null value").
+      'da': ?(da == null ? null : base64Encode(da)),
     };
   }
 
@@ -694,21 +698,30 @@ class MessagingService {
     await storage.addMessage(group.id, message);
     onUpdate?.call();
 
-    final anyOk = await _fanoutToGroup(group, {
-      'v': 1,
-      't': 'txt',
-      'id': message.id,
-      'gid': group.id,
-      'txt': text,
-      're': ?replyToId,
-      'ttl': ?ttl,
-      'p': _profile(),
-    });
-    final sent = message.copyWith(
-        status: anyOk ? MessageStatus.sent : MessageStatus.failed);
-    await storage.updateMessage(group.id, sent);
-    onUpdate?.call();
-    return sent;
+    try {
+      final anyOk = await _fanoutToGroup(group, {
+        'v': 1,
+        't': 'txt',
+        'id': message.id,
+        'gid': group.id,
+        'txt': text,
+        're': ?replyToId,
+        'ttl': ?ttl,
+        'p': _profile(),
+      });
+      final sent = message.copyWith(
+          status: anyOk ? MessageStatus.sent : MessageStatus.failed);
+      await storage.updateMessage(group.id, sent);
+      onUpdate?.call();
+      return sent;
+    } catch (e) {
+      // Výjimka mimo per-member cestu (např. build obsahu) by jinak nechala
+      // zprávu navždy ve stavu „odesílá se" (⏱). Označit jako selhalou.
+      await storage.updateMessage(
+          group.id, message.copyWith(status: MessageStatus.failed));
+      onUpdate?.call();
+      rethrow;
+    }
   }
 
   /// Odešle přílohu do skupiny — blob se šifruje a nahrává JEDNOU,
@@ -741,21 +754,28 @@ class MessagingService {
     await storage.addMessage(group.id, message);
     onUpdate?.call();
 
-    final anyOk = await _fanoutToGroup(group, {
-      'v': 1,
-      't': 'att',
-      'id': message.id,
-      'gid': group.id,
-      if (caption != null && caption.isNotEmpty) 'txt': caption,
-      'ttl': ?ttl,
-      'att': meta.toWire(),
-      'p': _profile(),
-    });
-    final sent = message.copyWith(
-        status: anyOk ? MessageStatus.sent : MessageStatus.failed);
-    await storage.updateMessage(group.id, sent);
-    onUpdate?.call();
-    return sent;
+    try {
+      final anyOk = await _fanoutToGroup(group, {
+        'v': 1,
+        't': 'att',
+        'id': message.id,
+        'gid': group.id,
+        if (caption != null && caption.isNotEmpty) 'txt': caption,
+        'ttl': ?ttl,
+        'att': meta.toWire(),
+        'p': _profile(),
+      });
+      final sent = message.copyWith(
+          status: anyOk ? MessageStatus.sent : MessageStatus.failed);
+      await storage.updateMessage(group.id, sent);
+      onUpdate?.call();
+      return sent;
+    } catch (e) {
+      await storage.updateMessage(
+          group.id, message.copyWith(status: MessageStatus.failed));
+      onUpdate?.call();
+      rethrow;
+    }
   }
 
   /// Reakce ve skupině (emoji == null = odebrat).
@@ -1008,6 +1028,13 @@ class MessagingService {
   ) async {
     final crypto = _crypto ?? (throw StateError('Service not started'));
     final relay = _relay!;
+
+    // Vlastní registrace na relay ještě nedoběhla (čerstvá instalace,
+    // pomalá síť, Tor bez Orbotu) → nemáme sender adresu ani sender cert.
+    // Srozumitelná chyba místo null-check pádu; registrace běží na pozadí.
+    if (accountId == null || myDeliveryAddress == null) {
+      throw const NotYetRegisteredError();
+    }
 
     final peer = contact.publicIdentity;
     final peerAid = peer.accountId;

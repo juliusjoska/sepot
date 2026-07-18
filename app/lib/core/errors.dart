@@ -26,6 +26,24 @@ class RelayUnavailableError extends SepotUserError {
   String toString() => 'relay unavailable';
 }
 
+/// Vlastní registrace na relay ještě nedoběhla — nemáme sender adresu.
+/// Přechodný stav po čerstvé instalaci; registrace běží na pozadí.
+class NotYetRegisteredError extends SepotUserError {
+  const NotYetRegisteredError();
+
+  @override
+  String toString() => 'not registered on relay yet';
+}
+
+/// Odkaz/QR kontaktu je neúplný (chybí routing aid+da) — vygenerovaný
+/// dřív, než měla protistrana dokončenou registraci na relay.
+class ContactLinkIncompleteError extends SepotUserError {
+  const ContactLinkIncompleteError();
+
+  @override
+  String toString() => 'contact link is missing routing (incomplete)';
+}
+
 /// Příloha přesahuje serverový limit.
 class AttachmentTooLargeError extends SepotUserError {
   const AttachmentTooLargeError(this.maxBytes);

@@ -1,7 +1,7 @@
 name: sepot
 description: "Šepot — Soukromý messenger s E2E šifrováním"
 publish_to: 'none'
-version: 1.1.0+20
+version: 1.1.1+21
 
 environment:
   sdk: ^3.10.8
@@ -37,7 +37,10 @@ dependencies:
   pointycastle: ^3.9.1
   protobuf: ^6.0.0
   sqlite3: ^3.3.4
-  unifiedpush: ^6.2.0
+  # Pin pod 6.2.0: od 6.2.0 táhne unifiedpush_linux → webpush_encryption →
+  # webcrypto, jehož native framework na iOS chybí LC_ENCRYPTION_INFO (blokuje
+  # upload). Linux desktop neshipujeme, na Android/iOS je 6.1.x funkčně shodná.
+  unifiedpush: ">=6.1.0 <6.2.0"
   image: ^4.8.0
   mime: ^2.0.0
   image_picker: ^1.2.3

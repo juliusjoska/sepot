@@ -133,5 +133,28 @@ void main() {
       expect(PublicIdentity.fromShareString('sepot://add/%%%'), isNull);
       expect(PublicIdentity.fromShareString(''), isNull);
     });
+
+    test('share link s routingem: aid+da přežijí roundtrip', () async {
+      final base = await LocalIdentity.create('Routovaná');
+      final withRouting = base.publicIdentity.withRouting(
+        accountId: 'deadbeef',
+        deliveryAddress: Uint8List.fromList(List.generate(32, (i) => i)),
+      );
+      final parsed =
+          PublicIdentity.fromShareString(withRouting.toShareString());
+      expect(parsed, isNotNull);
+      expect(parsed!.accountId, 'deadbeef');
+      expect(parsed.deliveryAddress,
+          Uint8List.fromList(List.generate(32, (i) => i)));
+    });
+
+    test('fromShareString: da špatné délky → null (ne vadný kontakt)', () async {
+      final base = await LocalIdentity.create('Krátká');
+      final bad = base.publicIdentity.withRouting(
+        accountId: 'deadbeef',
+        deliveryAddress: Uint8List.fromList(List.generate(8, (i) => i)),
+      );
+      expect(PublicIdentity.fromShareString(bad.toShareString()), isNull);
+    });
   });
 }

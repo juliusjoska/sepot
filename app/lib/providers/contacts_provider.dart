@@ -17,6 +17,15 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     final storage = ref.read(storageProvider);
     final contacts = await future;
 
+    // Odkaz bez routingu (aid+da) = protistrana ho vytvořila dřív, než měla
+    // hotovou registraci. Přidat takový kontakt = časovaná bomba: první
+    // odeslání spadne na „nemá doručovací adresu". Odmítnout hned s
+    // jasnou hláškou. (Nullable routing má smysl jen na interních příjmových
+    // cestách — roster/_findOrCreateContact —, ne při ručním importu.)
+    if (identity.accountId == null || identity.deliveryAddress == null) {
+      throw const ContactLinkIncompleteError();
+    }
+
     // Kontrola duplicity
     if (contacts.any((c) => c.publicIdentity.id == identity.id)) {
       throw const ContactAlreadyExistsError();

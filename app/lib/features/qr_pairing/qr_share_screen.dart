@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
+import 'package:sepot/models/identity.dart';
 import 'package:sepot/providers/identity_provider.dart';
 import 'package:sepot/providers/messaging_provider.dart';
 
@@ -27,12 +28,24 @@ class QrShareScreen extends ConsumerWidget {
             return Center(child: Text(context.l10n.qrIdentityNotFound));
           }
 
-          // Sdílet s routingem (accountId + delivery address z relaye),
-          // jinak protistrana nemá kam poslat první zprávu
+          // Sledovat stav připojení: po dokončení vlastní registrace se
+          // routing (aid+da) zapíše do DB a relay se připojí → tenhle watch
+          // obrazovku překreslí a QR se z „připojuji" přepne na hotový kód.
+          ref.watch(relayConnectionProvider);
           final service = ref.watch(messagingServiceProvider);
-          final shareString = (service.shareableIdentity ??
-                  identity.publicIdentity)
-              .toShareString();
+          final shareable = service.shareableIdentity;
+          final hasRouting = shareable != null &&
+              shareable.accountId != null &&
+              shareable.deliveryAddress != null;
+
+          // Bez routingu by QR/odkaz byl neúplný (protistrana by neměla kam
+          // poslat první zprávu → „Kontakt nemá doručovací adresu"). Radši
+          // než mrtvý kód ukázat stav připojování.
+          if (!hasRouting) {
+            return _ConnectingPlaceholder(identity: identity);
+          }
+
+          final shareString = shareable.toShareString();
 
           return SingleChildScrollView(
             padding: const EdgeInsets.all(32),
@@ -153,6 +166,59 @@ class QrShareScreen extends ConsumerWidget {
           child: CircularProgressIndicator(color: SepotColors.ember),
         ),
         error: (e, _) => Center(child: Text(describeError(context.l10n, e))),
+      ),
+    );
+  }
+}
+
+/// Stav obrazovky, dokud vlastní registrace na relay nedoběhne — místo
+/// neúplného QR (bez routingu) ukáže identitu a hlášku o připojování.
+class _ConnectingPlaceholder extends StatelessWidget {
+  const _ConnectingPlaceholder({required this.identity});
+
+  final LocalIdentity identity;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const CircularProgressIndicator(color: SepotColors.ember),
+            const SizedBox(height: 32),
+            Text(
+              context.l10n.qrShareConnectingTitle,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontFamily: kFontSans,
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: SepotColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              context.l10n.qrShareConnectingBody,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 14,
+                color: SepotColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              identity.sepotId,
+              style: const TextStyle(
+                fontFamily: kFontMono,
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: SepotColors.ember,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

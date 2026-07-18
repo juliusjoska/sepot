@@ -11,6 +11,8 @@ import 'package:sepot/l10n/generated/app_localizations.dart';
 String describeError(AppLocalizations l10n, Object error) => switch (error) {
       TrustRootChangedError() => l10n.errorTrustRootChanged,
       RelayUnavailableError() => l10n.errorRelayUnavailable,
+      NotYetRegisteredError() => l10n.errorNotYetRegistered,
+      ContactLinkIncompleteError() => l10n.errorContactLinkIncomplete,
       AttachmentTooLargeError(:final maxMb) =>
         l10n.errorAttachmentTooLarge(maxMb),
       GroupNeedsMemberError() => l10n.errorGroupNeedsMember,

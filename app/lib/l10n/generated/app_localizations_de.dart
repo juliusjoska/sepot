@@ -278,6 +278,14 @@ class AppLocalizationsDe extends AppLocalizations {
       'Relay nicht erreichbar (Sender-Zertifikat)';
 
   @override
+  String get errorNotYetRegistered =>
+      'Šepot verbindet sich noch mit dem Relay — versuch es gleich noch einmal.';
+
+  @override
+  String get errorContactLinkIncomplete =>
+      'Dieser Link ist unvollständig — die andere Person hat ihn erstellt, bevor sie verbunden war. Bitte sie um einen neuen sepot://-Link.';
+
+  @override
   String errorAttachmentTooLarge(int maxMb) {
     return 'Anhang ist zu groß (max. $maxMb MB)';
   }
@@ -1066,6 +1074,13 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get qrShareTitle => 'Meine Šepot-ID';
+
+  @override
+  String get qrShareConnectingTitle => 'Verbinde mit dem Relay…';
+
+  @override
+  String get qrShareConnectingBody =>
+      'Dein QR-Code und Link erscheinen, sobald sich Šepot zum ersten Mal verbindet. Einen Moment — es dauert nur ein paar Sekunden.';
 
   @override
   String get qrIdentityNotFound => 'Identität nicht gefunden';

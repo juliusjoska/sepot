@@ -75,6 +75,9 @@ class RelayClient {
 
   void _setState(RelayConnectionState s) {
     _state = s;
+    // Po dispose() je controller zavřený — pozdní přechod z doběhnutého
+    // _connect (zombie) by jinak hodil StateError do listenerů.
+    if (_stateController.isClosed) return;
     _stateController.add(s);
   }
 
@@ -292,6 +295,14 @@ class RelayClient {
     try {
       final channel = _transport.connectWs(Uri.parse('$_wsUrl/v1/ws'));
       await channel.ready;
+      // Během `ready` (přes Tor může viset dlouho) mohl přijít stop()/dispose()
+      // — Tor toggle nebo auto-lock. Bez téhle kontroly by vzniklo zombie
+      // autentizované spojení (relay má 2× jedno zařízení, DELIVERy padají do
+      // zavřených controllerů). Nezakládat ho, jen zavřít.
+      if (!_shouldRun) {
+        await channel.sink.close();
+        return;
+      }
       _channel = channel;
 
       // AUTH: výzva-odpověď podepsaná identity klíčem (XEdDSA)
@@ -322,9 +333,13 @@ class RelayClient {
             return;
           }
           if (frame.hasDeliver()) {
-            _deliverController.add(frame.deliver);
+            if (!_deliverController.isClosed) {
+              _deliverController.add(frame.deliver);
+            }
           } else if (frame.hasReceipt()) {
-            _receiptController.add(frame.receipt);
+            if (!_receiptController.isClosed) {
+              _receiptController.add(frame.receipt);
+            }
           }
         },
         onDone: _onDisconnected,
