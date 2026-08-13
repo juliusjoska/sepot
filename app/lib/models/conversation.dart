@@ -39,10 +39,16 @@ class Conversation {
         .length;
   }
 
-  /// Přidej zprávu
-  void addMessage(Message message) {
+  /// Přidej zprávu. Vrací false, když už zpráva s tímhle id v konverzaci je.
+  ///
+  /// Id zprávy nese odesílatel (pole `id` na drátě), takže opakované doručení
+  /// téhož obsahu — retry odesílatele po výpadku spojení nebo redelivery
+  /// z fronty relaye — nesmí založit druhou bublinu.
+  bool addMessage(Message message) {
+    if (messages.any((m) => m.id == message.id)) return false;
     messages.add(message);
     lastActivity = DateTime.now();
+    return true;
   }
 
   /// Nahraď zprávu se stejným id (změna stavu přílohy, doručenka…).

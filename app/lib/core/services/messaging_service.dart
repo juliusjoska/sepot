@@ -78,8 +78,14 @@ class MessagingService {
   bool _trustRootMismatch = false;
   bool get trustRootMismatch => _trustRootMismatch;
   StreamSubscription<dynamic>? _deliverSub;
+  StreamSubscription<RelayConnectionState>? _stateSub;
   Timer? _registerRetryTimer;
   Timer? _purgeTimer;
+
+  /// Běží právě dodatečné odeslání zaseklých zpráv? Reconnectů může přijít
+  /// několik rychle za sebou a dva souběžné průchody by tutéž zprávu poslaly
+  /// dvakrát.
+  bool _outboxRunning = false;
 
   /// Transport relaye: false = přímé WSS, true = přes Tor (SOCKS5/Orbot na
   /// `.onion`). Čte se z nastavení při startu, přepíná se za běhu
@@ -155,6 +161,10 @@ class MessagingService {
     final relay = _buildRelay();
     _relay = relay;
     _deliverSub = relay.deliveries.listen(_onDeliver);
+    // Po každém (re)connectu dorazit, co zůstalo viset ve frontě odchozích.
+    _stateSub = relay.stateStream.listen((state) {
+      if (state == RelayConnectionState.connected) unawaited(_flushOutbox());
+    });
 
     if (existingAccount != null) {
       relay.restoreSession(
@@ -211,6 +221,7 @@ class MessagingService {
   /// push registrace se znovu odešle. Trust root zůstává pinovaný.
   Future<void> _rebuildRelay() async {
     await _deliverSub?.cancel();
+    await _stateSub?.cancel();
     await _relay?.dispose();
     _senderCert = null;
     _certFetchedAt = null;
@@ -218,6 +229,10 @@ class MessagingService {
     final relay = _buildRelay();
     _relay = relay;
     _deliverSub = relay.deliveries.listen(_onDeliver);
+    // Po každém (re)connectu dorazit, co zůstalo viset ve frontě odchozích.
+    _stateSub = relay.stateStream.listen((state) {
+      if (state == RelayConnectionState.connected) unawaited(_flushOutbox());
+    });
 
     final existingAccount = accountId;
     if (existingAccount != null) {
@@ -357,6 +372,7 @@ class MessagingService {
         'v': 1,
         't': 'txt',
         'id': message.id,
+        'ts': message.timestamp.millisecondsSinceEpoch,
         'txt': text,
         're': ?replyToId,
         'ttl': ?ttl,
@@ -409,23 +425,35 @@ class MessagingService {
     await storage.addMessage(contact.id, message);
     onUpdate?.call();
 
-    final delivered = await _sendContent(contact, {
-      'v': 1,
-      't': 'att',
-      'id': message.id,
-      if (caption != null && caption.isNotEmpty) 'txt': caption,
-      'ttl': ?ttl,
-      'att': meta.toWire(),
-      'p': _profile(),
-    });
+    // Stejné ošetření jako u textu: bez něj zůstala příloha po výpadku
+    // spojení viset na „odesílá se" navždy. Označit jako failed ji dostane
+    // do fronty odchozích ([_flushOutbox]) — blob je na relayi nahraný,
+    // dosílá se jen meta.
+    try {
+      final delivered = await _sendContent(contact, {
+        'v': 1,
+        't': 'att',
+        'id': message.id,
+        'ts': message.timestamp.millisecondsSinceEpoch,
+        if (caption != null && caption.isNotEmpty) 'txt': caption,
+        'ttl': ?ttl,
+        'att': meta.toWire(),
+        'p': _profile(),
+      });
 
-    final sent = message.copyWith(
-      isDelivered: delivered,
-      status: delivered ? MessageStatus.delivered : MessageStatus.sent,
-    );
-    await storage.updateMessage(contact.id, sent);
-    onUpdate?.call();
-    return sent;
+      final sent = message.copyWith(
+        isDelivered: delivered,
+        status: delivered ? MessageStatus.delivered : MessageStatus.sent,
+      );
+      await storage.updateMessage(contact.id, sent);
+      onUpdate?.call();
+      return sent;
+    } catch (_) {
+      await storage.updateMessage(
+          contact.id, message.copyWith(status: MessageStatus.failed));
+      onUpdate?.call();
+      rethrow;
+    }
   }
 
   /// Zpracuje a nahraje přílohu: obrázky re-enkóduje (EXIF/GPS pryč,
@@ -703,6 +731,7 @@ class MessagingService {
         'v': 1,
         't': 'txt',
         'id': message.id,
+        'ts': message.timestamp.millisecondsSinceEpoch,
         'gid': group.id,
         'txt': text,
         're': ?replyToId,
@@ -759,6 +788,7 @@ class MessagingService {
         'v': 1,
         't': 'att',
         'id': message.id,
+        'ts': message.timestamp.millisecondsSinceEpoch,
         'gid': group.id,
         if (caption != null && caption.isNotEmpty) 'txt': caption,
         'ttl': ?ttl,
@@ -1022,6 +1052,115 @@ class MessagingService {
   /// Společná odesílací cesta: session bootstrap (X3DH s anti-MITM
   /// kontrolou identity klíče), sealed encrypt, obálka na relay.
   /// Vrací true = doručeno online, false = uloženo do offline fronty.
+  /// Kolik zaseklých zpráv poslat na jeden průchod. Po delším výpadku sítě
+  /// jich může být hodně; dávka drží start spojení svižný a zbytek dojde
+  /// při dalším ticku.
+  static const _outboxBatch = 30;
+
+  /// Jak staré zaseklé zprávy ještě dosílat. Co leží dýl, patří uživateli
+  /// do rukou — poslat týden starou zprávu bez zeptání by překvapilo.
+  static const _outboxMaxAge = Duration(hours: 24);
+
+  /// Došle zprávy, které zůstaly viset po výpadku spojení.
+  ///
+  /// Bez tohohle skončila každá zpráva odeslaná do mrtvého socketu jako
+  /// `failed` (nebo věčné `sending` u příloh) a znovu ji poslal jedině
+  /// uživatel ručně. Volá se po každém úspěšném (re)connectu; id zprávy
+  /// zůstává stejné, takže protistrana duplicitu zahodí
+  /// ([Conversation.addMessage]).
+  Future<void> _flushOutbox() async {
+    if (_outboxRunning || !isStarted) return;
+    _outboxRunning = true;
+    try {
+      final identity = _identity;
+      if (identity == null) return;
+      final cutoff = DateTime.now().subtract(_outboxMaxAge);
+
+      final stuck = <(String convId, Message message)>[];
+      for (final conv in await storage.loadConversations()) {
+        for (final m in conv.messages) {
+          if (m.senderId != identity.id) continue;
+          if (m.status != MessageStatus.failed &&
+              m.status != MessageStatus.sending) {
+            continue;
+          }
+          if (m.timestamp.isBefore(cutoff) || m.isDeleted) continue;
+          stuck.add((conv.contactId, m));
+        }
+      }
+      if (stuck.isEmpty) return;
+
+      stuck.sort((a, b) => a.$2.timestamp.compareTo(b.$2.timestamp));
+      for (final (convId, message) in stuck.take(_outboxBatch)) {
+        if (connectionState != RelayConnectionState.connected) break;
+        await _resend(convId, message);
+      }
+      onUpdate?.call();
+    } finally {
+      _outboxRunning = false;
+    }
+  }
+
+  /// Jeden pokus o dodatečné odeslání. Trvalé chyby (chybný klíč protistrany,
+  /// kontakt bez doručovací adresy) nechají zprávu `failed` a dál se
+  /// neopakují — opakovat má smysl jen to, co shodila síť.
+  Future<void> _resend(String convId, Message message) async {
+    try {
+      final group = await storage.loadGroup(convId);
+      final bool delivered;
+      if (group != null) {
+        delivered = await _fanoutToGroup(group, _outboxWire(message, gid: convId));
+      } else {
+        final contact = (await storage.loadContacts())
+            .where((c) => c.id == convId)
+            .firstOrNull;
+        if (contact == null) return;
+        delivered = await _sendContent(contact, _outboxWire(message));
+      }
+      await storage.updateMessage(
+        convId,
+        message.copyWith(
+          isDelivered: delivered,
+          status: delivered ? MessageStatus.delivered : MessageStatus.sent,
+        ),
+      );
+    } on SepotUserError {
+      // Srozumitelná chyba = stav, který se opakováním nespraví (chybí
+      // doručovací adresa, nesedí identity klíč, podvržený relay).
+      await storage.updateMessage(
+        convId,
+        message.copyWith(status: MessageStatus.failed),
+      );
+    } on Object {
+      // Síť/timeout — nechat viset a zkusit po příštím reconnectu.
+      await storage.updateMessage(
+        convId,
+        message.copyWith(status: MessageStatus.failed),
+      );
+    }
+  }
+
+  /// Obsah zprávy pro drát při dodatečném odeslání. Drží se tvaru, který
+  /// posílá [sendText]/[sendAttachment] — včetně `id`, aby šlo o TUTÉŽ
+  /// zprávu, ne novou.
+  Map<String, dynamic> _outboxWire(Message message, {String? gid}) {
+    final isAttachment = message.attachment != null;
+    final caption = message.content;
+    return {
+      'v': 1,
+      't': isAttachment ? 'att' : 'txt',
+      'id': message.id,
+      'ts': message.timestamp.millisecondsSinceEpoch,
+      'gid': ?gid,
+      if (isAttachment) 'att': message.attachment!.toWire(),
+      if (!isAttachment || (caption != null && caption.isNotEmpty))
+        'txt': caption ?? '',
+      're': ?message.replyToId,
+      'ttl': ?message.disappearAfterSeconds,
+      'p': _profile(),
+    };
+  }
+
   Future<bool> _sendContent(
     Contact contact,
     Map<String, dynamic> content,
@@ -1231,7 +1370,7 @@ class MessagingService {
           type: MessageType.text,
           content: text,
           replyToId: replyTo,
-          timestamp: DateTime.now(),
+          timestamp: wireSentAt(content['ts']),
           isDelivered: true,
           disappearAfterSeconds: ttl,
         );
@@ -1257,18 +1396,31 @@ class MessagingService {
           fileName: meta.name,
           fileSize: meta.size,
           replyToId: replyTo,
-          timestamp: DateTime.now(),
+          timestamp: wireSentAt(content['ts']),
           isDelivered: true,
           attachment: meta,
           disappearAfterSeconds: ttl,
         );
       }
-      await storage.addMessage(convId, message);
+      final isNew = await storage.addMessage(convId, message);
 
       // Uloženo na disku → teprve teď smí relay obálku zahodit.
       // (Blob přílohy do fronty nepatří — stahuje se na pozadí a při
       // neúspěchu má UI retry, ACK na něj nečeká.)
       _relay!.ack(envelope.msgUuid);
+
+      // Zprávu už známe (odesílatel ji poslal znovu po výpadku spojení).
+      // Druhá bublina ani další stahování téhož blobu nemá vzniknout, ale
+      // doručenku pošli — protistrana ji nejspíš právě proto nedostala.
+      if (!isNew) {
+        unawaited(_sendControl(contact, {
+          't': 'dlv',
+          'ref': message.id,
+          'gid': ?gid,
+        }));
+        return;
+      }
+
       onUpdate?.call();
       onMessageReceived?.call(contact, message);
 
@@ -1298,6 +1450,24 @@ class MessagingService {
       // pokus po reconnectu za nic nedá, i když duplicitní decrypt
       // pravděpodobně selže. Trvalé chyby obsahu řeší větve výše.
     }
+  }
+
+  /// Čas odeslání z drátu (ms). Bez něj by zpráva dostala čas doručení —
+  /// po vyzvednutí offline fronty by celá konverzace uskočila na „teď"
+  /// a každý člen skupiny by u téže zprávy viděl jiný čas.
+  ///
+  /// Klienti ≤1.1.1 `ts` neposílají → fallback na čas doručení (chová se
+  /// jako dřív). Odesílatel si čas diktuje sám (jde E2E kanálem), proto
+  /// strop: hodiny zařízení se běžně rozcházejí o minuty, ale zpráva
+  /// nesmí uskočit mimo konverzaci.
+  @visibleForTesting
+  static DateTime wireSentAt(Object? raw) {
+    final now = DateTime.now();
+    if (raw is! int) return now;
+    final sent = DateTime.fromMillisecondsSinceEpoch(raw);
+    if (sent.isAfter(now.add(const Duration(minutes: 5)))) return now;
+    if (sent.isBefore(DateTime(2020))) return now;
+    return sent;
   }
 
   /// Aplikuje příchozí reakci/edit/delete na cílovou zprávu v dané
@@ -1514,6 +1684,7 @@ class MessagingService {
     _purgeTimer?.cancel();
     _purgeTimer = null;
     await _deliverSub?.cancel();
+    await _stateSub?.cancel();
     await _relay?.dispose();
     // DB vlastní SecureStorageService (lock/deleteAll) — tady jen pustit
     _db = null;

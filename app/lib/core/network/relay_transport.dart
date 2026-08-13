@@ -21,6 +21,15 @@ import 'package:socks5_proxy/socks_client.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+/// Jak často posílat WS ping a jak dlouho čekat na pong.
+///
+/// Bez pingu se mrtvé spojení tváří jako živé: mobilní NAT zahodí nečinné TCP
+/// tiše, appka dál hlásí „připojeno" a píše do prázdna — zprávy pak odejdou až
+/// po restartu appky, všechny naráz. `dart:io` při nastaveném intervalu ping
+/// posílá a když pong nedorazí včas, spojení zavře → [RelayClient] se
+/// reconnectne sám. Relay pinguje protisměrně po 30 s (ws.rs PING_INTERVAL).
+const kWsPingInterval = Duration(seconds: 30);
+
 /// Abstrakce nad tím, jak klient otevírá spojení k relayi.
 abstract class RelayTransport {
   /// Sdílený HTTP klient pro REST (registrace, prekey bundle, přílohy…).
@@ -41,7 +50,8 @@ class DirectTransport implements RelayTransport {
   http.Client httpClient() => _client ??= http.Client();
 
   @override
-  WebSocketChannel connectWs(Uri url) => WebSocketChannel.connect(url);
+  WebSocketChannel connectWs(Uri url) =>
+      IOWebSocketChannel.connect(url, pingInterval: kWsPingInterval);
 
   @override
   void close() {
@@ -84,7 +94,7 @@ class TorTransport implements RelayTransport {
   @override
   WebSocketChannel connectWs(Uri url) =>
       IOWebSocketChannel.connect(_withExplicitPort(url),
-          customClient: _sharedHttpClient());
+          customClient: _sharedHttpClient(), pingInterval: kWsPingInterval);
 
   /// `Uri` pro `ws`/`wss` nezná výchozí port → `url.port` vrací 0 a SOCKS
   /// CONNECT by cílil na port 0 (serverError). Doplníme ho podle schématu

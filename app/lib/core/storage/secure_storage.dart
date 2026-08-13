@@ -442,11 +442,15 @@ class SecureStorageService {
     );
   }
 
-  Future<void> addMessage(String contactId, Message message) async {
+  /// Přidá zprávu do konverzace. Vrací false, když už tam zpráva s tímhle id
+  /// je (opakované doručení) — volající pak přeskočí navazující kroky jako
+  /// doručenku nebo stahování přílohy.
+  Future<bool> addMessage(String contactId, Message message) async {
     var conv = await loadConversation(contactId);
     conv ??= Conversation(contactId: contactId);
-    conv.addMessage(message);
+    if (!conv.addMessage(message)) return false;
     await saveConversation(conv);
+    return true;
   }
 
   /// Založí prázdnou konverzaci, pokud ještě není (nová skupina musí být
