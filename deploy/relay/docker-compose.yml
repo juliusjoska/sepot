@@ -22,6 +22,13 @@ services:
       DATABASE_URL: postgres://sepot:${POSTGRES_PASSWORD}@db:5432/sepot_relay
       SEPOT_BIND: 0.0.0.0:8470
       SEPOT_ATTACHMENTS_DIR: /var/lib/sepot/attachments
+      # Sítě reverzní proxy, které smí určovat klientskou IP. Forwarded
+      # hlavičky (X-Forwarded-For/X-Real-Ip) se uznají JEN od IP v této sadě,
+      # jinak platí adresa protistrany — jinak by si anti-abuse klíč mohl
+      # nastavit sám klient. Musí pokrýt síť, ze které proxy na relay doráží.
+      # Síť Toru sem NEPATŘÍ: onion klienti mají sdílet jeden bucket.
+      # Prázdné = fail-safe, vždy adresa protistrany.
+      SEPOT_TRUSTED_PROXIES: ${SEPOT_TRUSTED_PROXIES:-}
       # FCM fast mode (opt-in budíčky přes Google) — SA key ŽIJE JEN NA
       # serveru (fcm-sa.json vedle .env, chmod 600, NIKDY do gitu)
       SEPOT_FCM_CREDENTIALS: /etc/sepot/fcm-sa.json

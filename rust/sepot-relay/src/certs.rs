@@ -19,8 +19,18 @@ pub struct CertAuthority {
 
 impl CertAuthority {
     /// Načte klíče z DB; při prvním startu je vygeneruje a uloží.
-    /// Trust root private v DB je dev pohodlí kostry — v produkci se
-    /// vygeneruje offline a v DB bude jen server keypair + certifikát.
+    ///
+    /// BEZPEČNOST (SECURITY audit #2): trust root private se do DB NEUKLÁDÁ.
+    /// Runtime ho nepotřebuje (podpis SenderCertificate dělá server_private),
+    /// slouží jen k jednorázovému podpisu server certifikátu při bootstrapu
+    /// a hned se zahodí. Kompromitace DB tak neprozradí kotvu důvěry, kterou
+    /// klienti pinnují.
+    ///
+    /// ZBYTKOVÉ RIZIKO: server_private v DB zůstat MUSÍ (runtime podepisování)
+    /// a sám stačí na výrobu platného SenderCertificate → kompromitace DB
+    /// stále dovolí dočasnou impersonaci. Plné řešení = server keypair do
+    /// KMS/HSM, mimo scope kostry. Rotace server klíče vyžaduje offline trust
+    /// root (v dev se regeneruje celá kotva → mění se i pin klientů).
     pub async fn init(pool: &PgPool) -> anyhow::Result<Self> {
         let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = sqlx::query_as(
             "SELECT trust_root_public, server_private, server_certificate FROM relay_keys WHERE id = 1",
@@ -52,20 +62,21 @@ impl CertAuthority {
             .map_err(|e| anyhow::anyhow!("serialized: {e}"))?
             .to_vec();
 
+        // trust_root_private se ZÁMĚRNĚ neukládá (audit #2) — sloupec zůstane
+        // NULL, private klíč kotvy důvěry žije jen po dobu tohoto bootstrapu.
         sqlx::query(
             "INSERT INTO relay_keys
-               (id, trust_root_public, trust_root_private, server_public, server_private, server_certificate)
-             VALUES (1, $1, $2, $3, $4, $5)",
+               (id, trust_root_public, server_public, server_private, server_certificate)
+             VALUES (1, $1, $2, $3, $4)",
         )
         .bind(trust_root.public_key.serialize().to_vec())
-        .bind(trust_root.private_key.serialize())
         .bind(server.public_key.serialize().to_vec())
         .bind(server.private_key.serialize())
         .bind(&server_cert_bytes)
         .execute(pool)
         .await?;
 
-        tracing::info!("vygenerován nový trust root + server certificate");
+        tracing::info!("vygenerován nový trust root + server certificate (root private nezachován)");
         Ok(Self {
             trust_root_public: trust_root.public_key.serialize().to_vec(),
             server_private: server.private_key,

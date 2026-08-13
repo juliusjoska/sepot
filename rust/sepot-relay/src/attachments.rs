@@ -302,6 +302,7 @@ mod db_tests {
         let certs = crate::certs::CertAuthority::init(&pool).await.unwrap();
         let dir = std::env::temp_dir().join(format!("sepot-att-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("tmp")).unwrap();
+        let trusted = std::sync::Arc::new(crate::net::TrustedProxies::from_env());
         AppState::new(
             pool,
             certs,
@@ -309,6 +310,7 @@ mod db_tests {
                 dir,
                 max_bytes: 1024,
             },
+            trusted,
         )
     }
 

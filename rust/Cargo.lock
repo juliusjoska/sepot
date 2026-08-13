@@ -2456,6 +2456,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "hex",
+ "ipnet",
  "jsonwebtoken",
  "libsignal-core",
  "libsignal-protocol",

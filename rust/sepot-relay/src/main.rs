@@ -9,6 +9,7 @@ mod apns;
 mod attachments;
 mod certs;
 mod fcm;
+mod net;
 mod push;
 mod rest;
 mod state;
@@ -24,8 +25,9 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use sqlx::postgres::PgPoolOptions;
 use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::key_extractor::SmartIpKeyExtractor;
 use tower_governor::GovernorLayer;
+
+use crate::net::{TrustedProxies, TrustedProxyIp};
 use tower_http::timeout::TimeoutLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -34,7 +36,7 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Log formát bez IP adres a bez identifikátorů klientů.
+    // Log formát bez IP adres a bez identifikátorů klientů — DoD sprintu.
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -54,23 +56,29 @@ async fn main() -> anyhow::Result<()> {
     let certs = certs::CertAuthority::init(&pool).await?;
     let attachments_cfg = attachments::Config::from_env();
     tokio::fs::create_dir_all(attachments_cfg.dir.join("tmp")).await?;
-    let state = Arc::new(state::AppState::new(pool, certs, attachments_cfg));
+    // Trusted proxy sada je sdílená mezi WS conn-cap (AppState) a všemi
+    // governor limity — jeden zdroj pravdy o tom, komu se věří XFF.
+    let trusted = Arc::new(TrustedProxies::from_env());
+    let state = Arc::new(state::AppState::new(
+        pool,
+        certs,
+        attachments_cfg,
+        trusted.clone(),
+    ));
     attachments::spawn_cleanup(state.clone());
 
-    // ── Rate limiting (základní minimum; plný PoW/Privacy Pass později) ─
+    // ── Rate limiting (minimální sada; plný PoW/Privacy Pass později) ──
     //
-    // Klíč = klientská IP: za traefikem X-Forwarded-For/X-Real-Ip (na
-    // relay dosáhne jen traefik z docker sítě), jinak peer adresa.
+    // Klíč = klientská IP přes TrustedProxyIp: X-Forwarded-For/X-Real-Ip se
+    // uzná JEN od trusted proxy (traefik), jinak peer adresa. Onion klienti
+    // přicházejí z tor kontejneru (mimo trusted sadu) → sdílí jeden bucket
+    // a nemohou si IP nastavit hlavičkou (SECURITY audit #1).
     // In-memory token bucket — nikdy se nezapisuje na disk (privacy).
-    //
-    // Známý limit: Tor onion klienti přicházejí z tor kontejneru bez XFF
-    // → sdílí jeden bucket. Pro v1 (nízký provoz) přijatelné, řeší až
-    // Privacy Pass — limity proto raději volnější.
 
     // registrace: zápis do DB bez auth → nejpřísnější (burst 10, +1/5 min)
     let gov_register = Arc::new(
         GovernorConfigBuilder::default()
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(TrustedProxyIp(trusted.clone()))
             .burst_size(10)
             .period(Duration::from_secs(300))
             .finish()
@@ -79,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
     // čtecí API (bundle žere OTP klíče → drain ochrana): burst 60, +2/s
     let gov_general = Arc::new(
         GovernorConfigBuilder::default()
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(TrustedProxyIp(trusted.clone()))
             .burst_size(60)
             .per_second(2)
             .finish()
@@ -89,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     // přílohy: upload je autentizovaný, ale drahý (disk) → burst 30, +1/s
     let gov_attachments = Arc::new(
         GovernorConfigBuilder::default()
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(TrustedProxyIp(trusted.clone()))
             .burst_size(30)
             .per_second(1)
             .finish()
