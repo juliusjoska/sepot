@@ -144,6 +144,10 @@ class PushService {
     return (await UnifiedPush.getDistributor()) != null ? 'up' : 'off';
   }
 
+  /// Odmítl distributor poslední registraci? Nastavení to ukáže — jinak by
+  /// push vypadal zapnutý, ale budíčky by nechodily.
+  Future<bool> registrationFailed() => PushBootstrap.registrationFailed();
+
   Future<void> setModeOff() async {
     await _teardownFcm(deleteToken: true);
     try {

@@ -1730,6 +1730,24 @@ abstract class AppLocalizations {
   /// **'Nastavení pushů selhalo: {error}'**
   String pushSetupFailed(String error);
 
+  /// Proužek nad seznamem chatů, když push není vůbec zapnutý.
+  ///
+  /// In cs, this message translates to:
+  /// **'Zprávy ti přijdou, až Šepot otevřeš — budíčky nejsou nastavené.'**
+  String get pushHintOff;
+
+  /// Proužek nad seznamem chatů, když distributor registraci odmítl.
+  ///
+  /// In cs, this message translates to:
+  /// **'Budíčky nefungují, zprávy uvidíš až po otevření Šepotu.'**
+  String get pushHintFailed;
+
+  /// Podtitulek dlaždice Push v Nastavení, když distributor odmítl registraci. Bez téhle hlášky uživatel vidí push jako zapnutý, ale zprávy mu chodí až po otevření appky.
+  ///
+  /// In cs, this message translates to:
+  /// **'Budíčky nechodí — distributor registraci odmítl. Zkus push vypnout a znovu zapnout.'**
+  String get pushRegistrationFailed;
+
   /// Titulek AlertDialog, když v systému není nainstalovaný žádný UnifiedPush distributor
   ///
   /// In cs, this message translates to:

@@ -45,6 +45,7 @@ class PushBootstrap {
 
   static const _pendingEndpointKey = 'pending_push_endpoint';
   static const _modeKey = 'push_mode'; // 'off' | 'up' | 'fcm'
+  static const _registrationFailedKey = 'push_registration_failed';
   static const _store = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
@@ -56,6 +57,16 @@ class PushBootstrap {
 
   static Future<void> writeMode(String mode) =>
       _store.write(key: _modeKey, value: mode);
+
+  /// Odmítl distributor registraci? Selhání se dřív jen spolklo, takže
+  /// uživatel měl v Nastavení „push zapnutý", ale budíčky nechodily a
+  /// zprávy čekaly, než appku otevře. Nastavení si to přečte a řekne to.
+  static Future<bool> registrationFailed() async =>
+      await _store.read(key: _registrationFailedKey) == '1';
+
+  static Future<void> _setRegistrationFailed(bool failed) => failed
+      ? _store.write(key: _registrationFailedKey, value: '1')
+      : _store.delete(key: _registrationFailedKey);
 
   static Future<void> init(List<String> args) async {
     backgroundStart = args.contains('--unifiedpush-bg');
@@ -69,7 +80,8 @@ class PushBootstrap {
     } else {
       await UnifiedPush.initialize(
         onNewEndpoint: _onNewEndpoint,
-        onRegistrationFailed: (_, _) {},
+        onRegistrationFailed: (_, _) =>
+            unawaited(_setRegistrationFailed(true)),
         onUnregistered: _onUnregistered,
         onMessage: _onMessage,
       );
@@ -114,6 +126,7 @@ class PushBootstrap {
   }
 
   static void _onNewEndpoint(PushEndpoint endpoint, String instance) {
+    unawaited(_setRegistrationFailed(false)); // registrace se povedla
     final s = _service;
     if (s != null) {
       s.handleNewEndpoint(endpoint.url);

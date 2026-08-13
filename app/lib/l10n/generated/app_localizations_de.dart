@@ -981,6 +981,18 @@ class AppLocalizationsDe extends AppLocalizations {
   }
 
   @override
+  String get pushHintOff =>
+      'Nachrichten kommen erst an, wenn du Šepot öffnest — keine Weckrufe eingerichtet.';
+
+  @override
+  String get pushHintFailed =>
+      'Weckrufe funktionieren nicht; Nachrichten siehst du erst beim Öffnen von Šepot.';
+
+  @override
+  String get pushRegistrationFailed =>
+      'Es kommen keine Weckrufe an — der Distributor hat die Registrierung abgelehnt. Schalte Push aus und wieder ein.';
+
+  @override
   String get pushNoDistributorTitle => 'Kein Distributor';
 
   @override

@@ -970,6 +970,18 @@ class AppLocalizationsIt extends AppLocalizations {
   }
 
   @override
+  String get pushHintOff =>
+      'I messaggi arrivano solo quando apri Šepot — le notifiche non sono configurate.';
+
+  @override
+  String get pushHintFailed =>
+      'Le notifiche non funzionano: vedrai i messaggi solo aprendo Šepot.';
+
+  @override
+  String get pushRegistrationFailed =>
+      'Le notifiche non arrivano — il distributore ha rifiutato la registrazione. Prova a disattivare e riattivare il push.';
+
+  @override
   String get pushNoDistributorTitle => 'Nessun distributore';
 
   @override

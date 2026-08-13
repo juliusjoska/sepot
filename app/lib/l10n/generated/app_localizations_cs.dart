@@ -962,6 +962,18 @@ class AppLocalizationsCs extends AppLocalizations {
   }
 
   @override
+  String get pushHintOff =>
+      'Zprávy ti přijdou, až Šepot otevřeš — budíčky nejsou nastavené.';
+
+  @override
+  String get pushHintFailed =>
+      'Budíčky nefungují, zprávy uvidíš až po otevření Šepotu.';
+
+  @override
+  String get pushRegistrationFailed =>
+      'Budíčky nechodí — distributor registraci odmítl. Zkus push vypnout a znovu zapnout.';
+
+  @override
   String get pushNoDistributorTitle => 'Žádný distributor';
 
   @override

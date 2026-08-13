@@ -977,6 +977,18 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
+  String get pushHintOff =>
+      'Сообщения придут, только когда откроешь Šepot — сигналы не настроены.';
+
+  @override
+  String get pushHintFailed =>
+      'Сигналы не работают: сообщения увидишь только после открытия Šepot.';
+
+  @override
+  String get pushRegistrationFailed =>
+      'Сигналы не приходят — дистрибьютор отклонил регистрацию. Попробуй выключить и снова включить push.';
+
+  @override
   String get pushNoDistributorTitle => 'Нет дистрибьютора';
 
   @override

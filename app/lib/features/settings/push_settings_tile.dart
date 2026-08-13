@@ -20,6 +20,7 @@ class _PushSettingsTileState extends ConsumerState<PushSettingsTile> {
   String _mode = 'off';
   String? _distributor;
   bool _busy = false;
+  bool _registrationFailed = false;
 
   @override
   void initState() {
@@ -31,10 +32,12 @@ class _PushSettingsTileState extends ConsumerState<PushSettingsTile> {
     final push = ref.read(pushServiceProvider);
     final mode = await push.currentMode();
     final d = await push.currentDistributor();
+    final failed = await push.registrationFailed();
     if (mounted) {
       setState(() {
         _mode = mode;
         _distributor = d;
+        _registrationFailed = failed;
       });
     }
   }
@@ -160,12 +163,17 @@ class _PushSettingsTileState extends ConsumerState<PushSettingsTile> {
 
   @override
   Widget build(BuildContext context) {
-    final subtitle = switch (_mode) {
-      'up' => context.l10n.pushSubtitleUnifiedPush(
-          _distributor ?? context.l10n.pushNoDistributorFallback),
-      'fcm' => context.l10n.pushSubtitleFcm,
-      _ => context.l10n.commonOff,
-    };
+    // Selhaná registrace přebíjí popis režimu — „zapnuto" bez budíčků je
+    // horší než vypnuto, protože uživatel čeká zprávy, které nepřijdou.
+    final failed = _registrationFailed && _mode != 'off';
+    final subtitle = failed
+        ? context.l10n.pushRegistrationFailed
+        : switch (_mode) {
+            'up' => context.l10n.pushSubtitleUnifiedPush(
+                _distributor ?? context.l10n.pushNoDistributorFallback),
+            'fcm' => context.l10n.pushSubtitleFcm,
+            _ => context.l10n.commonOff,
+          };
     return ListTile(
       leading: Container(
         width: 40,
@@ -184,7 +192,10 @@ class _PushSettingsTileState extends ConsumerState<PushSettingsTile> {
           style: const TextStyle(fontSize: 15)),
       subtitle: Text(
         subtitle,
-        style: const TextStyle(fontSize: 13, color: SepotColors.textMuted),
+        style: TextStyle(
+          fontSize: 13,
+          color: failed ? SepotColors.ember : SepotColors.textMuted,
+        ),
       ),
       trailing: _busy
           ? const SizedBox(

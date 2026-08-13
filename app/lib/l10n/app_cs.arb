@@ -1295,6 +1295,18 @@
       }
     }
   },
+  "pushHintOff": "Zprávy ti přijdou, až Šepot otevřeš — budíčky nejsou nastavené.",
+  "@pushHintOff": {
+    "description": "Proužek nad seznamem chatů, když push není vůbec zapnutý."
+  },
+  "pushHintFailed": "Budíčky nefungují, zprávy uvidíš až po otevření Šepotu.",
+  "@pushHintFailed": {
+    "description": "Proužek nad seznamem chatů, když distributor registraci odmítl."
+  },
+  "pushRegistrationFailed": "Budíčky nechodí — distributor registraci odmítl. Zkus push vypnout a znovu zapnout.",
+  "@pushRegistrationFailed": {
+    "description": "Podtitulek dlaždice Push v Nastavení, když distributor odmítl registraci. Bez téhle hlášky uživatel vidí push jako zapnutý, ale zprávy mu chodí až po otevření appky."
+  },
   "pushNoDistributorTitle": "Žádný distributor",
   "@pushNoDistributorTitle": {
     "description": "Titulek AlertDialog, když v systému není nainstalovaný žádný UnifiedPush distributor"

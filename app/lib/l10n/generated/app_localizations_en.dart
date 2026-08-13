@@ -960,6 +960,18 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get pushHintOff =>
+      'Messages arrive only when you open Šepot — wake-ups aren’t set up.';
+
+  @override
+  String get pushHintFailed =>
+      'Wake-ups aren’t working; you’ll see messages only after opening Šepot.';
+
+  @override
+  String get pushRegistrationFailed =>
+      'Wake-ups aren’t arriving — the distributor refused registration. Try turning push off and on again.';
+
+  @override
   String get pushNoDistributorTitle => 'No distributor';
 
   @override

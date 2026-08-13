@@ -5,6 +5,7 @@ import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/features/chat_list/chat_list_tile.dart';
+import 'package:sepot/features/chat_list/push_hint_banner.dart';
 import 'package:sepot/models/conversation.dart';
 import 'package:sepot/providers/contacts_provider.dart';
 import 'package:sepot/providers/conversations_provider.dart';
@@ -62,7 +63,13 @@ class ChatListScreen extends ConsumerWidget {
           }
           final hasArchive = archived.isNotEmpty;
 
-          return ListView.builder(
+          return Column(
+            children: [
+              // Bez budíčků appka na pozadí spí — ať uživatel ví, proč
+              // mu zprávy chodí, až když Šepot otevře.
+              const PushHintBanner(),
+              Expanded(
+                child: ListView.builder(
             padding: const EdgeInsets.symmetric(vertical: 8),
             itemCount: active.length + (hasArchive ? 1 : 0),
             itemBuilder: (context, index) {
@@ -95,7 +102,10 @@ class ChatListScreen extends ConsumerWidget {
                 onTap: () => context.push('/conversation/${conv.contactId}'),
                 onLongPress: () => _showChatActions(context, ref, conv, name),
               );
-            },
+                  },
+                ),
+              ),
+            ],
           );
         },
         loading: () => const Center(
