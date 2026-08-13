@@ -123,11 +123,13 @@ impl ApnsSender {
             .body(r#"{"aps":{"content-available":1}}"#)
             .send()
             .await;
+        // warn, ne debug — viz shodný komentář ve fcm.rs: na RUST_LOG=info
+        // bylo selhání pushe neviditelné.
         match resp {
             Ok(r) if !r.status().is_success() => {
-                tracing::debug!(status = %r.status(), "APNs budíček odmítnut");
+                tracing::warn!(status = %r.status(), "APNs budíček odmítnut");
             }
-            Err(e) => tracing::debug!("APNs budíček selhal: {e}"),
+            Err(e) => tracing::warn!("APNs budíček selhal: {e}"),
             _ => {}
         }
     }

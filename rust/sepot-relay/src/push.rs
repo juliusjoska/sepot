@@ -85,13 +85,23 @@ pub async fn send_wake(
 /// Samotný POST budíčku (bez guardu — ten řeší volající). Oddělené kvůli
 /// testovatelnosti proti loopback mocku (guard by loopback jinak odmítl).
 async fn post_wake(client: &Client, url: &str) {
-    let _ = client
+    let resp = client
         .post(url)
         .header("content-type", "application/json")
         .header("ttl", "2419200") // WebPush TTL (28 dní), ntfy ignoruje
         .body(WAKE_BODY)
         .send()
         .await;
+    // Výsledek se dřív zahazoval (`let _ =`), takže nešlo poznat, jestli
+    // budíčky vůbec odcházejí. Logujeme jen stavový kód — endpoint je
+    // identifikátor uživatele a do logu nesmí.
+    match resp {
+        Ok(r) if !r.status().is_success() => {
+            tracing::warn!(status = %r.status(), "UnifiedPush budíček odmítnut");
+        }
+        Err(e) => tracing::warn!("UnifiedPush budíček selhal: {e}"),
+        _ => {}
+    }
 }
 
 /// Povolit jen bezpečné cíle. https vždy; http jen pro .onion (samo šifruje).
@@ -191,7 +201,7 @@ mod tests {
 
     #[test]
     fn verejne_adresy_projdou() {
-        for ip in ["1.1.1.1", "8.8.8.8", "203.0.113.10", "2606:4700:4700::1111"] {
+        for ip in ["1.1.1.1", "8.8.8.8", "9.9.9.9", "2606:4700:4700::1111"] {
             assert!(!is_internal_ip(&ip.parse().unwrap()), "{ip} nemělo být interní");
         }
     }

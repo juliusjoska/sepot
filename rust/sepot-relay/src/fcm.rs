@@ -143,11 +143,15 @@ impl FcmSender {
                 "android": { "priority": "HIGH" }
             }
         });
+        // warn, ne debug: relay běží na RUST_LOG=info, takže na debugu bylo
+        // selhání pushe neviditelné a tiše se hromadila fronta. Protistranou
+        // je Google, ne telefon uživatele — chyba tu znamená mrtvý token nebo
+        // rozbitou konfiguraci projektu, obojí je provozní problém.
         match http.post(&url).bearer_auth(access).json(&body).send().await {
             Ok(resp) if !resp.status().is_success() => {
-                tracing::debug!(status = %resp.status(), "FCM budíček odmítnut");
+                tracing::warn!(status = %resp.status(), "FCM budíček odmítnut");
             }
-            Err(e) => tracing::debug!("FCM budíček selhal: {e}"),
+            Err(e) => tracing::warn!("FCM budíček selhal: {e}"),
             _ => {}
         }
     }

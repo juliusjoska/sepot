@@ -12,6 +12,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -26,38 +27,26 @@ use tokio::time::Instant;
 
 use crate::state::AppState;
 
-/// Max souběžných WS spojení z jedné IP (za traefikem = reálná klientská
-/// IP z X-Real-Ip; tor kontejner sdílí jednu — proto ne moc těsně).
+/// Max souběžných WS spojení z jedné IP. Klientská IP jde přes trusted-proxy
+/// logiku (viz net.rs): za traefikem reálná IP z forwarded hlavičky, onion
+/// klienti sdílí IP tor kontejneru (jeden bucket) — proto ne moc těsně.
 const MAX_CONNS_PER_IP: u32 = 32;
 /// Neautentizované spojení zavřít po tomto čase.
 const AUTH_DEADLINE: Duration = Duration::from_secs(10);
 /// Rate limit rámců od klienta: max FRAME_WINDOW_MAX za FRAME_WINDOW.
 const FRAME_WINDOW: Duration = Duration::from_secs(10);
 const FRAME_WINDOW_MAX: u32 = 200;
-
-/// Klientská IP: hlavičky od trusted proxy (na relay dosáhne jen traefik
-/// z docker sítě), fallback peer adresa (dev/tor).
+/// Jak často server posílá WS Ping autentizovanému klientovi.
 ///
-/// TRUST MODEL — POZOR: X-Real-Ip / X-Forwarded-For se přebírají bezpodmínečně
-/// a řídí per-IP limity (cap spojení, rate limit). To je bezpečné VÝHRADNĚ
-/// proto, že před relayem stojí důvěryhodná reverzní proxy (traefik), která
-/// tyhle hlavičky vždy přepisuje reálnou klientskou IP. Klientem poslané
-/// hodnoty tak nikdy neprojdou. Kdyby byl relay vystaven přímo do internetu
-/// (bez proxy, která hlavičky sanitizuje), útočník by je mohl libovolně
-/// podvrhnout, tím rozprostřít provoz přes falešné IP a všechny per-IP limity
-/// obejít. Relay proto NIKDY nenasazovat bez takové proxy.
-fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> IpAddr {
-    let from_header = |name: &str| {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .and_then(|v| v.trim().parse::<IpAddr>().ok())
-    };
-    from_header("x-real-ip")
-        .or_else(|| from_header("x-forwarded-for"))
-        .unwrap_or_else(|| peer.ip())
-}
+/// Mobilní NAT zahazuje nečinné TCP tiše — bez keepalive se ani jedna strana
+/// nedozví, že spojení je mrtvé: klient hlásí „připojeno" a píše do prázdna,
+/// relay drží záznam v `online` a proto ani nepošle push budíček. Ping je
+/// PROTOKOLOVÝ (ne `v1::Ping`), protože na ten dart:io odpovídá Pongem sám —
+/// funguje tedy i s klienty, které jsou už venku a aplikační Ping neznají.
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// Bez jediného rámce od klienta (stačí Pong) je spojení mrtvé. Tři zmeškané
+/// pingy — velkoryse, ať krátký výpadek mobilní sítě spojení nezabije.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(95);
 
 /// Drop-guard: úbytek čítače spojení i při panice/cancelu handleru.
 struct ConnGuard {
@@ -80,7 +69,7 @@ pub async fn ws_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    let ip = client_ip(&headers, peer);
+    let ip = state.trusted_proxies.client_ip(peer.ip(), &headers);
 
     let over_cap = {
         let mut entry = state.ws_conns.entry(ip).or_insert(0);
@@ -134,11 +123,28 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<v1::ServerFrame>(64);
 
+    // Writer drží sink sám, takže si i pinguje — jinak by control rámce
+    // musely téct přes `tx`, který nese jen aplikační ServerFrame.
     let writer = tokio::spawn(async move {
-        while let Some(frame) = rx.recv().await {
-            let bytes = frame.encode_to_vec();
-            if sink.send(WsMessage::Binary(bytes.into())).await.is_err() {
-                break;
+        let mut ping = tokio::time::interval(PING_INTERVAL);
+        // Zpožděné ticky se nedohánějí — po pauze chceme jeden ping, ne dávku.
+        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ping.tick().await; // první tick padne hned, ten nechceme
+
+        loop {
+            tokio::select! {
+                frame = rx.recv() => {
+                    let Some(frame) = frame else { break };
+                    let bytes = frame.encode_to_vec();
+                    if sink.send(WsMessage::Binary(bytes.into())).await.is_err() {
+                        break;
+                    }
+                }
+                _ = ping.tick() => {
+                    if sink.send(WsMessage::Ping(Bytes::new())).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
@@ -147,6 +153,9 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
     let mut authed_address: Option<Vec<u8>> = None;
     // device_uuid ověřeného zařízení — klíč pro push registraci.
     let mut authed_device: Option<Vec<u8>> = None;
+    // Záznam v `online` mapě — značkuje se každým rámcem od klienta, aby
+    // routing poznal živé spojení od zatuchlého.
+    let mut online_device: Option<Arc<crate::state::OnlineDevice>> = None;
 
     // Anti-abuse okno: počítá VŠECHNY rámce od klienta (envelope/ack/pong)
     let mut window_start = Instant::now();
@@ -163,9 +172,28 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                 }
             }
         } else {
-            stream.next().await
+            // Po AUTH hlídá spojení idle timeout: klient, který dýchá, pošle
+            // aspoň Pong na náš ping. Ticho = mrtvé spojení → zavřít, ať
+            // záznam zmizí z `online` a další zpráva jde přes push budíček.
+            // Bez tohohle tam zombie visel, dokud traefiku nedošel readTimeout
+            // (30 min), a push se celou tu dobu vůbec nezkusil.
+            match tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    // info, ne debug: relay běží na RUST_LOG=info a kolik
+                    // spojení umírá na ticho je provozní signál (kvalita sítě
+                    // klientů), ne ladicí detail. Bez identifikátoru zařízení.
+                    tracing::info!("ws zavřeno: klient neodpovídá na ping");
+                    break;
+                }
+            }
         };
         let Some(Ok(msg)) = next else { break };
+
+        // Cokoliv od klienta (i Pong na náš ping) = spojení dýchá.
+        if let Some(dev) = &online_device {
+            dev.touch(state.now_ms());
+        }
 
         let now = Instant::now();
         if now.duration_since(window_start) > FRAME_WINDOW {
@@ -242,9 +270,14 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                     break;
                 }
 
+                let device = Arc::new(crate::state::OnlineDevice::new(
+                    tx.clone(),
+                    state.now_ms(),
+                ));
                 state
                     .online
-                    .insert(pd.delivery_address.clone(), tx.clone());
+                    .insert(pd.delivery_address.clone(), device.clone());
+                online_device = Some(device);
                 authed_address = Some(pd.delivery_address.clone());
 
                 // Potvrzení AUTH — klient až teď smí hlásit „připojeno"
@@ -254,7 +287,7 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                     )))
                     .await;
 
-                // last_seen jen v hrubé granularitě (privacy — zaokrouhleno na hodinu).
+                // last_seen jen v hrubé granularitě (privacy, §1.2).
                 let _ = sqlx::query(
                     "UPDATE devices SET last_seen_at = date_trunc('hour', now())
                      WHERE device_uuid = $1",

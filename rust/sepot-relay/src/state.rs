@@ -1,4 +1,6 @@
-use chrono::{Duration, Utc};
+use std::sync::Arc;
+
+use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use prost::Message;
 use sepot_proto::v1;
@@ -7,18 +9,80 @@ use sqlx::PgPool;
 use tokio::sync::mpsc;
 
 use crate::certs::CertAuthority;
+use crate::net::TrustedProxies;
 
 /// TTL offline fronty.
 pub const QUEUE_TTL_DAYS: i64 = 30;
 
+/// Strop celkové velikosti fronty na příjemce (SECURITY audit #3). Bez něj
+/// autentizovaný útočník nasype neomezeně obálek (256 KiB × N) a při flushi
+/// z toho vznikne OOM, na disku neomezený růst. Přetečení = FIFO zahození
+/// nejstarších. 50 MiB ≈ 200 max obálek na příjemce.
+const MAX_QUEUE_BYTES_PER_RECIPIENT: i64 = 50 * 1024 * 1024;
+
+/// Velikost dávky při vylévání fronty (SECURITY audit #3). Strop paměti =
+/// FLUSH_BATCH × MAX_ENVELOPE_PAYLOAD (~16 MiB), ne celá fronta najednou.
+const FLUSH_BATCH: i64 = 64;
+
+/// Po kolika marných pokusech o doručení obálku zahodit.
+///
+/// Ztracený ACK je jednosměrka: klient obálku dešifruje (ratchet postoupí),
+/// uloží a pošle ACK — když ten cestou zmizí (mrtvé spojení), relay obálku
+/// drží dál, jenže druhý pokus o dešifrování už libsignal odmítne. Klient ji
+/// tedy neACKuje a fronta se otravuje: tatáž obálka se posílá při každém
+/// připojení až do TTL 30 dní a příjemce ji nikdy nedostane. Strop tomu dá
+/// konec. Osm pokusů je velkoryse nad běžné „appka spadla před ACK".
+const MAX_DELIVERY_ATTEMPTS: i16 = 8;
+
+/// Jak dlouho po posledním rámci od klienta se spojení ještě považuje za
+/// prokazatelně živé. Klient odpovídá na ping à 30 s (ws::PING_INTERVAL),
+/// takže dva zmeškané cykly znamenají, že už nedýchá.
+const FRESH_CONNECTION_MS: u64 = 70_000;
+
+/// Připojené zařízení: kanál na jeho WS + kdy od něj naposled něco přišlo.
+///
+/// Samotný `tx` o životnosti spojení nic neříká — je to mpsc s bufferem, do
+/// kterého zápis projde i u dávno mrtvého socketu. Právě proto se dřív vracelo
+/// falešné DELIVERED_ONLINE a push budíček se vůbec nezkusil.
+pub struct OnlineDevice {
+    pub tx: mpsc::Sender<v1::ServerFrame>,
+    /// ms od startu procesu; monotónní, aby s ním neházel NTP.
+    last_frame_ms: std::sync::atomic::AtomicU64,
+}
+
+impl OnlineDevice {
+    pub fn new(tx: mpsc::Sender<v1::ServerFrame>, now_ms: u64) -> Self {
+        Self {
+            tx,
+            last_frame_ms: std::sync::atomic::AtomicU64::new(now_ms),
+        }
+    }
+
+    /// Přišel rámec od klienta (Pong/ACK/Envelope) — spojení dýchá.
+    pub fn touch(&self, now_ms: u64) {
+        self.last_frame_ms
+            .store(now_ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn is_fresh(&self, now_ms: u64) -> bool {
+        let last = self.last_frame_ms.load(std::sync::atomic::Ordering::Relaxed);
+        now_ms.saturating_sub(last) <= FRESH_CONNECTION_MS
+    }
+}
+
 pub struct AppState {
     pub pool: PgPool,
-    /// delivery_address → kanál na živé WS spojení zařízení.
-    pub online: DashMap<Vec<u8>, mpsc::Sender<v1::ServerFrame>>,
+    /// Kdy proces nastartoval — základ monotónních značek v [`OnlineDevice`].
+    pub started: std::time::Instant,
+    /// delivery_address → živé WS spojení zařízení.
+    pub online: DashMap<Vec<u8>, Arc<OnlineDevice>>,
     /// klientská IP → počet souběžných WS spojení (anti-flood cap).
     /// Jen v paměti, nikam se neloguje ani neukládá.
     pub ws_conns: DashMap<std::net::IpAddr, u32>,
     pub certs: CertAuthority,
+    /// Trusted proxy sada pro určení klientské IP (WS conn-cap). Sdílená
+    /// s governor limity — komu se věří forwarded hlavička.
+    pub trusted_proxies: Arc<TrustedProxies>,
     /// HTTP klient na push budíčky (bez redirectů, krátký timeout).
     pub http: reqwest::Client,
     /// Úložiště šifrovaných příloh (adresář + strop velikosti).
@@ -30,12 +94,19 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(pool: PgPool, certs: CertAuthority, attachments: crate::attachments::Config) -> Self {
+    pub fn new(
+        pool: PgPool,
+        certs: CertAuthority,
+        attachments: crate::attachments::Config,
+        trusted_proxies: Arc<TrustedProxies>,
+    ) -> Self {
         Self {
             pool,
+            started: std::time::Instant::now(),
             online: DashMap::new(),
             ws_conns: DashMap::new(),
             certs,
+            trusted_proxies,
             http: crate::push::build_client(),
             attachments,
             fcm: crate::fcm::FcmSender::from_env(),
@@ -71,18 +142,55 @@ impl AppState {
         .bind(expires)
         .execute(&self.pool)
         .await?;
+        // FIFO strop na příjemce (audit #3). Nově vložená má nejmladší
+        // enqueued_at → sama se nikdy nezahodí, padne jen starý přebytek.
+        self.trim_queue(&dst, MAX_QUEUE_BYTES_PER_RECIPIENT).await?;
 
-        if let Some(tx) = self.online.get(&dst) {
+        if let Some(dev) = self.online.get(&dst).map(|d| d.clone()) {
             let deliver = v1::ServerFrame {
                 frame: Some(v1::server_frame::Frame::Deliver(env)),
             };
-            if tx.send(deliver).await.is_ok() {
+            let fresh = dev.is_fresh(self.now_ms());
+            let queued = dev.tx.send(deliver).await.is_ok();
+            // ONLINE hlásíme jen u spojení, které prokazatelně dýchá. Do
+            // zatuchlého se sice pošle taky (kdyby to byl jen tichý klient),
+            // ale propadne se i na push — jinak by mrtvé spojení budíček
+            // spolklo a příjemce se o zprávě nedozvěděl.
+            if fresh && queued {
                 return Ok(v1::receipt::Status::DeliveredOnline);
             }
         }
-        // Offline (nebo online kanál selhal) → zkusit push budíček.
+        // Offline, zatuchlé nebo selhalý kanál → zkusit push budíček.
         self.wake(&dst).await;
         Ok(v1::receipt::Status::StoredOffline)
+    }
+
+    /// FIFO strop fronty příjemce: nech nejnovější obálky do `cap_bytes`
+    /// (běžný součet od nejnovější), starší přebytek zahoď. Vrací počet
+    /// zahozených. Oddělené kvůli přímému testu bez vkládání 50 MiB.
+    async fn trim_queue(&self, dst: &[u8], cap_bytes: i64) -> anyhow::Result<u64> {
+        let res = sqlx::query(
+            "DELETE FROM message_queue
+             WHERE dst_address = $1 AND msg_uuid IN (
+                 SELECT msg_uuid FROM (
+                     SELECT msg_uuid,
+                            sum(octet_length(envelope)) OVER (
+                                ORDER BY enqueued_at DESC, msg_uuid DESC
+                                ROWS UNBOUNDED PRECEDING) AS running
+                     FROM message_queue WHERE dst_address = $1
+                 ) s WHERE running > $2
+             )",
+        )
+        .bind(dst)
+        .bind(cap_bytes)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Monotónní značka pro [`OnlineDevice`] — ms od startu procesu.
+    pub fn now_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
     }
 
     /// Budíček pro offline příjemce: dohledá jeho push token a pošle prázdný
@@ -172,32 +280,118 @@ impl AppState {
         Ok(())
     }
 
-    /// Po AUTH: vyleje nedoručenou frontu zařízení (DELIVER stream).
+    /// Po AUTH: vyleje nedoručenou frontu zařízení (DELIVER stream). Čte po
+    /// dávkách keyset kurzorem přes (enqueued_at, msg_uuid) — paměť je
+    /// omezená na FLUSH_BATCH obálek, ne celá fronta najednou (audit #3).
+    /// Index idx_queue_dst(dst_address, enqueued_at) kurzor pokrývá.
     pub async fn flush_queue(
         &self,
         delivery_address: &[u8],
         tx: &mpsc::Sender<v1::ServerFrame>,
     ) -> anyhow::Result<usize> {
-        let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
-            "SELECT envelope FROM message_queue
-             WHERE dst_address = $1 AND expires_at > now()
-             ORDER BY enqueued_at",
+        // Obálky, které strop pokusů vyčerpaly, jsou neprůchodné (skoro vždy
+        // ztracený ACK po úspěšném dešifrování) — zahodit dřív, než se znovu
+        // pošlou. Maže se až tady, ne hned po inkrementu: poslední pokus
+        // dostane šanci doběhnout do ACK.
+        let dropped = sqlx::query(
+            "DELETE FROM message_queue WHERE dst_address = $1 AND attempt_count >= $2",
         )
         .bind(delivery_address)
-        .fetch_all(&self.pool)
-        .await?;
+        .bind(MAX_DELIVERY_ATTEMPTS)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if dropped > 0 {
+            // Bez identifikátoru příjemce — jen že se fronta čistila.
+            tracing::info!(dropped, "nedoručitelné obálky zahozeny (strop pokusů)");
+        }
 
-        let count = rows.len();
-        for (encoded,) in rows {
-            let env = v1::Envelope::decode(encoded.as_slice())?;
-            let frame = v1::ServerFrame {
-                frame: Some(v1::server_frame::Frame::Deliver(env)),
+        let mut total = 0usize;
+        // (enqueued_at, msg_uuid) poslední odeslané obálky = kurzor další dávky.
+        let mut cursor: Option<(DateTime<Utc>, Vec<u8>)> = None;
+        loop {
+            let rows: Vec<(Vec<u8>, DateTime<Utc>, Vec<u8>)> = match &cursor {
+                None => {
+                    sqlx::query_as(
+                        "SELECT envelope, enqueued_at, msg_uuid FROM message_queue
+                         WHERE dst_address = $1 AND expires_at > now()
+                           AND attempt_count < $2
+                         ORDER BY enqueued_at, msg_uuid
+                         LIMIT $3",
+                    )
+                    .bind(delivery_address)
+                    .bind(MAX_DELIVERY_ATTEMPTS)
+                    .bind(FLUSH_BATCH)
+                    .fetch_all(&self.pool)
+                    .await?
+                }
+                Some((ts, uuid)) => {
+                    sqlx::query_as(
+                        "SELECT envelope, enqueued_at, msg_uuid FROM message_queue
+                         WHERE dst_address = $1 AND expires_at > now()
+                           AND attempt_count < $2
+                           AND (enqueued_at, msg_uuid) > ($3, $4)
+                         ORDER BY enqueued_at, msg_uuid
+                         LIMIT $5",
+                    )
+                    .bind(delivery_address)
+                    .bind(MAX_DELIVERY_ATTEMPTS)
+                    .bind(ts)
+                    .bind(uuid)
+                    .bind(FLUSH_BATCH)
+                    .fetch_all(&self.pool)
+                    .await?
+                }
             };
-            if tx.send(frame).await.is_err() {
+            let batch_len = rows.len();
+            if batch_len == 0 {
                 break;
             }
+            let last = rows
+                .last()
+                .map(|(_, ts, uuid)| (*ts, uuid.clone()))
+                .expect("dávka není prázdná");
+            let mut sent_uuids: Vec<Vec<u8>> = Vec::with_capacity(batch_len);
+            for (encoded, _, uuid) in &rows {
+                let env = v1::Envelope::decode(encoded.as_slice())?;
+                let frame = v1::ServerFrame {
+                    frame: Some(v1::server_frame::Frame::Deliver(env)),
+                };
+                if tx.send(frame).await.is_err() {
+                    // Příjemce odpadl uprostřed dávky — započítat jen to, co
+                    // reálně odešlo, ať pokus „zdarma" nekrátí strop.
+                    self.bump_attempts(&sent_uuids).await;
+                    return Ok(total);
+                }
+                sent_uuids.push(uuid.clone());
+                total += 1;
+            }
+            self.bump_attempts(&sent_uuids).await;
+            if (batch_len as i64) < FLUSH_BATCH {
+                break; // poslední (neúplná) dávka
+            }
+            cursor = Some(last);
         }
-        Ok(count)
+        Ok(total)
+    }
+
+    /// Započítá pokus o doručení odeslaným obálkám. Selhání se jen zaloguje —
+    /// obálky už jsou na drátě a shodit kvůli tomu flush by bylo horší než
+    /// nepřesné počítadlo.
+    async fn bump_attempts(&self, msg_uuids: &[Vec<u8>]) {
+        if msg_uuids.is_empty() {
+            return;
+        }
+        if let Err(e) = sqlx::query(
+            "UPDATE message_queue SET attempt_count = attempt_count + 1
+             WHERE msg_uuid = ANY($1)",
+        )
+        .bind(msg_uuids)
+        .execute(&self.pool)
+        .await
+        {
+            tracing::warn!("attempt_count se nepodařilo zvýšit: {e}");
+        }
     }
 
     /// ACK příjemce → hard-delete z fronty (žádná retence po doručení).
@@ -228,7 +422,8 @@ mod db_tests {
             .await
             .expect("dev DB");
         let certs = crate::certs::CertAuthority::init(&pool).await.unwrap();
-        AppState::new(pool, certs, crate::attachments::Config::from_env())
+        let trusted = Arc::new(crate::net::TrustedProxies::from_env());
+        AppState::new(pool, certs, crate::attachments::Config::from_env(), trusted)
     }
 
     fn rand_bytes(n: usize) -> Vec<u8> {
@@ -412,5 +607,245 @@ mod db_tests {
 
         // idempotence: druhé smazání neexistujícího účtu nesmí spadnout
         state.delete_identity(&account_id).await.unwrap();
+    }
+
+    /// Audit #3: flush přes hranici dávky (150 > FLUSH_BATCH) nesmí keyset
+    /// kurzorem žádnou obálku ztratit ani zdvojit.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn flush_queue_davkuje_pres_hranici_bez_ztraty() {
+        let state = test_state().await;
+        let dst = rand_bytes(32);
+        let n = 150usize;
+        let mut expected = std::collections::HashSet::new();
+        for i in 0..n {
+            let msg_uuid = rand_bytes(16);
+            expected.insert(msg_uuid.clone());
+            let env = v1::Envelope {
+                dst_address: dst.clone(),
+                msg_uuid: msg_uuid.clone(),
+                content_hint: 0,
+                payload: vec![0x11; 32],
+            };
+            sqlx::query(
+                "INSERT INTO message_queue (msg_uuid, dst_address, envelope, enqueued_at, expires_at)
+                 VALUES ($1, $2, $3, now() + (interval '1 millisecond' * $4), now() + interval '30 days')",
+            )
+            .bind(&msg_uuid)
+            .bind(&dst)
+            .bind(env.encode_to_vec())
+            .bind(i as i32)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        }
+
+        let (tx, mut rx) = mpsc::channel::<v1::ServerFrame>(256);
+        let count = state.flush_queue(&dst, &tx).await.unwrap();
+        drop(tx);
+        assert_eq!(count, n);
+
+        let mut got = std::collections::HashSet::new();
+        while let Some(frame) = rx.recv().await {
+            if let Some(v1::server_frame::Frame::Deliver(env)) = frame.frame {
+                assert!(got.insert(env.msg_uuid), "obálka doručena dvakrát");
+            }
+        }
+        assert_eq!(got, expected, "sada doručených ≠ sada zařazených");
+
+        sqlx::query("DELETE FROM message_queue WHERE dst_address = $1")
+            .bind(&dst)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+    }
+
+    /// Zapsat do mpsc bufferu jde i u dávno mrtvého spojení — DELIVERED_ONLINE
+    /// se proto smí hlásit jen u zařízení, od kterého nedávno něco přišlo.
+    /// Zatuchlé musí spadnout na offline větev, jinak spolkne push budíček.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn route_envelope_zatuchle_spojeni_neni_online() {
+        let mut state = test_state().await;
+        // Posunout start procesu do minulosti, ať jde značka „naposled se
+        // ozval na začátku" vyjádřit bez čekání reálných 70 s.
+        state.started = std::time::Instant::now()
+            - std::time::Duration::from_millis(FRESH_CONNECTION_MS + 10_000);
+        let (_account_id, _device_uuid, delivery_address) = seed_device(&state).await;
+
+        // Kanál nikdo nečte, ale buffer zápis spolkne — přesně situace
+        // mrtvého klienta, kterou dřív relay hlásil jako doručeno.
+        let (tx, _rx) = mpsc::channel::<v1::ServerFrame>(64);
+        let device = Arc::new(OnlineDevice::new(tx, 0));
+        state
+            .online
+            .insert(delivery_address.clone(), device.clone());
+
+        let env = v1::Envelope {
+            dst_address: delivery_address.clone(),
+            msg_uuid: rand_bytes(16),
+            content_hint: 0,
+            payload: vec![0xCD; 64],
+        };
+        assert_eq!(
+            state.route_envelope(env).await.unwrap(),
+            v1::receipt::Status::StoredOffline,
+            "zatuchlé spojení se nesmí hlásit jako doručené online"
+        );
+
+        // A naopak: čerstvě označené zařízení online být má.
+        device.touch(state.now_ms());
+        let env2 = v1::Envelope {
+            dst_address: delivery_address.clone(),
+            msg_uuid: rand_bytes(16),
+            content_hint: 0,
+            payload: vec![0xCE; 64],
+        };
+        assert_eq!(
+            state.route_envelope(env2).await.unwrap(),
+            v1::receipt::Status::DeliveredOnline,
+            "živé spojení má být online"
+        );
+
+        state.online.remove(&delivery_address);
+        sqlx::query("DELETE FROM message_queue WHERE dst_address = $1")
+            .bind(&delivery_address)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+    }
+
+    /// Flush počítá pokusy — bez toho by strop nikdy nezabral.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn flush_queue_pocita_pokusy() {
+        let state = test_state().await;
+        let dst = rand_bytes(32);
+        let msg_uuid = rand_bytes(16);
+        let env = v1::Envelope {
+            dst_address: dst.clone(),
+            msg_uuid: msg_uuid.clone(),
+            content_hint: 0,
+            payload: vec![0x22; 32],
+        };
+        sqlx::query(
+            "INSERT INTO message_queue (msg_uuid, dst_address, envelope, expires_at)
+             VALUES ($1, $2, $3, now() + interval '30 days')",
+        )
+        .bind(&msg_uuid)
+        .bind(&dst)
+        .bind(env.encode_to_vec())
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        // Dva flushe bez ACK = dva započtené pokusy.
+        for _ in 0..2 {
+            let (tx, rx) = mpsc::channel::<v1::ServerFrame>(16);
+            assert_eq!(state.flush_queue(&dst, &tx).await.unwrap(), 1);
+            drop(rx);
+        }
+
+        let attempts: (i16,) =
+            sqlx::query_as("SELECT attempt_count FROM message_queue WHERE msg_uuid = $1")
+                .bind(&msg_uuid)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(attempts.0, 2, "každý flush musí započítat pokus");
+
+        sqlx::query("DELETE FROM message_queue WHERE dst_address = $1")
+            .bind(&dst)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+    }
+
+    /// Obálka, kterou příjemce nikdy neACKne (ztracený ACK → ratchet už
+    /// postoupil), musí po stropu zmizet, ne otravovat frontu 30 dní.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn flush_queue_zahodi_nepruchodnou_obalku() {
+        let state = test_state().await;
+        let dst = rand_bytes(32);
+        let msg_uuid = rand_bytes(16);
+        let env = v1::Envelope {
+            dst_address: dst.clone(),
+            msg_uuid: msg_uuid.clone(),
+            content_hint: 0,
+            payload: vec![0x33; 32],
+        };
+        // Rovnou na stropu = obálka, která se marně posílala MAX_DELIVERY_ATTEMPTS×.
+        sqlx::query(
+            "INSERT INTO message_queue (msg_uuid, dst_address, envelope, expires_at, attempt_count)
+             VALUES ($1, $2, $3, now() + interval '30 days', $4)",
+        )
+        .bind(&msg_uuid)
+        .bind(&dst)
+        .bind(env.encode_to_vec())
+        .bind(MAX_DELIVERY_ATTEMPTS)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let (tx, rx) = mpsc::channel::<v1::ServerFrame>(16);
+        assert_eq!(
+            state.flush_queue(&dst, &tx).await.unwrap(),
+            0,
+            "vyčerpaná obálka se nesmí znovu poslat"
+        );
+        drop(rx);
+
+        let zbylo: (i64,) =
+            sqlx::query_as("SELECT count(*) FROM message_queue WHERE dst_address = $1")
+                .bind(&dst)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(zbylo.0, 0, "vyčerpaná obálka měla být zahozena");
+    }
+
+    /// Audit #3: FIFO strop zahodí nejstarší přes limit, nejnovější nechá.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn trim_queue_fifo_zahodi_nejstarsi() {
+        let state = test_state().await;
+        let dst = rand_bytes(32);
+        // 5 obálek po 100 B, rostoucí enqueued_at. Strop 250 B → nejnovější
+        // dvě (2×100 ≤ 250) zůstanou, tři nejstarší padnou.
+        let mut uuids = Vec::new();
+        for i in 0..5 {
+            let msg_uuid = rand_bytes(16);
+            uuids.push(msg_uuid.clone());
+            sqlx::query(
+                "INSERT INTO message_queue (msg_uuid, dst_address, envelope, enqueued_at, expires_at)
+                 VALUES ($1, $2, $3, now() + (interval '1 second' * $4), now() + interval '30 days')",
+            )
+            .bind(&msg_uuid)
+            .bind(&dst)
+            .bind(vec![0u8; 100])
+            .bind(i as i32)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        }
+
+        let dropped = state.trim_queue(&dst, 250).await.unwrap();
+        assert_eq!(dropped, 3);
+
+        let remaining: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT msg_uuid FROM message_queue WHERE dst_address = $1 ORDER BY enqueued_at",
+        )
+        .bind(&dst)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, vec![uuids[3].clone(), uuids[4].clone()]);
+
+        sqlx::query("DELETE FROM message_queue WHERE dst_address = $1")
+            .bind(&dst)
+            .execute(&state.pool)
+            .await
+            .unwrap();
     }
 }
