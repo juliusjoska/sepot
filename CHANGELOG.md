@@ -4,6 +4,29 @@ Všechny podstatné změny v aplikaci Šepot. Formát dle
 [Keep a Changelog](https://keepachangelog.com/cs/1.1.0/),
 verzování dle [ajtak standardu](#verzování).
 
+## [1.1.2] – 2026-08-13
+
+### Opraveno
+- **Zprávy už nečekají na otevření aplikace.** Když mobilní síť tiše
+  zahodila nečinné spojení, Šepot o tom nevěděl: tvářil se připojeně, ale
+  odeslaná zpráva skončila chybou a příchozí nedorazily — a všechny se pak
+  vysypaly naráz po restartu aplikace. Spojení se teď hlídá pravidelným
+  pingem na obou stranách, takže výpadek se pozná a obnoví v řádu sekund.
+- **Neodeslaná zpráva se pošle sama.** Dosud zůstala označená jako
+  neodeslaná (u příloh dokonce natrvalo na „odesílá se") a poslat znovu ji
+  musel člověk ručně. Nově se po obnovení spojení odešle sama; opakované
+  doručení téže zprávy druhá strana pozná a nezobrazí ji dvakrát.
+- **Zprávy, které nešly doručit, se přestaly hromadit.** Když se cestou
+  ztratilo potvrzení o doručení, obálka na serveru zůstala a znovu a znovu
+  se posílala, aniž by ji šlo přečíst. Server teď takové zprávy po několika
+  marných pokusech zahodí, místo aby jimi zdržoval doručování ostatních.
+
+### Přidáno
+- **Upozornění, když nechodí notifikace.** Bez nich Android aplikaci na
+  pozadí uspí a zprávy uvidíš, až ji otevřeš. Šepot to teď řekne rovnou v
+  seznamu chatů a nabídne nastavení; hlášku jde odmítnout. Selhání
+  registrace u distributora se už nezamlčí.
+
 ## [1.1.1] – 2026-07-18
 
 ### Opraveno
