@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:sepot/core/app_info.dart';
 import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
@@ -181,7 +182,7 @@ class SettingsScreen extends ConsumerWidget {
             _buildTile(
               icon: Icons.info_outline,
               title: l10n.commonAppName,
-              subtitle: l10n.settingsVersion(AppConstants.appVersion),
+              subtitle: l10n.settingsVersion(AppInfo.version),
               onTap: () => _showAbout(context),
             ),
             // Zdrojový kód je veřejný (AGPL-3.0). Detaily o licenci a odkaz
@@ -614,7 +615,7 @@ class SettingsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              ctx.l10n.settingsVersion(AppConstants.appVersion),
+              ctx.l10n.settingsVersion(AppInfo.version),
               style: const TextStyle(color: SepotColors.textSecondary),
             ),
             const SizedBox(height: 16),

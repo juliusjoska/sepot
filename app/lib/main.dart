@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:sepot/app.dart';
+import 'package:sepot/core/app_info.dart';
 import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/crypto/sepot_crypto.dart';
 import 'package:sepot/core/l10n/l10n.dart';
@@ -55,6 +56,14 @@ void main(List<String> args) {
       FlutterError.presentError(details);
       debugPrint('FlutterError: ${details.exceptionAsString()}');
     };
+
+    // Verze appky z balíčku — nekritické, bez ní se jen v nastavení a
+    // v hlášení zneužití místo čísla ukáže AppInfo.unknownVersion.
+    try {
+      await AppInfo.init();
+    } catch (e, s) {
+      debugPrint('AppInfo.init selhalo (nekritické): $e\n$s');
+    }
 
     // Formáty dat všech podporovaných jazyků — nekritické, appka poběží i bez nich
     for (final lang in const ['cs', 'en', 'de', 'ru', 'it']) {

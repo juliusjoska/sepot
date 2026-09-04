@@ -3,8 +3,6 @@ class AppConstants {
   AppConstants._();
 
   static const String appName = 'Šepot';
-  /// Musí sedět s `version:` v pubspec.yaml (bez build čísla).
-  static const String appVersion = '1.1.0';
   static const String appAuthor = 'ajtak.it';
 
   // Relay server (REST + WS na jednom portu). Přepsatelné při buildu:

@@ -21,6 +21,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:sepot/core/app_info.dart';
 import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/errors.dart';
 
@@ -67,12 +68,16 @@ class ReportService {
       throw const ReportEmptyDescriptionError();
     }
 
+    // S build číslem, ne jen „1.1.2" — jinak nejde poznat, ze kterého buildu
+    // hlášení přišlo. Neznámou verzi radši vynechat než poslat vymyšlenou.
+    final verze = AppInfo.versionWithBuild;
+
     final body = <String, dynamic>{
       'kategorie': category.wire,
       'popis': popis,
       'zdroj': 'app',
       'platforma': Platform.operatingSystem,
-      'verze': AppConstants.appVersion,
+      'verze': ?verze,
       if (reportedFingerprint != null && reportedFingerprint.isNotEmpty)
         'nahlasenyOtisk': reportedFingerprint,
       if (replyTo != null && replyTo.trim().isNotEmpty)
