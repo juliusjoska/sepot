@@ -18,13 +18,22 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::Serialize;
 use tokio::sync::Mutex;
 
 const PROD_HOST: &str = "https://api.push.apple.com";
 const SANDBOX_HOST: &str = "https://api.sandbox.push.apple.com";
+
+/// Do kdy má APNs budíček držet, když telefon zrovna není v síti (tunel,
+/// letadlo). S `apns-expiration: 0` ho APNs zkusí jen jednou a zahodí —
+/// telefon po návratu do sítě pak o zprávě neví, dokud appku někdo neotevře.
+/// Déle než obálka ve frontě relaye nemá budíček smysl; APNs sám drží
+/// nejvýš 30 dní.
+fn wake_expiration(now: DateTime<Utc>) -> i64 {
+    (now + chrono::Duration::days(crate::state::QUEUE_TTL_DAYS)).timestamp()
+}
 
 #[derive(Serialize)]
 struct Claims<'a> {
@@ -108,6 +117,12 @@ impl ApnsSender {
     /// (nikdy token). `apns-push-type: background` + `content-available:1`
     /// = probuzení bez viditelné notifikace (tu si klient případně ukáže
     /// lokálně sám, bez obsahu).
+    ///
+    /// Priorita musí zůstat 5: u typu `background` APNs prioritu 10 odmítá
+    /// jako chybu a iOS takové budíčky doručuje podle stavu baterie. Okamžité
+    /// doručení umí jen viditelná notifikace (`alert` + `mutable-content`),
+    /// kterou appka v Notification Service Extension nahradí — to je změna
+    /// appky, ne jen relaye.
     pub async fn send_wake(&self, client: &reqwest::Client, device_token: &str) {
         let Some(jwt) = self.auth_token().await else {
             return;
@@ -119,7 +134,7 @@ impl ApnsSender {
             .header("apns-topic", &self.topic)
             .header("apns-push-type", "background")
             .header("apns-priority", "5")
-            .header("apns-expiration", "0")
+            .header("apns-expiration", wake_expiration(Utc::now()).to_string())
             .body(r#"{"aps":{"content-available":1}}"#)
             .send()
             .await;
@@ -132,5 +147,20 @@ impl ApnsSender {
             Err(e) => tracing::warn!("APNs budíček selhal: {e}"),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budicek_drzi_apns_stejne_dlouho_jako_fronta() {
+        let ted = DateTime::parse_from_rfc3339("2026-09-29T18:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let limit = wake_expiration(ted) - ted.timestamp();
+        assert_eq!(limit, crate::state::QUEUE_TTL_DAYS * 86_400);
+        assert!(limit <= 30 * 86_400, "APNs nedrží notifikace déle než 30 dní");
     }
 }
