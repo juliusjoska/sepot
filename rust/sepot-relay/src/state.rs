@@ -70,12 +70,45 @@ impl OnlineDevice {
     }
 }
 
+/// Cíl živého doručování: delivery_address → spojení, na kterém zařízení
+/// právě poslouchá.
+///
+/// Jedno zařízení může mít chvíli víc spojení naráz: po změně sítě (Wi-Fi ↔
+/// mobilní data) se appka připojí znovu hned, kdežto staré spojení relay
+/// pozná jako mrtvé až po `ws::IDLE_TIMEOUT`. Doručuje se vždy na naposledy
+/// ověřené spojení a staré spojení smí při svém konci odebrat jen samo sebe.
+#[derive(Default)]
+pub struct OnlineDevices(DashMap<Vec<u8>, Arc<OnlineDevice>>);
+
+impl OnlineDevices {
+    pub fn get(&self, delivery_address: &[u8]) -> Option<Arc<OnlineDevice>> {
+        self.0.get(delivery_address).map(|d| d.clone())
+    }
+
+    /// Nově ověřené spojení přebírá doručování — i od staršího spojení
+    /// téhož zařízení, které ještě nevypršelo.
+    pub fn attach(&self, delivery_address: Vec<u8>, device: Arc<OnlineDevice>) {
+        self.0.insert(delivery_address, device);
+    }
+
+    /// Konec spojení: odebere záznam, jen pokud pořád patří tomuto spojení.
+    /// Mazat podle samotné adresy nejde — zombie spojení, které dožije až
+    /// po reconnectu, by tím vyřadilo nové živé spojení a relay by pak každou
+    /// zprávu jen uložil do fronty a čekal na budíček, přestože je zařízení
+    /// připojené. Vrací, zda se záznam odebral.
+    pub fn detach(&self, delivery_address: &[u8], device: &Arc<OnlineDevice>) -> bool {
+        self.0
+            .remove_if(delivery_address, |_, current| Arc::ptr_eq(current, device))
+            .is_some()
+    }
+}
+
 pub struct AppState {
     pub pool: PgPool,
     /// Kdy proces nastartoval — základ monotónních značek v [`OnlineDevice`].
     pub started: std::time::Instant,
     /// delivery_address → živé WS spojení zařízení.
-    pub online: DashMap<Vec<u8>, Arc<OnlineDevice>>,
+    pub online: OnlineDevices,
     /// klientská IP → počet souběžných WS spojení (anti-flood cap).
     /// Jen v paměti, nikam se neloguje ani neukládá.
     pub ws_conns: DashMap<std::net::IpAddr, u32>,
@@ -103,7 +136,7 @@ impl AppState {
         Self {
             pool,
             started: std::time::Instant::now(),
-            online: DashMap::new(),
+            online: OnlineDevices::default(),
             ws_conns: DashMap::new(),
             certs,
             trusted_proxies,
@@ -146,7 +179,7 @@ impl AppState {
         // enqueued_at → sama se nikdy nezahodí, padne jen starý přebytek.
         self.trim_queue(&dst, MAX_QUEUE_BYTES_PER_RECIPIENT).await?;
 
-        if let Some(dev) = self.online.get(&dst).map(|d| d.clone()) {
+        if let Some(dev) = self.online.get(&dst) {
             let deliver = v1::ServerFrame {
                 frame: Some(v1::server_frame::Frame::Deliver(env)),
             };
@@ -402,6 +435,45 @@ impl AppState {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod online_tests {
+    use super::*;
+
+    fn spojeni() -> Arc<OnlineDevice> {
+        let (tx, _rx) = mpsc::channel::<v1::ServerFrame>(1);
+        Arc::new(OnlineDevice::new(tx, 0))
+    }
+
+    #[test]
+    fn novejsi_spojeni_prebira_dorucovani() {
+        let online = OnlineDevices::default();
+        let adresa = vec![7u8; 32];
+        let (stare, nove) = (spojeni(), spojeni());
+
+        online.attach(adresa.clone(), stare.clone());
+        online.attach(adresa.clone(), nove.clone());
+
+        let cil = online.get(&adresa).expect("adresa je online");
+        assert!(Arc::ptr_eq(&cil, &nove));
+    }
+
+    #[test]
+    fn konec_stareho_spojeni_neodebere_nove() {
+        let online = OnlineDevices::default();
+        let adresa = vec![7u8; 32];
+        let (stare, nove) = (spojeni(), spojeni());
+        online.attach(adresa.clone(), stare.clone());
+        online.attach(adresa.clone(), nove.clone());
+
+        assert!(!online.detach(&adresa, &stare), "cizí záznam se nesmí odebrat");
+        let cil = online.get(&adresa).expect("nové spojení zůstává online");
+        assert!(Arc::ptr_eq(&cil, &nove));
+
+        assert!(online.detach(&adresa, &nove));
+        assert!(online.get(&adresa).is_none());
     }
 }
 
@@ -679,7 +751,7 @@ mod db_tests {
         let device = Arc::new(OnlineDevice::new(tx, 0));
         state
             .online
-            .insert(delivery_address.clone(), device.clone());
+            .attach(delivery_address.clone(), device.clone());
 
         let env = v1::Envelope {
             dst_address: delivery_address.clone(),
@@ -707,12 +779,52 @@ mod db_tests {
             "živé spojení má být online"
         );
 
-        state.online.remove(&delivery_address);
+        state.online.detach(&delivery_address, &device);
         sqlx::query("DELETE FROM message_queue WHERE dst_address = $1")
             .bind(&delivery_address)
             .execute(&state.pool)
             .await
             .unwrap();
+    }
+
+    /// Reconnect po změně sítě: staré spojení dožije až po novém a jeho
+    /// konec nesmí vyřadit nové spojení z živého doručování.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn route_envelope_po_konci_zombie_spojeni_dorucuje_na_nove() {
+        let state = test_state().await;
+        let (account_id, _device_uuid, delivery_address) = seed_device(&state).await;
+
+        let (tx_stare, _rx_stare) = mpsc::channel::<v1::ServerFrame>(64);
+        let stare = Arc::new(OnlineDevice::new(tx_stare, state.now_ms()));
+        state.online.attach(delivery_address.clone(), stare.clone());
+
+        let (tx_nove, mut rx_nove) = mpsc::channel::<v1::ServerFrame>(64);
+        let nove = Arc::new(OnlineDevice::new(tx_nove, state.now_ms()));
+        state.online.attach(delivery_address.clone(), nove.clone());
+
+        // Handler starého spojení končí (idle timeout) až po reconnectu.
+        assert!(!state.online.detach(&delivery_address, &stare));
+
+        let msg_uuid = rand_bytes(16);
+        let env = v1::Envelope {
+            dst_address: delivery_address.clone(),
+            msg_uuid: msg_uuid.clone(),
+            content_hint: 0,
+            payload: vec![0xEF; 64],
+        };
+        assert_eq!(
+            state.route_envelope(env).await.unwrap(),
+            v1::receipt::Status::DeliveredOnline,
+            "konec zombie spojení nesmí vyřadit nové spojení"
+        );
+        match rx_nove.try_recv().map(|f| f.frame) {
+            Ok(Some(v1::server_frame::Frame::Deliver(env))) => assert_eq!(env.msg_uuid, msg_uuid),
+            jinak => panic!("nové spojení nedostalo DELIVER: {jinak:?}"),
+        }
+
+        assert!(state.online.detach(&delivery_address, &nove));
+        cleanup(&state, &account_id, &delivery_address).await;
     }
 
     /// Flush počítá pokusy — bez toho by strop nikdy nezabral.

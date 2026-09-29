@@ -276,7 +276,7 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                 ));
                 state
                     .online
-                    .insert(pd.delivery_address.clone(), device.clone());
+                    .attach(pd.delivery_address.clone(), device.clone());
                 online_device = Some(device);
                 authed_address = Some(pd.delivery_address.clone());
 
@@ -360,8 +360,8 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
         }
     }
 
-    if let Some(addr) = authed_address {
-        state.online.remove(&addr);
+    if let (Some(addr), Some(device)) = (&authed_address, &online_device) {
+        state.online.detach(addr, device);
     }
     writer.abort();
     tracing::debug!("ws spojení uzavřeno");
