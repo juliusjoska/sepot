@@ -22,6 +22,7 @@ use std::time::Duration;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
+use axum::serve::ListenerExt;
 use axum::Router;
 use sqlx::postgres::PgPoolOptions;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -160,7 +161,15 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
 
     tracing::info!(%bind, "sepot-relay startuje");
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    let listener = tokio::net::TcpListener::bind(&bind).await?.tap_io(|tcp| {
+        // Bez TCP_NODELAY čeká každý další malý zápis na ACK klienta (Nagle
+        // × zpožděné ACK = ~40 ms). Nejvíc to bolí hned po AUTH: AUTH_OK a
+        // za ním DELIVER z fronty je přesně cesta appky probuzené budíčkem.
+        // axum si ho sám nezapne. Selhat to může jen na už zavřeném socketu.
+        if let Err(e) = tcp.set_nodelay(true) {
+            tracing::debug!("TCP_NODELAY nenastaven: {e}");
+        }
+    });
     // ConnectInfo: peer adresa pro rate-limit fallback a WS conn cap
     axum::serve(
         listener,
