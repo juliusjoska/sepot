@@ -5,6 +5,10 @@ class AppConstants {
   static const String appName = 'Šepot';
   static const String appAuthor = 'ajtak.it';
 
+  /// Id konverzace „Poznámky pro sebe“. Nekoliduje s fingerprintem (hex)
+  /// ani s gid skupiny (UUID); podle něj se pozná, že nic nejde do sítě.
+  static const String notesConversationId = 'notes';
+
   // Relay server (REST + WS na jednom portu). Přepsatelné při buildu:
   // flutter build --dart-define=SEPOT_RELAY=http://<dev-relay-host>:8470
   static const String relayUrl = String.fromEnvironment(

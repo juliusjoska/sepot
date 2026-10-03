@@ -76,15 +76,66 @@ class AppLocalizationsRu extends AppLocalizations {
       'Вы больше не в группе. История сохранится, но новые сообщения приходить не будут.';
 
   @override
-  String groupsMembersWithCount(int count) {
-    return 'Участники ($count)';
-  }
-
-  @override
   String get groupsYou => 'Вы';
 
   @override
   String get groupsFounder => 'Создатель';
+
+  @override
+  String get groupsAdmin => 'Администратор';
+
+  @override
+  String get groupsMakeAdmin => 'Сделать администратором';
+
+  @override
+  String get groupsDismissAdmin => 'Снять роль администратора';
+
+  @override
+  String get groupsRemoveMember => 'Удалить из группы';
+
+  @override
+  String groupsRemoveMemberConfirmTitle(String name) {
+    return 'Удалить $name из группы?';
+  }
+
+  @override
+  String get groupsRemoveMemberConfirmBody =>
+      'Новые сообщения группы перестанут приходить. Прежняя история сохранится.';
+
+  @override
+  String get groupsRemoveAction => 'Удалить';
+
+  @override
+  String get groupsViewContact => 'Открыть контакт';
+
+  @override
+  String get groupsAdminOnlyHint =>
+      'Название, участников и администраторов группы меняют только администраторы.';
+
+  @override
+  String get groupsAdminOnlyCompatHint =>
+      'Переименовать группу и менять администраторов могут только администраторы. Добавлять людей пока может любой, потому что у кого-то в группе старая версия Šepot.';
+
+  @override
+  String groupsAdminActionFailed(String error) {
+    return 'Не удалось внести изменение: $error';
+  }
+
+  @override
+  String get groupsResyncNotice =>
+      'Группа сверяется с администратором. Изменения состава могут появиться с задержкой.';
+
+  @override
+  String get groupsRejectedChangeNotice =>
+      'Кто-то без прав попытался изменить группу. Изменение не применено.';
+
+  @override
+  String get errorGroupNotAdmin =>
+      'Это может сделать только администратор группы.';
+
+  @override
+  String get errorGroupLastAdmin =>
+      'Вы единственный администратор. Сначала назначьте администратором кого-то ещё.';
 
   @override
   String get groupsNameHint => 'Название группы';
@@ -193,6 +244,28 @@ class AppLocalizationsRu extends AppLocalizations {
   String get chatActionReply => 'Ответить';
 
   @override
+  String get chatActionForward => 'Переслать';
+
+  @override
+  String get forwardTitle => 'Переслать в…';
+
+  @override
+  String get forwardSearchHint => 'Найти контакт или группу';
+
+  @override
+  String get forwardEmpty => 'Ничего не найдено';
+
+  @override
+  String forwardDone(String name) {
+    return 'Переслано: $name';
+  }
+
+  @override
+  String forwardFailed(String error) {
+    return 'Не удалось переслать: $error';
+  }
+
+  @override
   String get commonCopy => 'Копировать';
 
   @override
@@ -249,6 +322,16 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
+  String get attachmentKeepsMetadataTitle => 'Фото будет с геолокацией';
+
+  @override
+  String get attachmentKeepsMetadataBody =>
+      'Из этого формата фото (например, HEIC) я не могу удалить метаданные. Оно будет отправлено в оригинале, включая место съёмки и данные о телефоне. Безопаснее отправить его через Галерею — там метаданные удаляются.';
+
+  @override
+  String get attachmentSendOriginal => 'Отправить оригинал';
+
+  @override
   String attachmentPickFailed(String error) {
     return 'Не удалось выбрать вложение: $error';
   }
@@ -291,6 +374,10 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get errorGroupNeedsMember => 'В группе должен быть хотя бы 1 участник';
+
+  @override
+  String get errorAttachmentUnavailable =>
+      'Вложения больше нет на этом телефоне';
 
   @override
   String errorGroupMaxMembers(int maxMembers) {
@@ -604,17 +691,98 @@ class AppLocalizationsRu extends AppLocalizations {
   String get chatListNewConversation => 'Новый чат';
 
   @override
-  String chatListPhotoWithCaptionPreview(String caption) {
-    return '📷 $caption';
-  }
-
-  @override
-  String chatListFilePreview(String fileName) {
-    return '📎 $fileName';
-  }
-
-  @override
   String get chatListReadReceiptPreview => 'Прочитано';
+
+  @override
+  String get chatListDraft => 'Черновик';
+
+  @override
+  String get notesTitle => 'Заметки для себя';
+
+  @override
+  String get notesSubtitle => 'Только на этом телефоне, в зашифрованном виде';
+
+  @override
+  String get callVoice => 'Позвонить';
+
+  @override
+  String get callVideo => 'Видеозвонок';
+
+  @override
+  String get callStatusRinging => 'Вызов…';
+
+  @override
+  String get callIncomingVoice => 'Входящий звонок';
+
+  @override
+  String get callIncomingVideo => 'Входящий видеозвонок';
+
+  @override
+  String get callStatusConnecting => 'Соединение…';
+
+  @override
+  String get callEnded => 'Звонок завершён';
+
+  @override
+  String get callEndedBusy => 'Занято';
+
+  @override
+  String get callEndedRejected => 'Звонок отклонён';
+
+  @override
+  String get callEndedUnanswered => 'Нет ответа';
+
+  @override
+  String get callEndedFailed => 'Не удалось соединиться';
+
+  @override
+  String get callEncrypted => 'Сквозное шифрование';
+
+  @override
+  String get callAccept => 'Принять';
+
+  @override
+  String get callReject => 'Отклонить';
+
+  @override
+  String get callMute => 'Выключить микрофон';
+
+  @override
+  String get callSpeaker => 'Динамик';
+
+  @override
+  String get callCamera => 'Выключить камеру';
+
+  @override
+  String get callSwitchCamera => 'Сменить камеру';
+
+  @override
+  String get callHangUp => 'Завершить';
+
+  @override
+  String get callLogMissed => 'Пропущенный звонок';
+
+  @override
+  String get callLogUnanswered => 'Звонок без ответа';
+
+  @override
+  String get callLogRejected => 'Отклонённый звонок';
+
+  @override
+  String get callLogBusy => 'Занято';
+
+  @override
+  String get callLogFailed => 'Звонок не удался';
+
+  @override
+  String callLogVoice(String duration) {
+    return 'Звонок · $duration';
+  }
+
+  @override
+  String callLogVideo(String duration) {
+    return 'Видеозвонок · $duration';
+  }
 
   @override
   String get chatListTimeNow => 'сейчас';
@@ -958,14 +1126,14 @@ class AppLocalizationsRu extends AppLocalizations {
       'Сообщения загрузятся только после открытия приложения.';
 
   @override
-  String get pushModeUp => 'UnifiedPush (рекомендуется)';
+  String get pushModeUp => 'UnifiedPush (без Google)';
 
   @override
   String get pushModeUpDesc =>
       'Без сервисов Google — требуется приложение ntfy (F-Droid/Play).';
 
   @override
-  String get pushModeFcm => 'Google (FCM)';
+  String get pushModeFcm => 'Google (FCM, по умолчанию)';
 
   @override
   String get pushModeFcmDesc =>
@@ -1010,8 +1178,7 @@ class AppLocalizationsRu extends AppLocalizations {
   String get pushNoDistributorFallback => 'без дистрибьютора';
 
   @override
-  String get pushSubtitleFcm =>
-      'Google (FCM) — быстро, только по вашему выбору';
+  String get pushSubtitleFcm => 'Google (FCM)';
 
   @override
   String get restoreErrorNameRequired => 'Введите отображаемое имя.';
@@ -1336,4 +1503,257 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get photoPreviewDecodeFailed => 'Не удалось загрузить фото';
+
+  @override
+  String get chatActionInfo => 'Сведения о сообщении';
+
+  @override
+  String get messageInfoSent => 'Отправлено';
+
+  @override
+  String get messageInfoDelivered => 'Доставлено';
+
+  @override
+  String get messageInfoRead => 'Прочитано';
+
+  @override
+  String get messageInfoPending => 'ещё нет';
+
+  @override
+  String get messageInfoReadReceiptsOff =>
+      'Время прочтения видно, только если вы сами делитесь отчётами о прочтении (Настройки).';
+
+  @override
+  String chatStatusReadAt(String time) {
+    return 'Прочитано $time';
+  }
+
+  @override
+  String chatStatusDeliveredAt(String time) {
+    return 'Доставлено $time';
+  }
+
+  @override
+  String get groupsAddMembers => 'Добавить участников';
+
+  @override
+  String get groupsAddMembersAction => 'Добавить';
+
+  @override
+  String groupsAddMembersFailed(String error) {
+    return 'Не удалось добавить: $error';
+  }
+
+  @override
+  String get groupsNoContactsToAdd =>
+      'Все ваши контакты уже в группе. Сначала добавьте нового человека в контакты по QR-коду.';
+
+  @override
+  String get navChats => 'Чаты';
+
+  @override
+  String get chatListNewChat => 'Новый чат';
+
+  @override
+  String get chatListSearchHint => 'Поиск по чатам и сообщениям';
+
+  @override
+  String get chatFilterAll => 'Все';
+
+  @override
+  String get chatFilterUnread => 'Непрочитанные';
+
+  @override
+  String get chatFilterGroups => 'Группы';
+
+  @override
+  String get chatFilterArchive => 'Архив';
+
+  @override
+  String get chatListNoResults => 'Ничего не найдено.';
+
+  @override
+  String get chatListFilterEmpty => 'Здесь пока ничего нет.';
+
+  @override
+  String get chatListPin => 'Закрепить';
+
+  @override
+  String get chatListUnpin => 'Открепить';
+
+  @override
+  String get chatOpenProfile => 'Открыть профиль';
+
+  @override
+  String get groupsProfile => 'Информация о группе';
+
+  @override
+  String get chatSearchHint => 'Поиск в чате';
+
+  @override
+  String get chatSearchNoMatches => 'Нет';
+
+  @override
+  String chatSearchCounter(int current, int total) {
+    return '$current из $total';
+  }
+
+  @override
+  String get chatSearchOlder => 'Предыдущее совпадение';
+
+  @override
+  String get chatSearchNewer => 'Следующее совпадение';
+
+  @override
+  String chatUnreadDivider(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count новых сообщений',
+      few: '$count новых сообщения',
+      one: '$count новое сообщение',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get chatJumpToLatest => 'К последним сообщениям';
+
+  @override
+  String get chatAttach => 'Прикрепить';
+
+  @override
+  String get chatSend => 'Отправить';
+
+  @override
+  String get chatRecordVoice => 'Записать голосовое';
+
+  @override
+  String get profileSharedMedia => 'Общие медиа';
+
+  @override
+  String get profileMessage => 'Написать';
+
+  @override
+  String get profileSearch => 'Поиск';
+
+  @override
+  String get profileUnmute => 'Включить звук';
+
+  @override
+  String get profileDisappearing => 'Исчезание';
+
+  @override
+  String get profileCommonGroups => 'Общие группы';
+
+  @override
+  String get profileSafetyNumber => 'Код безопасности';
+
+  @override
+  String get profileSafetyNumberHint => 'Сравните лично или по QR-коду';
+
+  @override
+  String get profileVerifiedInPerson => 'Проверено лично';
+
+  @override
+  String get profileVerifyNow => 'Проверить контакт';
+
+  @override
+  String get profileAdd => 'Добавить';
+
+  @override
+  String profileGroupSubtitle(String members, String date) {
+    return 'Группа · $members · создана $date';
+  }
+
+  @override
+  String profileMembersOfMax(int count, int max) {
+    return '$count из $max';
+  }
+
+  @override
+  String get chatTyping => 'печатает…';
+
+  @override
+  String chatTypingNamed(String name) {
+    return '$name печатает…';
+  }
+
+  @override
+  String get chatTypingSeveral => 'Несколько человек печатают…';
+
+  @override
+  String get settingsTypingTitle => 'Индикатор набора';
+
+  @override
+  String get settingsTypingSubtitle =>
+      'Взаимно — не делитесь, не видите (по умолчанию выкл.)';
+
+  @override
+  String get pollAttach => 'Опрос';
+
+  @override
+  String get pollCreateTitle => 'Новый опрос';
+
+  @override
+  String get pollQuestion => 'Вопрос';
+
+  @override
+  String pollOptionHint(int number) {
+    return 'Вариант $number';
+  }
+
+  @override
+  String get pollAddOption => 'Добавить вариант';
+
+  @override
+  String get pollRemoveOption => 'Удалить вариант';
+
+  @override
+  String get pollAllowMultiple => 'Разрешить несколько ответов';
+
+  @override
+  String get pollSingle => 'Опрос';
+
+  @override
+  String get pollMulti => 'Опрос, несколько ответов';
+
+  @override
+  String pollVoters(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count голосов',
+      few: '$count голоса',
+      one: '$count голос',
+      zero: 'пока нет голосов',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String pollFallback(String question) {
+    return 'Опрос: $question';
+  }
+
+  @override
+  String get pollFallbackUpdate => 'Обновите Šepot, чтобы голосовать.';
+
+  @override
+  String get profilePhotoEdit => 'Изменить фото профиля';
+
+  @override
+  String get profilePhotoPick => 'Выбрать фото';
+
+  @override
+  String get profilePhotoRemove => 'Удалить фото';
+
+  @override
+  String get profilePhotoHint =>
+      'Фото увидят только ваши собеседники — зашифровано, как и сообщения. Геоданные и метаданные не отправляются.';
+
+  @override
+  String profilePhotoFailed(String error) {
+    return 'Не удалось установить фото: $error';
+  }
 }

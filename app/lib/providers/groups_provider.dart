@@ -30,6 +30,20 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
     await _refresh();
   }
 
+  Future<void> removeMember(Group group, String fingerprint) async {
+    await ref
+        .read(messagingServiceProvider)
+        .removeGroupMember(group, fingerprint);
+    await _refresh();
+  }
+
+  Future<void> setAdmin(Group group, String fingerprint, bool admin) async {
+    await ref
+        .read(messagingServiceProvider)
+        .setGroupAdmin(group, fingerprint, admin);
+    await _refresh();
+  }
+
   Future<void> leave(Group group) async {
     await ref.read(messagingServiceProvider).leaveGroup(group);
     await _refresh();

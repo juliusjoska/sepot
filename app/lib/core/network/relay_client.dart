@@ -63,6 +63,7 @@ class RelayClient {
       StreamController<RelayConnectionState>.broadcast();
   final _deliverController = StreamController<pb.Envelope>.broadcast();
   final _receiptController = StreamController<pb.Receipt>.broadcast();
+  final _turnController = StreamController<pb.TurnCredentials>.broadcast();
 
   var _state = RelayConnectionState.disconnected;
 
@@ -340,6 +341,10 @@ class RelayClient {
             if (!_receiptController.isClosed) {
               _receiptController.add(frame.receipt);
             }
+          } else if (frame.hasTurnCredentials()) {
+            if (!_turnController.isClosed) {
+              _turnController.add(frame.turnCredentials);
+            }
           }
         },
         onDone: _onDisconnected,
@@ -373,10 +378,11 @@ class RelayClient {
   }
 
   /// Odešle sealed-sender obálku. Vrací Receipt (STORED_OFFLINE /
-  /// DELIVERED_ONLINE) spárovaný přes msg_uuid.
+  /// DELIVERED_ONLINE, u EPHEMERAL i DROPPED) spárovaný přes msg_uuid.
   Future<pb.Receipt> sendEnvelope({
     required Uint8List dstAddress,
     required Uint8List payload,
+    pb.ContentHint hint = pb.ContentHint.CONTENT_HINT_DEFAULT,
     Duration timeout = const Duration(seconds: 10),
   }) async {
     final msgUuid = randomBytes(16);
@@ -387,11 +393,22 @@ class RelayClient {
       envelope: pb.Envelope(
         dstAddress: dstAddress,
         msgUuid: msgUuid,
-        contentHint: pb.ContentHint.CONTENT_HINT_DEFAULT,
+        contentHint: hint,
         payload: payload,
       ),
     ));
     return receiptFuture;
+  }
+
+  /// Dočasné údaje k TURN serveru pro hovor. Relay je vydá jen přihlášenému
+  /// zařízení; bez TURN na relayi (503) doběhne timeout a hovor zkusí jen
+  /// přímé spojení přes STUN.
+  Future<pb.TurnCredentials> requestTurn({
+    Duration timeout = const Duration(seconds: 5),
+  }) {
+    final future = _turnController.stream.first.timeout(timeout);
+    _send(pb.ClientFrame(turnRequest: pb.TurnRequest()));
+    return future;
   }
 
   /// Potvrdí zpracování obálky — relay ji smaže z fronty. Volat až PO
@@ -437,6 +454,7 @@ class RelayClient {
     await stop();
     _transport.close();
     await _stateController.close();
+    await _turnController.close();
     await _deliverController.close();
     await _receiptController.close();
   }

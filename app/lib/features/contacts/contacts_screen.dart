@@ -3,8 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
+import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/models/identity.dart';
+import 'package:sepot/providers/conversations_provider.dart';
 import 'package:sepot/providers/contacts_provider.dart';
 import 'package:sepot/widgets/avatar.dart';
 
@@ -32,7 +34,8 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(context.l10n.contactsTitle),
+        toolbarHeight: SepotTheme.largeTitleBarHeight,
+        title: Text(context.l10n.contactsTitle, style: SepotTheme.largeTitle),
         actions: [
           IconButton(
             icon: const Icon(Icons.group_add_outlined),
@@ -71,6 +74,22 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
           ),
           // Sdílet vlastní QR
           _buildShareCard(context),
+          const Divider(height: 1),
+          ListTile(
+            leading: const NotesAvatar(size: 40),
+            title: Text(context.l10n.notesTitle,
+                style: const TextStyle(fontWeight: FontWeight.w500)),
+            subtitle: Text(context.l10n.notesSubtitle,
+                style: const TextStyle(
+                    fontSize: 12, color: SepotColors.textSecondary)),
+            onTap: () async {
+              await ref.read(conversationsProvider.notifier).ensureNotes();
+              if (context.mounted) {
+                context.push(
+                    '/conversation/${AppConstants.notesConversationId}');
+              }
+            },
+          ),
           const Divider(height: 1),
           // Seznam kontaktů
           Expanded(
@@ -115,8 +134,16 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
                     final displayName = contact.displayName.isEmpty
                         ? context.l10n.commonUnknownContact
                         : contact.displayName;
+                    final id = contact.publicIdentity.id;
                     return ListTile(
-                      leading: SepotAvatar(name: displayName),
+                      leading: GestureDetector(
+                        onTap: () => context.push('/contact/$id'),
+                        child: SepotAvatar(
+                          name: displayName,
+                          seed: id,
+                          verified: contact.verified,
+                        ),
+                      ),
                       title: Text(
                         displayName,
                         style: const TextStyle(fontWeight: FontWeight.w500),
@@ -127,23 +154,15 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
                             contact.sepotId,
                             style: SepotTheme.cryptoText.copyWith(fontSize: 11),
                           ),
-                          if (contact.verified) ...[
-                            const SizedBox(width: 8),
-                            const Icon(
-                              Icons.verified,
-                              size: 14,
-                              color: SepotColors.ember,
-                            ),
-                          ],
                         ],
                       ),
-                      trailing: const Icon(
-                        Icons.chat_bubble_outline,
-                        color: SepotColors.textMuted,
+                      trailing: IconButton(
+                        tooltip: context.l10n.chatOpenProfile,
+                        icon: const Icon(Icons.person_outline_rounded,
+                            color: SepotColors.textSecondary),
+                        onPressed: () => context.push('/contact/$id'),
                       ),
-                      onTap: () {
-                        context.push('/conversation/${contact.publicIdentity.id}');
-                      },
+                      onTap: () => context.push('/conversation/$id'),
                       onLongPress: () =>
                           _showContactOptions(context, contact.id),
                     );

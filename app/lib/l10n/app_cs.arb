@@ -82,15 +82,6 @@
   "@groupsLeftBanner": {
     "description": "Banner místo input baru ve skupině, kterou uživatel opustil; POZOR gender"
   },
-  "groupsMembersWithCount": "Členové ({count})",
-  "@groupsMembersWithCount": {
-    "description": "Nadpis bottom sheetu se seznamem členů skupiny",
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
   "groupsYou": "Ty",
   "@groupsYou": {
     "description": "Fallback jména vlastního avataru v seznamu členů skupiny | Titulek ListTile vlastní osoby v seznamu členů skupiny — stejný klíč jako ř. 486"
@@ -98,6 +89,76 @@
   "groupsFounder": "Zakladatel",
   "@groupsFounder": {
     "description": "Subtitle člena, který skupinu založil, v seznamu členů"
+  },
+  "groupsAdmin": "Správce",
+  "@groupsAdmin": {
+    "description": "Odznak správce skupiny u člena v seznamu členů"
+  },
+  "groupsMakeAdmin": "Udělat správcem",
+  "@groupsMakeAdmin": {
+    "description": "Akce v nabídce člena: udělit roli správce"
+  },
+  "groupsDismissAdmin": "Odebrat roli správce",
+  "@groupsDismissAdmin": {
+    "description": "Akce v nabídce člena: odebrat roli správce"
+  },
+  "groupsRemoveMember": "Odebrat ze skupiny",
+  "@groupsRemoveMember": {
+    "description": "Akce v nabídce člena: odebrat ze skupiny"
+  },
+  "groupsRemoveMemberConfirmTitle": "Odebrat {name} ze skupiny?",
+  "@groupsRemoveMemberConfirmTitle": {
+    "description": "Titulek potvrzení odebrání člena",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "groupsRemoveMemberConfirmBody": "Přestanou mu chodit nové zprávy skupiny. Dosavadní historie mu zůstane.",
+  "@groupsRemoveMemberConfirmBody": {
+    "description": "Text potvrzení odebrání člena"
+  },
+  "groupsRemoveAction": "Odebrat",
+  "@groupsRemoveAction": {
+    "description": "Potvrzovací tlačítko odebrání člena"
+  },
+  "groupsViewContact": "Zobrazit kontakt",
+  "@groupsViewContact": {
+    "description": "Akce v nabídce člena: otevřít profil kontaktu"
+  },
+  "groupsAdminOnlyHint": "Jméno, členy a správce skupiny mění jen správci.",
+  "@groupsAdminOnlyHint": {
+    "description": "Vysvětlení pod seznamem členů pro ne-správce ve vynucené skupině"
+  },
+  "groupsAdminOnlyCompatHint": "Jméno a správce mění jen správci. Přidávat lidi zatím může každý, protože někdo ve skupině má starší verzi Šepotu.",
+  "@groupsAdminOnlyCompatHint": {
+    "description": "Vysvětlení pro ne-správce, dokud je ve skupině člen se starší verzí aplikace"
+  },
+  "groupsAdminActionFailed": "Změna se nepovedla: {error}",
+  "@groupsAdminActionFailed": {
+    "description": "SnackBar při selhání správcovské akce",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "groupsResyncNotice": "Stav skupiny se srovnává se správcem. Změny členů se můžou chvíli opozdit.",
+  "@groupsResyncNotice": {
+    "description": "Upozornění v profilu skupiny, když chybí mezistav od správce"
+  },
+  "groupsRejectedChangeNotice": "Někdo bez oprávnění zkusil skupinu změnit. Změna se neprovedla.",
+  "@groupsRejectedChangeNotice": {
+    "description": "Upozornění v profilu skupiny po odmítnuté neoprávněné změně"
+  },
+  "errorGroupNotAdmin": "Tohle může udělat jen správce skupiny.",
+  "@errorGroupNotAdmin": {
+    "description": "Chyba: akci smí udělat jen správce skupiny"
+  },
+  "errorGroupLastAdmin": "Jsi jediný správce. Nejdřív udělej správcem někoho dalšího.",
+  "@errorGroupLastAdmin": {
+    "description": "Chyba: poslední správce se nemůže vzdát role"
   },
   "groupsNameHint": "Název skupiny",
   "@groupsNameHint": {
@@ -254,6 +315,40 @@
   "@chatActionReply": {
     "description": "Položka akčního bottom sheetu zprávy (long-press)"
   },
+  "chatActionForward": "Přeposlat",
+  "@chatActionForward": {
+    "description": "Akce v nabídce po podržení zprávy"
+  },
+  "forwardTitle": "Přeposlat do…",
+  "@forwardTitle": {
+    "description": "Nadpis panelu výběru chatu pro přeposlání"
+  },
+  "forwardSearchHint": "Hledat kontakt nebo skupinu",
+  "@forwardSearchHint": {
+    "description": "Nápověda v poli hledání panelu přeposlání"
+  },
+  "forwardEmpty": "Nic tu není",
+  "@forwardEmpty": {
+    "description": "Prázdný výsledek hledání v panelu přeposlání"
+  },
+  "forwardDone": "Přeposláno: {name}",
+  "@forwardDone": {
+    "description": "SnackBar po přeposlání zprávy",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "forwardFailed": "Přeposlání se nepovedlo: {error}",
+  "@forwardFailed": {
+    "description": "SnackBar při chybě přeposlání",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
   "commonCopy": "Kopírovat",
   "@commonCopy": {
     "description": "Položka akčního bottom sheetu zprávy — kopírování textu do schránky | Popisek OutlinedButton.icon pro zkopírování Šepot ID do schránky"
@@ -332,6 +427,18 @@
       }
     }
   },
+  "attachmentKeepsMetadataTitle": "Fotka odejde i s polohou",
+  "@attachmentKeepsMetadataTitle": {
+    "description": "Titulek dialogu před odesláním obrázku jako dokumentu, když z něj nejde odstranit EXIF (HEIC, RAW)"
+  },
+  "attachmentKeepsMetadataBody": "Tenhle formát fotky (třeba HEIC) neumím zbavit metadat. Odešla by v originále včetně polohy, kde vznikla, a údajů o telefonu. Bezpečnější je poslat ji přes Galerii, kde se metadata odstraní.",
+  "@attachmentKeepsMetadataBody": {
+    "description": "Text téhož dialogu"
+  },
+  "attachmentSendOriginal": "Poslat originál",
+  "@attachmentSendOriginal": {
+    "description": "Potvrzovací tlačítko téhož dialogu"
+  },
   "attachmentPickFailed": "Výběr přílohy selhal: {error}",
   "@attachmentPickFailed": {
     "description": "SnackBar (_showError) při selhání výběru přílohy",
@@ -395,6 +502,10 @@
   "errorGroupNeedsMember": "Skupina potřebuje aspoň 1 člena",
   "@errorGroupNeedsMember": {
     "description": "StateError z createGroup při prázdném seznamu členů; zobrazuje UI zakládání skupiny."
+  },
+  "errorAttachmentUnavailable": "Příloha už v telefonu není",
+  "@errorAttachmentUnavailable": {
+    "description": "Chyba při přeposlání přílohy, která už byla smazána nebo nestažena"
   },
   "errorGroupMaxMembers": "Skupina může mít nejvýš {maxMembers} členů",
   "@errorGroupMaxMembers": {
@@ -813,27 +924,135 @@
   "@chatListNewConversation": {
     "description": "Náhled poslední zprávy v dlaždici seznamu chatů, když konverzace zatím nemá žádnou zprávu"
   },
-  "chatListPhotoWithCaptionPreview": "📷 {caption}",
-  "@chatListPhotoWithCaptionPreview": {
-    "description": "Náhled poslední zprávy v dlaždici — fotka s popiskem; emoji je součást textu",
-    "placeholders": {
-      "caption": {
-        "type": "String"
-      }
-    }
-  },
-  "chatListFilePreview": "📎 {fileName}",
-  "@chatListFilePreview": {
-    "description": "Náhled poslední zprávy v dlaždici — soubor; emoji je součást textu. Skládaný literál: obsahuje vnořený fallback \"Soubor\" (viz samostatný záznam) — při lokalizaci předat placeholderu už vyřešenou hodnotu msg.fileName ?? commonFile.",
-    "placeholders": {
-      "fileName": {
-        "type": "String"
-      }
-    }
-  },
   "chatListReadReceiptPreview": "Přečteno",
   "@chatListReadReceiptPreview": {
     "description": "Náhled poslední zprávy v dlaždici pro zprávu typu readReceipt (potvrzení o přečtení)"
+  },
+  "chatListDraft": "Koncept",
+  "@chatListDraft": {
+    "description": "Předpona náhledu v seznamu chatů, když je v chatu rozepsaná zpráva"
+  },
+  "notesTitle": "Poznámky pro sebe",
+  "@notesTitle": {
+    "description": "Název chatu se sebou samým (seznam chatů, hlavička, kontakty, přeposlání)"
+  },
+  "notesSubtitle": "Jen v tomto telefonu, šifrovaně",
+  "@notesSubtitle": {
+    "description": "Podtitulek poznámek pro sebe — nic se neodesílá na server"
+  },
+  "callVoice": "Zavolat",
+  "@callVoice": {
+    "description": "Tlačítko hlasového hovoru v hlavičce chatu"
+  },
+  "callVideo": "Videohovor",
+  "@callVideo": {
+    "description": "Tlačítko videohovoru v hlavičce chatu"
+  },
+  "callStatusRinging": "Vyzvání…",
+  "@callStatusRinging": {
+    "description": "Stav odchozího hovoru, dokud protistrana nezvedne"
+  },
+  "callIncomingVoice": "Příchozí hovor",
+  "@callIncomingVoice": {
+    "description": "Stav příchozího hlasového hovoru"
+  },
+  "callIncomingVideo": "Příchozí videohovor",
+  "@callIncomingVideo": {
+    "description": "Stav příchozího videohovoru"
+  },
+  "callStatusConnecting": "Spojuji…",
+  "@callStatusConnecting": {
+    "description": "Stav po přijetí, než naběhne spojení"
+  },
+  "callEnded": "Hovor skončil",
+  "@callEnded": {
+    "description": "Krátce po konci hovoru"
+  },
+  "callEndedBusy": "Obsazeno",
+  "@callEndedBusy": {
+    "description": "Protistrana má jiný hovor"
+  },
+  "callEndedRejected": "Hovor odmítnut",
+  "@callEndedRejected": {
+    "description": "Hovor byl odmítnut"
+  },
+  "callEndedUnanswered": "Nikdo to nevzal",
+  "@callEndedUnanswered": {
+    "description": "Odchozí hovor vypršel bez odpovědi"
+  },
+  "callEndedFailed": "Spojení se nepodařilo",
+  "@callEndedFailed": {
+    "description": "Hovor se nepodařilo spojit"
+  },
+  "callEncrypted": "Šifrováno end-to-end",
+  "@callEncrypted": {
+    "description": "Podtitulek na obrazovce hovoru"
+  },
+  "callAccept": "Přijmout",
+  "@callAccept": {
+    "description": "Přijetí příchozího hovoru"
+  },
+  "callReject": "Odmítnout",
+  "@callReject": {
+    "description": "Odmítnutí příchozího hovoru"
+  },
+  "callMute": "Ztlumit mikrofon",
+  "@callMute": {
+    "description": "Přepínač mikrofonu (popisek pro čtečku)"
+  },
+  "callSpeaker": "Reproduktor",
+  "@callSpeaker": {
+    "description": "Přepínač hlasitého odposlechu"
+  },
+  "callCamera": "Vypnout kameru",
+  "@callCamera": {
+    "description": "Přepínač kamery ve videohovoru"
+  },
+  "callSwitchCamera": "Přepnout kameru",
+  "@callSwitchCamera": {
+    "description": "Přední/zadní kamera"
+  },
+  "callHangUp": "Zavěsit",
+  "@callHangUp": {
+    "description": "Ukončení hovoru"
+  },
+  "callLogMissed": "Zmeškaný hovor",
+  "@callLogMissed": {
+    "description": "Záznam v chatu"
+  },
+  "callLogUnanswered": "Nepřijatý hovor",
+  "@callLogUnanswered": {
+    "description": "Odchozí hovor, který protistrana nevzala"
+  },
+  "callLogRejected": "Odmítnutý hovor",
+  "@callLogRejected": {
+    "description": "Záznam v chatu"
+  },
+  "callLogBusy": "Obsazeno",
+  "@callLogBusy": {
+    "description": "Záznam v chatu — protistrana měla jiný hovor"
+  },
+  "callLogFailed": "Hovor se nespojil",
+  "@callLogFailed": {
+    "description": "Záznam v chatu"
+  },
+  "callLogVoice": "Hovor · {duration}",
+  "@callLogVoice": {
+    "description": "Záznam proběhlého hlasového hovoru s délkou",
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "callLogVideo": "Videohovor · {duration}",
+  "@callLogVideo": {
+    "description": "Záznam proběhlého videohovoru s délkou",
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
   },
   "chatListTimeNow": "teď",
   "@chatListTimeNow": {
@@ -1270,15 +1489,15 @@
   "@pushModeOffDesc": {
     "description": "Popisek volby 'Vypnuto' v dialogu výběru režimu pushů"
   },
-  "pushModeUp": "UnifiedPush (doporučeno)",
+  "pushModeUp": "UnifiedPush (bez Googlu)",
   "@pushModeUp": {
-    "description": "Label volby 'up' v dialogu výběru režimu pushů ('UnifiedPush' je název technologie — nepřekládat, přeložit jen '(doporučeno)')"
+    "description": "Label volby 'up' v dialogu výběru režimu pushů ('UnifiedPush' je název technologie — nepřekládat, přeložit jen '(bez Googlu)')"
   },
   "pushModeUpDesc": "Degooglované — potřebuje aplikaci ntfy (F-Droid/Play).",
   "@pushModeUpDesc": {
     "description": "Popisek volby UnifiedPush v dialogu výběru režimu pushů ('ntfy', 'F-Droid', 'Play' jsou názvy — nepřekládat)"
   },
-  "pushModeFcm": "Google (FCM)",
+  "pushModeFcm": "Google (FCM, výchozí)",
   "@pushModeFcm": {
     "description": "Label volby 'fcm' v dialogu výběru režimu pushů (vlastní název — pravděpodobně shodný ve všech jazycích, ale klíč mít)"
   },
@@ -1336,7 +1555,7 @@
   "@pushNoDistributorFallback": {
     "description": "Vnořený fallback literál uvnitř subtitle 'UnifiedPush · …', když není vybraný žádný distributor — vyhodnotit před dosazením do pushSubtitleUnifiedPush"
   },
-  "pushSubtitleFcm": "Google (FCM) — rychlé, opt-in",
+  "pushSubtitleFcm": "Google (FCM)",
   "@pushSubtitleFcm": {
     "description": "Subtitle ListTile v nastavení, když je aktivní režim FCM"
   },
@@ -1762,5 +1981,354 @@
   "photoPreviewDecodeFailed": "Fotku se nepodařilo načíst",
   "@photoPreviewDecodeFailed": {
     "description": "SnackBar, když se vybraná fotka nedá dekódovat — náhled se zavře bez odeslání"
+  },
+  "chatActionInfo": "Info o zprávě",
+  "@chatActionInfo": {
+    "description": "Položka v nabídce zprávy — detail doručení a přečtení."
+  },
+  "messageInfoSent": "Odesláno",
+  "@messageInfoSent": {
+    "description": "Info o zprávě: řádek času odeslání."
+  },
+  "messageInfoDelivered": "Doručeno",
+  "@messageInfoDelivered": {
+    "description": "Info o zprávě: řádek času doručení."
+  },
+  "messageInfoRead": "Přečteno",
+  "@messageInfoRead": {
+    "description": "Info o zprávě: řádek času přečtení."
+  },
+  "messageInfoPending": "zatím ne",
+  "@messageInfoPending": {
+    "description": "Info o zprávě: událost ještě nenastala."
+  },
+  "messageInfoReadReceiptsOff": "Kdy si zprávu přečetli, uvidíš, jen když sám sdílíš potvrzení přečtení (Nastavení).",
+  "@messageInfoReadReceiptsOff": {
+    "description": "Info o zprávě: vysvětlení, proč chybí čas přečtení."
+  },
+  "chatStatusReadAt": "Přečteno {time}",
+  "@chatStatusReadAt": {
+    "description": "Řádek pod poslední odeslanou zprávou — čas přečtení.",
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "chatStatusDeliveredAt": "Doručeno {time}",
+  "@chatStatusDeliveredAt": {
+    "description": "Řádek pod poslední odeslanou zprávou — čas doručení.",
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "groupsAddMembers": "Přidat členy",
+  "@groupsAddMembers": {
+    "description": "Nabídka skupiny a titulek obrazovky pro přidání lidí."
+  },
+  "groupsAddMembersAction": "Přidat",
+  "@groupsAddMembersAction": {
+    "description": "Potvrzovací tlačítko v AppBaru při přidávání členů."
+  },
+  "groupsAddMembersFailed": "Přidání se nepovedlo: {error}",
+  "@groupsAddMembersFailed": {
+    "description": "Chyba při přidávání členů.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "groupsNoContactsToAdd": "Všechny tvoje kontakty už ve skupině jsou. Nového člověka nejdřív přidej do kontaktů přes QR kód.",
+  "@groupsNoContactsToAdd": {
+    "description": "Prázdný výběr — všechny kontakty už ve skupině jsou."
+  },
+  "navChats": "Chaty",
+  "@navChats": {
+    "description": "Karta spodní navigace a nadpis seznamu chatů."
+  },
+  "chatListNewChat": "Nový chat",
+  "@chatListNewChat": {
+    "description": "Tlačítko pro zahájení nového chatu."
+  },
+  "chatListSearchHint": "Hledat v chatech a zprávách",
+  "@chatListSearchHint": {
+    "description": "Placeholder hledání v seznamu chatů."
+  },
+  "chatFilterAll": "Vše",
+  "@chatFilterAll": {
+    "description": "Filtr seznamu chatů — vše."
+  },
+  "chatFilterUnread": "Nepřečtené",
+  "@chatFilterUnread": {
+    "description": "Filtr seznamu chatů — nepřečtené."
+  },
+  "chatFilterGroups": "Skupiny",
+  "@chatFilterGroups": {
+    "description": "Filtr seznamu chatů — skupiny."
+  },
+  "chatFilterArchive": "Archiv",
+  "@chatFilterArchive": {
+    "description": "Odkaz na archiv v řádku filtrů."
+  },
+  "chatListNoResults": "Nic nenalezeno.",
+  "@chatListNoResults": {
+    "description": "Hledání v chatech nic nenašlo."
+  },
+  "chatListFilterEmpty": "Tady zatím nic není.",
+  "@chatListFilterEmpty": {
+    "description": "Vybraný filtr je prázdný."
+  },
+  "chatListPin": "Připnout",
+  "@chatListPin": {
+    "description": "Akce: připnout chat nahoru."
+  },
+  "chatListUnpin": "Odepnout",
+  "@chatListUnpin": {
+    "description": "Akce: odepnout chat."
+  },
+  "chatOpenProfile": "Zobrazit profil",
+  "@chatOpenProfile": {
+    "description": "Hlavička chatu / menu: otevřít profil kontaktu."
+  },
+  "groupsProfile": "Profil skupiny",
+  "@groupsProfile": {
+    "description": "Menu skupinového chatu: profil skupiny."
+  },
+  "chatSearchHint": "Hledat v konverzaci",
+  "@chatSearchHint": {
+    "description": "Hledání v jedné konverzaci — placeholder a popisek tlačítka."
+  },
+  "chatSearchNoMatches": "Nic",
+  "@chatSearchNoMatches": {
+    "description": "Hledání v konverzaci bez výsledku (krátce, vedle pole)."
+  },
+  "chatSearchCounter": "{current} z {total}",
+  "@chatSearchCounter": {
+    "description": "Pořadí aktuální shody hledání, např. „2 z 5“.",
+    "placeholders": {
+      "current": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "chatSearchOlder": "Starší shoda",
+  "@chatSearchOlder": {
+    "description": "Tlačítko: předchozí (starší) shoda."
+  },
+  "chatSearchNewer": "Novější shoda",
+  "@chatSearchNewer": {
+    "description": "Tlačítko: další (novější) shoda."
+  },
+  "chatUnreadDivider": "{count, plural, one{1 nová zpráva} few{{count} nové zprávy} other{{count} nových zpráv}}",
+  "@chatUnreadDivider": {
+    "description": "Oddělovač nad první nepřečtenou zprávou.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "chatJumpToLatest": "Na nejnovější zprávy",
+  "@chatJumpToLatest": {
+    "description": "Tlačítko: skok na nejnovější zprávy."
+  },
+  "chatAttach": "Přiložit",
+  "@chatAttach": {
+    "description": "Tlačítko přílohy v poli pro psaní."
+  },
+  "chatSend": "Odeslat",
+  "@chatSend": {
+    "description": "Tlačítko odeslat."
+  },
+  "chatRecordVoice": "Nahrát hlasovou zprávu",
+  "@chatRecordVoice": {
+    "description": "Tlačítko nahrát hlasovou zprávu."
+  },
+  "profileSharedMedia": "Sdílená média",
+  "@profileSharedMedia": {
+    "description": "Karta sdílených fotek v profilu."
+  },
+  "profileMessage": "Zpráva",
+  "@profileMessage": {
+    "description": "Akce profilu: napsat zprávu."
+  },
+  "profileSearch": "Hledat",
+  "@profileSearch": {
+    "description": "Akce profilu: hledat v konverzaci."
+  },
+  "profileUnmute": "Zvuk",
+  "@profileUnmute": {
+    "description": "Akce profilu: zrušit ztlumení (krátce)."
+  },
+  "profileDisappearing": "Mizení",
+  "@profileDisappearing": {
+    "description": "Akce profilu: mizící zprávy (krátce)."
+  },
+  "profileCommonGroups": "Společné skupiny",
+  "@profileCommonGroups": {
+    "description": "Karta společných skupin v profilu kontaktu."
+  },
+  "profileSafetyNumber": "Bezpečnostní číslo",
+  "@profileSafetyNumber": {
+    "description": "Řádek profilu: bezpečnostní číslo."
+  },
+  "profileSafetyNumberHint": "Porovnejte osobně nebo QR kódem",
+  "@profileSafetyNumberHint": {
+    "description": "Podtitulek bezpečnostního čísla u neověřeného kontaktu."
+  },
+  "profileVerifiedInPerson": "Ověřeno osobně",
+  "@profileVerifiedInPerson": {
+    "description": "Stav ověřeného kontaktu v hlavičce profilu."
+  },
+  "profileVerifyNow": "Ověřit kontakt",
+  "@profileVerifyNow": {
+    "description": "Tlačítko v profilu neověřeného kontaktu."
+  },
+  "profileAdd": "Přidat",
+  "@profileAdd": {
+    "description": "Akce profilu skupiny: přidat členy (krátce)."
+  },
+  "profileGroupSubtitle": "Skupina · {members} · založena {date}",
+  "@profileGroupSubtitle": {
+    "description": "Podtitulek profilu skupiny: počet členů · datum založení.",
+    "placeholders": {
+      "members": {
+        "type": "String"
+      },
+      "date": {
+        "type": "String"
+      }
+    }
+  },
+  "profileMembersOfMax": "{count} ze {max}",
+  "@profileMembersOfMax": {
+    "description": "Počet členů ze stropu skupiny, např. „4 ze 128“.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "max": {
+        "type": "int"
+      }
+    }
+  },
+  "chatTyping": "píše…",
+  "@chatTyping": {
+    "description": "Podtitulek chatu / náhled v seznamu: protistrana píše."
+  },
+  "chatTypingNamed": "{name} píše…",
+  "@chatTypingNamed": {
+    "description": "Skupina: kdo píše (křestní jméno).",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "chatTypingSeveral": "Několik lidí píše…",
+  "@chatTypingSeveral": {
+    "description": "Skupina: píše víc lidí najednou."
+  },
+  "settingsTypingTitle": "Ukazovat, že píšu",
+  "@settingsTypingTitle": {
+    "description": "Nastavení: přepínač „píše…“."
+  },
+  "settingsTypingSubtitle": "Oboustranné — kdo nesdílí, nevidí (výchozí vypnuto)",
+  "@settingsTypingSubtitle": {
+    "description": "Popis přepínače „píše…“."
+  },
+  "pollAttach": "Anketa",
+  "@pollAttach": {
+    "description": "Položka nabídky příloh: vytvořit anketu."
+  },
+  "pollCreateTitle": "Nová anketa",
+  "@pollCreateTitle": {
+    "description": "Nadpis formuláře nové ankety."
+  },
+  "pollQuestion": "Otázka",
+  "@pollQuestion": {
+    "description": "Pole otázky ankety."
+  },
+  "pollOptionHint": "Možnost {number}",
+  "@pollOptionHint": {
+    "description": "Placeholder možnosti ankety s pořadím.",
+    "placeholders": {
+      "number": {
+        "type": "int"
+      }
+    }
+  },
+  "pollAddOption": "Přidat možnost",
+  "@pollAddOption": {
+    "description": "Tlačítko: přidat možnost do ankety."
+  },
+  "pollRemoveOption": "Odebrat možnost",
+  "@pollRemoveOption": {
+    "description": "Tlačítko: odebrat možnost."
+  },
+  "pollAllowMultiple": "Povolit víc odpovědí",
+  "@pollAllowMultiple": {
+    "description": "Přepínač: víc odpovědí na osobu."
+  },
+  "pollSingle": "Anketa",
+  "@pollSingle": {
+    "description": "Hlavička ankety s jednou volbou."
+  },
+  "pollMulti": "Anketa, více voleb",
+  "@pollMulti": {
+    "description": "Hlavička ankety s více volbami."
+  },
+  "pollVoters": "{count, plural, =0{zatím bez hlasů} one{1 hlas} few{{count} hlasy} other{{count} hlasů}}",
+  "@pollVoters": {
+    "description": "Počet hlasujících v anketě.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "pollFallback": "Anketa: {question}",
+  "@pollFallback": {
+    "description": "Záložní text ankety pro starší verze appky — první řádek.",
+    "placeholders": {
+      "question": {
+        "type": "String"
+      }
+    }
+  },
+  "pollFallbackUpdate": "Hlasovat jde v aktuální verzi Šepotu.",
+  "@pollFallbackUpdate": {
+    "description": "Záložní text ankety — výzva k aktualizaci."
+  },
+  "profilePhotoEdit": "Změnit profilovou fotku",
+  "@profilePhotoEdit": {
+    "description": "Popisek avataru v Nastavení (čtečka obrazovky)."
+  },
+  "profilePhotoPick": "Vybrat fotku",
+  "@profilePhotoPick": {
+    "description": "Akce: vybrat profilovou fotku z galerie."
+  },
+  "profilePhotoRemove": "Odebrat fotku",
+  "@profilePhotoRemove": {
+    "description": "Akce: odebrat profilovou fotku."
+  },
+  "profilePhotoHint": "Fotku uvidí jen lidé, se kterými si píšeš — šifrovaně, stejně jako zprávy. Poloha ani údaje o fotce se neposílají.",
+  "@profilePhotoHint": {
+    "description": "Vysvětlení, kdo profilovou fotku uvidí."
+  },
+  "profilePhotoFailed": "Fotku se nepodařilo nastavit: {error}",
+  "@profilePhotoFailed": {
+    "description": "Chyba nastavení profilové fotky.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
   }
 }

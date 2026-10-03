@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:screen_protector/screen_protector.dart';
 import 'package:sepot/core/backup/backup_service.dart';
+import 'package:sepot/core/services/messaging_service.dart';
 import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 
@@ -31,6 +32,29 @@ class ReadReceiptsNotifier extends AsyncNotifier<bool> {
 
 final readReceiptsProvider =
     AsyncNotifierProvider<ReadReceiptsNotifier, bool>(ReadReceiptsNotifier.new);
+
+/// „píše…“ — stejná pravidla jako potvrzení přečtení: výchozí vypnuto,
+/// reciproční (kdo nesdílí, nevidí).
+class TypingIndicatorsNotifier extends AsyncNotifier<bool> {
+  @override
+  Future<bool> build() async {
+    final storage = ref.read(storageProvider);
+    return (await storage.getSetting<bool>(
+            MessagingService.typingSettingKey)) ??
+        false;
+  }
+
+  Future<void> set(bool value) async {
+    await ref
+        .read(storageProvider)
+        .setSetting(MessagingService.typingSettingKey, value);
+    state = AsyncData(value);
+  }
+}
+
+final typingIndicatorsProvider =
+    AsyncNotifierProvider<TypingIndicatorsNotifier, bool>(
+        TypingIndicatorsNotifier.new);
 
 /// Zabezpečení obrazovky: blok screenshotů (Android FLAG_SECURE) + skrytí
 /// obsahu v přepínači appek (iOS). Default VYPNUTO — blokuje i vlastní

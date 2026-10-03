@@ -27,44 +27,49 @@ class PushHintBanner extends ConsumerWidget {
         ? context.l10n.pushHintFailed
         : context.l10n.pushHintOff;
 
-    return Material(
-      color: SepotColors.surfaceVariant,
-      child: InkWell(
-        onTap: () => context.push('/settings'),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
-          child: Row(
-            children: [
-              Icon(
-                Icons.notifications_off_outlined,
-                size: 18,
-                color: health == PushHealth.failed
-                    ? SepotColors.ember
-                    : SepotColors.textMuted,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  text,
-                  style: const TextStyle(
-                    fontFamily: kFontSans,
-                    fontSize: 13,
-                    color: SepotColors.textSecondary,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+      child: Material(
+        color: SepotColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => context.push('/settings'),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.notifications_off_outlined,
+                  size: 18,
+                  color: health == PushHealth.failed
+                      ? SepotColors.ember
+                      : SepotColors.textMuted,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    text,
+                    style: const TextStyle(
+                      fontFamily: kFontSans,
+                      fontSize: 13,
+                      color: SepotColors.textSecondary,
+                    ),
                   ),
                 ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.close, size: 18),
-                color: SepotColors.textMuted,
-                tooltip: context.l10n.commonClose,
-                onPressed: () async {
-                  await ref
-                      .read(storageProvider)
-                      .setSetting('push_hint_dismissed', true);
-                  ref.invalidate(pushHintDismissedProvider);
-                },
-              ),
-            ],
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  color: SepotColors.textMuted,
+                  tooltip: context.l10n.commonClose,
+                  onPressed: () async {
+                    await ref
+                        .read(storageProvider)
+                        .setSetting('push_hint_dismissed', true);
+                    ref.invalidate(pushHintDismissedProvider);
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       ),

@@ -212,12 +212,6 @@ abstract class AppLocalizations {
   /// **'Už nejsi ve skupině. Historie zůstává, nové zprávy nedorazí.'**
   String get groupsLeftBanner;
 
-  /// Nadpis bottom sheetu se seznamem členů skupiny
-  ///
-  /// In cs, this message translates to:
-  /// **'Členové ({count})'**
-  String groupsMembersWithCount(int count);
-
   /// Fallback jména vlastního avataru v seznamu členů skupiny | Titulek ListTile vlastní osoby v seznamu členů skupiny — stejný klíč jako ř. 486
   ///
   /// In cs, this message translates to:
@@ -229,6 +223,96 @@ abstract class AppLocalizations {
   /// In cs, this message translates to:
   /// **'Zakladatel'**
   String get groupsFounder;
+
+  /// Odznak správce skupiny u člena v seznamu členů
+  ///
+  /// In cs, this message translates to:
+  /// **'Správce'**
+  String get groupsAdmin;
+
+  /// Akce v nabídce člena: udělit roli správce
+  ///
+  /// In cs, this message translates to:
+  /// **'Udělat správcem'**
+  String get groupsMakeAdmin;
+
+  /// Akce v nabídce člena: odebrat roli správce
+  ///
+  /// In cs, this message translates to:
+  /// **'Odebrat roli správce'**
+  String get groupsDismissAdmin;
+
+  /// Akce v nabídce člena: odebrat ze skupiny
+  ///
+  /// In cs, this message translates to:
+  /// **'Odebrat ze skupiny'**
+  String get groupsRemoveMember;
+
+  /// Titulek potvrzení odebrání člena
+  ///
+  /// In cs, this message translates to:
+  /// **'Odebrat {name} ze skupiny?'**
+  String groupsRemoveMemberConfirmTitle(String name);
+
+  /// Text potvrzení odebrání člena
+  ///
+  /// In cs, this message translates to:
+  /// **'Přestanou mu chodit nové zprávy skupiny. Dosavadní historie mu zůstane.'**
+  String get groupsRemoveMemberConfirmBody;
+
+  /// Potvrzovací tlačítko odebrání člena
+  ///
+  /// In cs, this message translates to:
+  /// **'Odebrat'**
+  String get groupsRemoveAction;
+
+  /// Akce v nabídce člena: otevřít profil kontaktu
+  ///
+  /// In cs, this message translates to:
+  /// **'Zobrazit kontakt'**
+  String get groupsViewContact;
+
+  /// Vysvětlení pod seznamem členů pro ne-správce ve vynucené skupině
+  ///
+  /// In cs, this message translates to:
+  /// **'Jméno, členy a správce skupiny mění jen správci.'**
+  String get groupsAdminOnlyHint;
+
+  /// Vysvětlení pro ne-správce, dokud je ve skupině člen se starší verzí aplikace
+  ///
+  /// In cs, this message translates to:
+  /// **'Jméno a správce mění jen správci. Přidávat lidi zatím může každý, protože někdo ve skupině má starší verzi Šepotu.'**
+  String get groupsAdminOnlyCompatHint;
+
+  /// SnackBar při selhání správcovské akce
+  ///
+  /// In cs, this message translates to:
+  /// **'Změna se nepovedla: {error}'**
+  String groupsAdminActionFailed(String error);
+
+  /// Upozornění v profilu skupiny, když chybí mezistav od správce
+  ///
+  /// In cs, this message translates to:
+  /// **'Stav skupiny se srovnává se správcem. Změny členů se můžou chvíli opozdit.'**
+  String get groupsResyncNotice;
+
+  /// Upozornění v profilu skupiny po odmítnuté neoprávněné změně
+  ///
+  /// In cs, this message translates to:
+  /// **'Někdo bez oprávnění zkusil skupinu změnit. Změna se neprovedla.'**
+  String get groupsRejectedChangeNotice;
+
+  /// Chyba: akci smí udělat jen správce skupiny
+  ///
+  /// In cs, this message translates to:
+  /// **'Tohle může udělat jen správce skupiny.'**
+  String get errorGroupNotAdmin;
+
+  /// Chyba: poslední správce se nemůže vzdát role
+  ///
+  /// In cs, this message translates to:
+  /// **'Jsi jediný správce. Nejdřív udělej správcem někoho dalšího.'**
+  String get errorGroupLastAdmin;
 
   /// hintText TextFieldu v dialogu přejmenování skupiny | labelText textového pole pro jméno skupiny (max 64 znaků)
   ///
@@ -410,6 +494,42 @@ abstract class AppLocalizations {
   /// **'Odpovědět'**
   String get chatActionReply;
 
+  /// Akce v nabídce po podržení zprávy
+  ///
+  /// In cs, this message translates to:
+  /// **'Přeposlat'**
+  String get chatActionForward;
+
+  /// Nadpis panelu výběru chatu pro přeposlání
+  ///
+  /// In cs, this message translates to:
+  /// **'Přeposlat do…'**
+  String get forwardTitle;
+
+  /// Nápověda v poli hledání panelu přeposlání
+  ///
+  /// In cs, this message translates to:
+  /// **'Hledat kontakt nebo skupinu'**
+  String get forwardSearchHint;
+
+  /// Prázdný výsledek hledání v panelu přeposlání
+  ///
+  /// In cs, this message translates to:
+  /// **'Nic tu není'**
+  String get forwardEmpty;
+
+  /// SnackBar po přeposlání zprávy
+  ///
+  /// In cs, this message translates to:
+  /// **'Přeposláno: {name}'**
+  String forwardDone(String name);
+
+  /// SnackBar při chybě přeposlání
+  ///
+  /// In cs, this message translates to:
+  /// **'Přeposlání se nepovedlo: {error}'**
+  String forwardFailed(String error);
+
   /// Položka akčního bottom sheetu zprávy — kopírování textu do schránky | Popisek OutlinedButton.icon pro zkopírování Šepot ID do schránky
   ///
   /// In cs, this message translates to:
@@ -512,6 +632,24 @@ abstract class AppLocalizations {
   /// **'Soubor je příliš velký (max {maxMb} MB)'**
   String attachmentTooLarge(int maxMb);
 
+  /// Titulek dialogu před odesláním obrázku jako dokumentu, když z něj nejde odstranit EXIF (HEIC, RAW)
+  ///
+  /// In cs, this message translates to:
+  /// **'Fotka odejde i s polohou'**
+  String get attachmentKeepsMetadataTitle;
+
+  /// Text téhož dialogu
+  ///
+  /// In cs, this message translates to:
+  /// **'Tenhle formát fotky (třeba HEIC) neumím zbavit metadat. Odešla by v originále včetně polohy, kde vznikla, a údajů o telefonu. Bezpečnější je poslat ji přes Galerii, kde se metadata odstraní.'**
+  String get attachmentKeepsMetadataBody;
+
+  /// Potvrzovací tlačítko téhož dialogu
+  ///
+  /// In cs, this message translates to:
+  /// **'Poslat originál'**
+  String get attachmentSendOriginal;
+
   /// SnackBar (_showError) při selhání výběru přílohy
   ///
   /// In cs, this message translates to:
@@ -577,6 +715,12 @@ abstract class AppLocalizations {
   /// In cs, this message translates to:
   /// **'Skupina potřebuje aspoň 1 člena'**
   String get errorGroupNeedsMember;
+
+  /// Chyba při přeposlání přílohy, která už byla smazána nebo nestažena
+  ///
+  /// In cs, this message translates to:
+  /// **'Příloha už v telefonu není'**
+  String get errorAttachmentUnavailable;
 
   /// StateError z createGroup při překročení max. počtu členů; zobrazuje UI zakládání skupiny. Počet v textu + české skloňování (člen/členové/členů) → ICU plural. | StateError z addGroupMembers — identický text jako v createGroup (ř. 583), stejný klíč. ICU plural.
   ///
@@ -1082,23 +1226,185 @@ abstract class AppLocalizations {
   /// **'Nová konverzace'**
   String get chatListNewConversation;
 
-  /// Náhled poslední zprávy v dlaždici — fotka s popiskem; emoji je součást textu
-  ///
-  /// In cs, this message translates to:
-  /// **'📷 {caption}'**
-  String chatListPhotoWithCaptionPreview(String caption);
-
-  /// Náhled poslední zprávy v dlaždici — soubor; emoji je součást textu. Skládaný literál: obsahuje vnořený fallback "Soubor" (viz samostatný záznam) — při lokalizaci předat placeholderu už vyřešenou hodnotu msg.fileName ?? commonFile.
-  ///
-  /// In cs, this message translates to:
-  /// **'📎 {fileName}'**
-  String chatListFilePreview(String fileName);
-
   /// Náhled poslední zprávy v dlaždici pro zprávu typu readReceipt (potvrzení o přečtení)
   ///
   /// In cs, this message translates to:
   /// **'Přečteno'**
   String get chatListReadReceiptPreview;
+
+  /// Předpona náhledu v seznamu chatů, když je v chatu rozepsaná zpráva
+  ///
+  /// In cs, this message translates to:
+  /// **'Koncept'**
+  String get chatListDraft;
+
+  /// Název chatu se sebou samým (seznam chatů, hlavička, kontakty, přeposlání)
+  ///
+  /// In cs, this message translates to:
+  /// **'Poznámky pro sebe'**
+  String get notesTitle;
+
+  /// Podtitulek poznámek pro sebe — nic se neodesílá na server
+  ///
+  /// In cs, this message translates to:
+  /// **'Jen v tomto telefonu, šifrovaně'**
+  String get notesSubtitle;
+
+  /// Tlačítko hlasového hovoru v hlavičce chatu
+  ///
+  /// In cs, this message translates to:
+  /// **'Zavolat'**
+  String get callVoice;
+
+  /// Tlačítko videohovoru v hlavičce chatu
+  ///
+  /// In cs, this message translates to:
+  /// **'Videohovor'**
+  String get callVideo;
+
+  /// Stav odchozího hovoru, dokud protistrana nezvedne
+  ///
+  /// In cs, this message translates to:
+  /// **'Vyzvání…'**
+  String get callStatusRinging;
+
+  /// Stav příchozího hlasového hovoru
+  ///
+  /// In cs, this message translates to:
+  /// **'Příchozí hovor'**
+  String get callIncomingVoice;
+
+  /// Stav příchozího videohovoru
+  ///
+  /// In cs, this message translates to:
+  /// **'Příchozí videohovor'**
+  String get callIncomingVideo;
+
+  /// Stav po přijetí, než naběhne spojení
+  ///
+  /// In cs, this message translates to:
+  /// **'Spojuji…'**
+  String get callStatusConnecting;
+
+  /// Krátce po konci hovoru
+  ///
+  /// In cs, this message translates to:
+  /// **'Hovor skončil'**
+  String get callEnded;
+
+  /// Protistrana má jiný hovor
+  ///
+  /// In cs, this message translates to:
+  /// **'Obsazeno'**
+  String get callEndedBusy;
+
+  /// Hovor byl odmítnut
+  ///
+  /// In cs, this message translates to:
+  /// **'Hovor odmítnut'**
+  String get callEndedRejected;
+
+  /// Odchozí hovor vypršel bez odpovědi
+  ///
+  /// In cs, this message translates to:
+  /// **'Nikdo to nevzal'**
+  String get callEndedUnanswered;
+
+  /// Hovor se nepodařilo spojit
+  ///
+  /// In cs, this message translates to:
+  /// **'Spojení se nepodařilo'**
+  String get callEndedFailed;
+
+  /// Podtitulek na obrazovce hovoru
+  ///
+  /// In cs, this message translates to:
+  /// **'Šifrováno end-to-end'**
+  String get callEncrypted;
+
+  /// Přijetí příchozího hovoru
+  ///
+  /// In cs, this message translates to:
+  /// **'Přijmout'**
+  String get callAccept;
+
+  /// Odmítnutí příchozího hovoru
+  ///
+  /// In cs, this message translates to:
+  /// **'Odmítnout'**
+  String get callReject;
+
+  /// Přepínač mikrofonu (popisek pro čtečku)
+  ///
+  /// In cs, this message translates to:
+  /// **'Ztlumit mikrofon'**
+  String get callMute;
+
+  /// Přepínač hlasitého odposlechu
+  ///
+  /// In cs, this message translates to:
+  /// **'Reproduktor'**
+  String get callSpeaker;
+
+  /// Přepínač kamery ve videohovoru
+  ///
+  /// In cs, this message translates to:
+  /// **'Vypnout kameru'**
+  String get callCamera;
+
+  /// Přední/zadní kamera
+  ///
+  /// In cs, this message translates to:
+  /// **'Přepnout kameru'**
+  String get callSwitchCamera;
+
+  /// Ukončení hovoru
+  ///
+  /// In cs, this message translates to:
+  /// **'Zavěsit'**
+  String get callHangUp;
+
+  /// Záznam v chatu
+  ///
+  /// In cs, this message translates to:
+  /// **'Zmeškaný hovor'**
+  String get callLogMissed;
+
+  /// Odchozí hovor, který protistrana nevzala
+  ///
+  /// In cs, this message translates to:
+  /// **'Nepřijatý hovor'**
+  String get callLogUnanswered;
+
+  /// Záznam v chatu
+  ///
+  /// In cs, this message translates to:
+  /// **'Odmítnutý hovor'**
+  String get callLogRejected;
+
+  /// Záznam v chatu — protistrana měla jiný hovor
+  ///
+  /// In cs, this message translates to:
+  /// **'Obsazeno'**
+  String get callLogBusy;
+
+  /// Záznam v chatu
+  ///
+  /// In cs, this message translates to:
+  /// **'Hovor se nespojil'**
+  String get callLogFailed;
+
+  /// Záznam proběhlého hlasového hovoru s délkou
+  ///
+  /// In cs, this message translates to:
+  /// **'Hovor · {duration}'**
+  String callLogVoice(String duration);
+
+  /// Záznam proběhlého videohovoru s délkou
+  ///
+  /// In cs, this message translates to:
+  /// **'Videohovor · {duration}'**
+  String callLogVideo(String duration);
 
   /// Relativní čas poslední zprávy v dlaždici, méně než 1 minuta
   ///
@@ -1700,10 +2006,10 @@ abstract class AppLocalizations {
   /// **'Zprávy se stáhnou až po otevření appky.'**
   String get pushModeOffDesc;
 
-  /// Label volby 'up' v dialogu výběru režimu pushů ('UnifiedPush' je název technologie — nepřekládat, přeložit jen '(doporučeno)')
+  /// Label volby 'up' v dialogu výběru režimu pushů ('UnifiedPush' je název technologie — nepřekládat, přeložit jen '(bez Googlu)')
   ///
   /// In cs, this message translates to:
-  /// **'UnifiedPush (doporučeno)'**
+  /// **'UnifiedPush (bez Googlu)'**
   String get pushModeUp;
 
   /// Popisek volby UnifiedPush v dialogu výběru režimu pushů ('ntfy', 'F-Droid', 'Play' jsou názvy — nepřekládat)
@@ -1715,7 +2021,7 @@ abstract class AppLocalizations {
   /// Label volby 'fcm' v dialogu výběru režimu pushů (vlastní název — pravděpodobně shodný ve všech jazycích, ale klíč mít)
   ///
   /// In cs, this message translates to:
-  /// **'Google (FCM)'**
+  /// **'Google (FCM, výchozí)'**
   String get pushModeFcm;
 
   /// Popisek volby Google (FCM) v dialogu výběru režimu pushů. POZOR: v kódu DVA adjacentní literály (ř. 51–52: '…jde ' + 'Googlu; obsah…') — sloučit do jednoho klíče.
@@ -1787,7 +2093,7 @@ abstract class AppLocalizations {
   /// Subtitle ListTile v nastavení, když je aktivní režim FCM
   ///
   /// In cs, this message translates to:
-  /// **'Google (FCM) — rychlé, opt-in'**
+  /// **'Google (FCM)'**
   String get pushSubtitleFcm;
 
   /// Validační chyba pod formulářem obnovy účtu, když je jméno prázdné
@@ -2293,6 +2599,426 @@ abstract class AppLocalizations {
   /// In cs, this message translates to:
   /// **'Fotku se nepodařilo načíst'**
   String get photoPreviewDecodeFailed;
+
+  /// Položka v nabídce zprávy — detail doručení a přečtení.
+  ///
+  /// In cs, this message translates to:
+  /// **'Info o zprávě'**
+  String get chatActionInfo;
+
+  /// Info o zprávě: řádek času odeslání.
+  ///
+  /// In cs, this message translates to:
+  /// **'Odesláno'**
+  String get messageInfoSent;
+
+  /// Info o zprávě: řádek času doručení.
+  ///
+  /// In cs, this message translates to:
+  /// **'Doručeno'**
+  String get messageInfoDelivered;
+
+  /// Info o zprávě: řádek času přečtení.
+  ///
+  /// In cs, this message translates to:
+  /// **'Přečteno'**
+  String get messageInfoRead;
+
+  /// Info o zprávě: událost ještě nenastala.
+  ///
+  /// In cs, this message translates to:
+  /// **'zatím ne'**
+  String get messageInfoPending;
+
+  /// Info o zprávě: vysvětlení, proč chybí čas přečtení.
+  ///
+  /// In cs, this message translates to:
+  /// **'Kdy si zprávu přečetli, uvidíš, jen když sám sdílíš potvrzení přečtení (Nastavení).'**
+  String get messageInfoReadReceiptsOff;
+
+  /// Řádek pod poslední odeslanou zprávou — čas přečtení.
+  ///
+  /// In cs, this message translates to:
+  /// **'Přečteno {time}'**
+  String chatStatusReadAt(String time);
+
+  /// Řádek pod poslední odeslanou zprávou — čas doručení.
+  ///
+  /// In cs, this message translates to:
+  /// **'Doručeno {time}'**
+  String chatStatusDeliveredAt(String time);
+
+  /// Nabídka skupiny a titulek obrazovky pro přidání lidí.
+  ///
+  /// In cs, this message translates to:
+  /// **'Přidat členy'**
+  String get groupsAddMembers;
+
+  /// Potvrzovací tlačítko v AppBaru při přidávání členů.
+  ///
+  /// In cs, this message translates to:
+  /// **'Přidat'**
+  String get groupsAddMembersAction;
+
+  /// Chyba při přidávání členů.
+  ///
+  /// In cs, this message translates to:
+  /// **'Přidání se nepovedlo: {error}'**
+  String groupsAddMembersFailed(String error);
+
+  /// Prázdný výběr — všechny kontakty už ve skupině jsou.
+  ///
+  /// In cs, this message translates to:
+  /// **'Všechny tvoje kontakty už ve skupině jsou. Nového člověka nejdřív přidej do kontaktů přes QR kód.'**
+  String get groupsNoContactsToAdd;
+
+  /// Karta spodní navigace a nadpis seznamu chatů.
+  ///
+  /// In cs, this message translates to:
+  /// **'Chaty'**
+  String get navChats;
+
+  /// Tlačítko pro zahájení nového chatu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Nový chat'**
+  String get chatListNewChat;
+
+  /// Placeholder hledání v seznamu chatů.
+  ///
+  /// In cs, this message translates to:
+  /// **'Hledat v chatech a zprávách'**
+  String get chatListSearchHint;
+
+  /// Filtr seznamu chatů — vše.
+  ///
+  /// In cs, this message translates to:
+  /// **'Vše'**
+  String get chatFilterAll;
+
+  /// Filtr seznamu chatů — nepřečtené.
+  ///
+  /// In cs, this message translates to:
+  /// **'Nepřečtené'**
+  String get chatFilterUnread;
+
+  /// Filtr seznamu chatů — skupiny.
+  ///
+  /// In cs, this message translates to:
+  /// **'Skupiny'**
+  String get chatFilterGroups;
+
+  /// Odkaz na archiv v řádku filtrů.
+  ///
+  /// In cs, this message translates to:
+  /// **'Archiv'**
+  String get chatFilterArchive;
+
+  /// Hledání v chatech nic nenašlo.
+  ///
+  /// In cs, this message translates to:
+  /// **'Nic nenalezeno.'**
+  String get chatListNoResults;
+
+  /// Vybraný filtr je prázdný.
+  ///
+  /// In cs, this message translates to:
+  /// **'Tady zatím nic není.'**
+  String get chatListFilterEmpty;
+
+  /// Akce: připnout chat nahoru.
+  ///
+  /// In cs, this message translates to:
+  /// **'Připnout'**
+  String get chatListPin;
+
+  /// Akce: odepnout chat.
+  ///
+  /// In cs, this message translates to:
+  /// **'Odepnout'**
+  String get chatListUnpin;
+
+  /// Hlavička chatu / menu: otevřít profil kontaktu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Zobrazit profil'**
+  String get chatOpenProfile;
+
+  /// Menu skupinového chatu: profil skupiny.
+  ///
+  /// In cs, this message translates to:
+  /// **'Profil skupiny'**
+  String get groupsProfile;
+
+  /// Hledání v jedné konverzaci — placeholder a popisek tlačítka.
+  ///
+  /// In cs, this message translates to:
+  /// **'Hledat v konverzaci'**
+  String get chatSearchHint;
+
+  /// Hledání v konverzaci bez výsledku (krátce, vedle pole).
+  ///
+  /// In cs, this message translates to:
+  /// **'Nic'**
+  String get chatSearchNoMatches;
+
+  /// Pořadí aktuální shody hledání, např. „2 z 5“.
+  ///
+  /// In cs, this message translates to:
+  /// **'{current} z {total}'**
+  String chatSearchCounter(int current, int total);
+
+  /// Tlačítko: předchozí (starší) shoda.
+  ///
+  /// In cs, this message translates to:
+  /// **'Starší shoda'**
+  String get chatSearchOlder;
+
+  /// Tlačítko: další (novější) shoda.
+  ///
+  /// In cs, this message translates to:
+  /// **'Novější shoda'**
+  String get chatSearchNewer;
+
+  /// Oddělovač nad první nepřečtenou zprávou.
+  ///
+  /// In cs, this message translates to:
+  /// **'{count, plural, one{1 nová zpráva} few{{count} nové zprávy} other{{count} nových zpráv}}'**
+  String chatUnreadDivider(int count);
+
+  /// Tlačítko: skok na nejnovější zprávy.
+  ///
+  /// In cs, this message translates to:
+  /// **'Na nejnovější zprávy'**
+  String get chatJumpToLatest;
+
+  /// Tlačítko přílohy v poli pro psaní.
+  ///
+  /// In cs, this message translates to:
+  /// **'Přiložit'**
+  String get chatAttach;
+
+  /// Tlačítko odeslat.
+  ///
+  /// In cs, this message translates to:
+  /// **'Odeslat'**
+  String get chatSend;
+
+  /// Tlačítko nahrát hlasovou zprávu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Nahrát hlasovou zprávu'**
+  String get chatRecordVoice;
+
+  /// Karta sdílených fotek v profilu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Sdílená média'**
+  String get profileSharedMedia;
+
+  /// Akce profilu: napsat zprávu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Zpráva'**
+  String get profileMessage;
+
+  /// Akce profilu: hledat v konverzaci.
+  ///
+  /// In cs, this message translates to:
+  /// **'Hledat'**
+  String get profileSearch;
+
+  /// Akce profilu: zrušit ztlumení (krátce).
+  ///
+  /// In cs, this message translates to:
+  /// **'Zvuk'**
+  String get profileUnmute;
+
+  /// Akce profilu: mizící zprávy (krátce).
+  ///
+  /// In cs, this message translates to:
+  /// **'Mizení'**
+  String get profileDisappearing;
+
+  /// Karta společných skupin v profilu kontaktu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Společné skupiny'**
+  String get profileCommonGroups;
+
+  /// Řádek profilu: bezpečnostní číslo.
+  ///
+  /// In cs, this message translates to:
+  /// **'Bezpečnostní číslo'**
+  String get profileSafetyNumber;
+
+  /// Podtitulek bezpečnostního čísla u neověřeného kontaktu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Porovnejte osobně nebo QR kódem'**
+  String get profileSafetyNumberHint;
+
+  /// Stav ověřeného kontaktu v hlavičce profilu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Ověřeno osobně'**
+  String get profileVerifiedInPerson;
+
+  /// Tlačítko v profilu neověřeného kontaktu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Ověřit kontakt'**
+  String get profileVerifyNow;
+
+  /// Akce profilu skupiny: přidat členy (krátce).
+  ///
+  /// In cs, this message translates to:
+  /// **'Přidat'**
+  String get profileAdd;
+
+  /// Podtitulek profilu skupiny: počet členů · datum založení.
+  ///
+  /// In cs, this message translates to:
+  /// **'Skupina · {members} · založena {date}'**
+  String profileGroupSubtitle(String members, String date);
+
+  /// Počet členů ze stropu skupiny, např. „4 ze 128“.
+  ///
+  /// In cs, this message translates to:
+  /// **'{count} ze {max}'**
+  String profileMembersOfMax(int count, int max);
+
+  /// Podtitulek chatu / náhled v seznamu: protistrana píše.
+  ///
+  /// In cs, this message translates to:
+  /// **'píše…'**
+  String get chatTyping;
+
+  /// Skupina: kdo píše (křestní jméno).
+  ///
+  /// In cs, this message translates to:
+  /// **'{name} píše…'**
+  String chatTypingNamed(String name);
+
+  /// Skupina: píše víc lidí najednou.
+  ///
+  /// In cs, this message translates to:
+  /// **'Několik lidí píše…'**
+  String get chatTypingSeveral;
+
+  /// Nastavení: přepínač „píše…“.
+  ///
+  /// In cs, this message translates to:
+  /// **'Ukazovat, že píšu'**
+  String get settingsTypingTitle;
+
+  /// Popis přepínače „píše…“.
+  ///
+  /// In cs, this message translates to:
+  /// **'Oboustranné — kdo nesdílí, nevidí (výchozí vypnuto)'**
+  String get settingsTypingSubtitle;
+
+  /// Položka nabídky příloh: vytvořit anketu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Anketa'**
+  String get pollAttach;
+
+  /// Nadpis formuláře nové ankety.
+  ///
+  /// In cs, this message translates to:
+  /// **'Nová anketa'**
+  String get pollCreateTitle;
+
+  /// Pole otázky ankety.
+  ///
+  /// In cs, this message translates to:
+  /// **'Otázka'**
+  String get pollQuestion;
+
+  /// Placeholder možnosti ankety s pořadím.
+  ///
+  /// In cs, this message translates to:
+  /// **'Možnost {number}'**
+  String pollOptionHint(int number);
+
+  /// Tlačítko: přidat možnost do ankety.
+  ///
+  /// In cs, this message translates to:
+  /// **'Přidat možnost'**
+  String get pollAddOption;
+
+  /// Tlačítko: odebrat možnost.
+  ///
+  /// In cs, this message translates to:
+  /// **'Odebrat možnost'**
+  String get pollRemoveOption;
+
+  /// Přepínač: víc odpovědí na osobu.
+  ///
+  /// In cs, this message translates to:
+  /// **'Povolit víc odpovědí'**
+  String get pollAllowMultiple;
+
+  /// Hlavička ankety s jednou volbou.
+  ///
+  /// In cs, this message translates to:
+  /// **'Anketa'**
+  String get pollSingle;
+
+  /// Hlavička ankety s více volbami.
+  ///
+  /// In cs, this message translates to:
+  /// **'Anketa, více voleb'**
+  String get pollMulti;
+
+  /// Počet hlasujících v anketě.
+  ///
+  /// In cs, this message translates to:
+  /// **'{count, plural, =0{zatím bez hlasů} one{1 hlas} few{{count} hlasy} other{{count} hlasů}}'**
+  String pollVoters(int count);
+
+  /// Záložní text ankety pro starší verze appky — první řádek.
+  ///
+  /// In cs, this message translates to:
+  /// **'Anketa: {question}'**
+  String pollFallback(String question);
+
+  /// Záložní text ankety — výzva k aktualizaci.
+  ///
+  /// In cs, this message translates to:
+  /// **'Hlasovat jde v aktuální verzi Šepotu.'**
+  String get pollFallbackUpdate;
+
+  /// Popisek avataru v Nastavení (čtečka obrazovky).
+  ///
+  /// In cs, this message translates to:
+  /// **'Změnit profilovou fotku'**
+  String get profilePhotoEdit;
+
+  /// Akce: vybrat profilovou fotku z galerie.
+  ///
+  /// In cs, this message translates to:
+  /// **'Vybrat fotku'**
+  String get profilePhotoPick;
+
+  /// Akce: odebrat profilovou fotku.
+  ///
+  /// In cs, this message translates to:
+  /// **'Odebrat fotku'**
+  String get profilePhotoRemove;
+
+  /// Vysvětlení, kdo profilovou fotku uvidí.
+  ///
+  /// In cs, this message translates to:
+  /// **'Fotku uvidí jen lidé, se kterými si píšeš — šifrovaně, stejně jako zprávy. Poloha ani údaje o fotce se neposílají.'**
+  String get profilePhotoHint;
+
+  /// Chyba nastavení profilové fotky.
+  ///
+  /// In cs, this message translates to:
+  /// **'Fotku se nepodařilo nastavit: {error}'**
+  String profilePhotoFailed(String error);
 }
 
 class _AppLocalizationsDelegate

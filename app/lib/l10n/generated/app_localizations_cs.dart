@@ -76,15 +76,65 @@ class AppLocalizationsCs extends AppLocalizations {
       'Už nejsi ve skupině. Historie zůstává, nové zprávy nedorazí.';
 
   @override
-  String groupsMembersWithCount(int count) {
-    return 'Členové ($count)';
-  }
-
-  @override
   String get groupsYou => 'Ty';
 
   @override
   String get groupsFounder => 'Zakladatel';
+
+  @override
+  String get groupsAdmin => 'Správce';
+
+  @override
+  String get groupsMakeAdmin => 'Udělat správcem';
+
+  @override
+  String get groupsDismissAdmin => 'Odebrat roli správce';
+
+  @override
+  String get groupsRemoveMember => 'Odebrat ze skupiny';
+
+  @override
+  String groupsRemoveMemberConfirmTitle(String name) {
+    return 'Odebrat $name ze skupiny?';
+  }
+
+  @override
+  String get groupsRemoveMemberConfirmBody =>
+      'Přestanou mu chodit nové zprávy skupiny. Dosavadní historie mu zůstane.';
+
+  @override
+  String get groupsRemoveAction => 'Odebrat';
+
+  @override
+  String get groupsViewContact => 'Zobrazit kontakt';
+
+  @override
+  String get groupsAdminOnlyHint =>
+      'Jméno, členy a správce skupiny mění jen správci.';
+
+  @override
+  String get groupsAdminOnlyCompatHint =>
+      'Jméno a správce mění jen správci. Přidávat lidi zatím může každý, protože někdo ve skupině má starší verzi Šepotu.';
+
+  @override
+  String groupsAdminActionFailed(String error) {
+    return 'Změna se nepovedla: $error';
+  }
+
+  @override
+  String get groupsResyncNotice =>
+      'Stav skupiny se srovnává se správcem. Změny členů se můžou chvíli opozdit.';
+
+  @override
+  String get groupsRejectedChangeNotice =>
+      'Někdo bez oprávnění zkusil skupinu změnit. Změna se neprovedla.';
+
+  @override
+  String get errorGroupNotAdmin => 'Tohle může udělat jen správce skupiny.';
+
+  @override
+  String get errorGroupLastAdmin =>
+      'Jsi jediný správce. Nejdřív udělej správcem někoho dalšího.';
 
   @override
   String get groupsNameHint => 'Název skupiny';
@@ -193,6 +243,28 @@ class AppLocalizationsCs extends AppLocalizations {
   String get chatActionReply => 'Odpovědět';
 
   @override
+  String get chatActionForward => 'Přeposlat';
+
+  @override
+  String get forwardTitle => 'Přeposlat do…';
+
+  @override
+  String get forwardSearchHint => 'Hledat kontakt nebo skupinu';
+
+  @override
+  String get forwardEmpty => 'Nic tu není';
+
+  @override
+  String forwardDone(String name) {
+    return 'Přeposláno: $name';
+  }
+
+  @override
+  String forwardFailed(String error) {
+    return 'Přeposlání se nepovedlo: $error';
+  }
+
+  @override
   String get commonCopy => 'Kopírovat';
 
   @override
@@ -249,6 +321,16 @@ class AppLocalizationsCs extends AppLocalizations {
   }
 
   @override
+  String get attachmentKeepsMetadataTitle => 'Fotka odejde i s polohou';
+
+  @override
+  String get attachmentKeepsMetadataBody =>
+      'Tenhle formát fotky (třeba HEIC) neumím zbavit metadat. Odešla by v originále včetně polohy, kde vznikla, a údajů o telefonu. Bezpečnější je poslat ji přes Galerii, kde se metadata odstraní.';
+
+  @override
+  String get attachmentSendOriginal => 'Poslat originál';
+
+  @override
   String attachmentPickFailed(String error) {
     return 'Výběr přílohy selhal: $error';
   }
@@ -291,6 +373,9 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get errorGroupNeedsMember => 'Skupina potřebuje aspoň 1 člena';
+
+  @override
+  String get errorAttachmentUnavailable => 'Příloha už v telefonu není';
 
   @override
   String errorGroupMaxMembers(int maxMembers) {
@@ -602,17 +687,98 @@ class AppLocalizationsCs extends AppLocalizations {
   String get chatListNewConversation => 'Nová konverzace';
 
   @override
-  String chatListPhotoWithCaptionPreview(String caption) {
-    return '📷 $caption';
-  }
-
-  @override
-  String chatListFilePreview(String fileName) {
-    return '📎 $fileName';
-  }
-
-  @override
   String get chatListReadReceiptPreview => 'Přečteno';
+
+  @override
+  String get chatListDraft => 'Koncept';
+
+  @override
+  String get notesTitle => 'Poznámky pro sebe';
+
+  @override
+  String get notesSubtitle => 'Jen v tomto telefonu, šifrovaně';
+
+  @override
+  String get callVoice => 'Zavolat';
+
+  @override
+  String get callVideo => 'Videohovor';
+
+  @override
+  String get callStatusRinging => 'Vyzvání…';
+
+  @override
+  String get callIncomingVoice => 'Příchozí hovor';
+
+  @override
+  String get callIncomingVideo => 'Příchozí videohovor';
+
+  @override
+  String get callStatusConnecting => 'Spojuji…';
+
+  @override
+  String get callEnded => 'Hovor skončil';
+
+  @override
+  String get callEndedBusy => 'Obsazeno';
+
+  @override
+  String get callEndedRejected => 'Hovor odmítnut';
+
+  @override
+  String get callEndedUnanswered => 'Nikdo to nevzal';
+
+  @override
+  String get callEndedFailed => 'Spojení se nepodařilo';
+
+  @override
+  String get callEncrypted => 'Šifrováno end-to-end';
+
+  @override
+  String get callAccept => 'Přijmout';
+
+  @override
+  String get callReject => 'Odmítnout';
+
+  @override
+  String get callMute => 'Ztlumit mikrofon';
+
+  @override
+  String get callSpeaker => 'Reproduktor';
+
+  @override
+  String get callCamera => 'Vypnout kameru';
+
+  @override
+  String get callSwitchCamera => 'Přepnout kameru';
+
+  @override
+  String get callHangUp => 'Zavěsit';
+
+  @override
+  String get callLogMissed => 'Zmeškaný hovor';
+
+  @override
+  String get callLogUnanswered => 'Nepřijatý hovor';
+
+  @override
+  String get callLogRejected => 'Odmítnutý hovor';
+
+  @override
+  String get callLogBusy => 'Obsazeno';
+
+  @override
+  String get callLogFailed => 'Hovor se nespojil';
+
+  @override
+  String callLogVoice(String duration) {
+    return 'Hovor · $duration';
+  }
+
+  @override
+  String callLogVideo(String duration) {
+    return 'Videohovor · $duration';
+  }
 
   @override
   String get chatListTimeNow => 'teď';
@@ -943,14 +1109,14 @@ class AppLocalizationsCs extends AppLocalizations {
   String get pushModeOffDesc => 'Zprávy se stáhnou až po otevření appky.';
 
   @override
-  String get pushModeUp => 'UnifiedPush (doporučeno)';
+  String get pushModeUp => 'UnifiedPush (bez Googlu)';
 
   @override
   String get pushModeUpDesc =>
       'Degooglované — potřebuje aplikaci ntfy (F-Droid/Play).';
 
   @override
-  String get pushModeFcm => 'Google (FCM)';
+  String get pushModeFcm => 'Google (FCM, výchozí)';
 
   @override
   String get pushModeFcmDesc =>
@@ -995,7 +1161,7 @@ class AppLocalizationsCs extends AppLocalizations {
   String get pushNoDistributorFallback => 'bez distributora';
 
   @override
-  String get pushSubtitleFcm => 'Google (FCM) — rychlé, opt-in';
+  String get pushSubtitleFcm => 'Google (FCM)';
 
   @override
   String get restoreErrorNameRequired => 'Zadej zobrazované jméno.';
@@ -1302,4 +1468,257 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get photoPreviewDecodeFailed => 'Fotku se nepodařilo načíst';
+
+  @override
+  String get chatActionInfo => 'Info o zprávě';
+
+  @override
+  String get messageInfoSent => 'Odesláno';
+
+  @override
+  String get messageInfoDelivered => 'Doručeno';
+
+  @override
+  String get messageInfoRead => 'Přečteno';
+
+  @override
+  String get messageInfoPending => 'zatím ne';
+
+  @override
+  String get messageInfoReadReceiptsOff =>
+      'Kdy si zprávu přečetli, uvidíš, jen když sám sdílíš potvrzení přečtení (Nastavení).';
+
+  @override
+  String chatStatusReadAt(String time) {
+    return 'Přečteno $time';
+  }
+
+  @override
+  String chatStatusDeliveredAt(String time) {
+    return 'Doručeno $time';
+  }
+
+  @override
+  String get groupsAddMembers => 'Přidat členy';
+
+  @override
+  String get groupsAddMembersAction => 'Přidat';
+
+  @override
+  String groupsAddMembersFailed(String error) {
+    return 'Přidání se nepovedlo: $error';
+  }
+
+  @override
+  String get groupsNoContactsToAdd =>
+      'Všechny tvoje kontakty už ve skupině jsou. Nového člověka nejdřív přidej do kontaktů přes QR kód.';
+
+  @override
+  String get navChats => 'Chaty';
+
+  @override
+  String get chatListNewChat => 'Nový chat';
+
+  @override
+  String get chatListSearchHint => 'Hledat v chatech a zprávách';
+
+  @override
+  String get chatFilterAll => 'Vše';
+
+  @override
+  String get chatFilterUnread => 'Nepřečtené';
+
+  @override
+  String get chatFilterGroups => 'Skupiny';
+
+  @override
+  String get chatFilterArchive => 'Archiv';
+
+  @override
+  String get chatListNoResults => 'Nic nenalezeno.';
+
+  @override
+  String get chatListFilterEmpty => 'Tady zatím nic není.';
+
+  @override
+  String get chatListPin => 'Připnout';
+
+  @override
+  String get chatListUnpin => 'Odepnout';
+
+  @override
+  String get chatOpenProfile => 'Zobrazit profil';
+
+  @override
+  String get groupsProfile => 'Profil skupiny';
+
+  @override
+  String get chatSearchHint => 'Hledat v konverzaci';
+
+  @override
+  String get chatSearchNoMatches => 'Nic';
+
+  @override
+  String chatSearchCounter(int current, int total) {
+    return '$current z $total';
+  }
+
+  @override
+  String get chatSearchOlder => 'Starší shoda';
+
+  @override
+  String get chatSearchNewer => 'Novější shoda';
+
+  @override
+  String chatUnreadDivider(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count nových zpráv',
+      few: '$count nové zprávy',
+      one: '1 nová zpráva',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get chatJumpToLatest => 'Na nejnovější zprávy';
+
+  @override
+  String get chatAttach => 'Přiložit';
+
+  @override
+  String get chatSend => 'Odeslat';
+
+  @override
+  String get chatRecordVoice => 'Nahrát hlasovou zprávu';
+
+  @override
+  String get profileSharedMedia => 'Sdílená média';
+
+  @override
+  String get profileMessage => 'Zpráva';
+
+  @override
+  String get profileSearch => 'Hledat';
+
+  @override
+  String get profileUnmute => 'Zvuk';
+
+  @override
+  String get profileDisappearing => 'Mizení';
+
+  @override
+  String get profileCommonGroups => 'Společné skupiny';
+
+  @override
+  String get profileSafetyNumber => 'Bezpečnostní číslo';
+
+  @override
+  String get profileSafetyNumberHint => 'Porovnejte osobně nebo QR kódem';
+
+  @override
+  String get profileVerifiedInPerson => 'Ověřeno osobně';
+
+  @override
+  String get profileVerifyNow => 'Ověřit kontakt';
+
+  @override
+  String get profileAdd => 'Přidat';
+
+  @override
+  String profileGroupSubtitle(String members, String date) {
+    return 'Skupina · $members · založena $date';
+  }
+
+  @override
+  String profileMembersOfMax(int count, int max) {
+    return '$count ze $max';
+  }
+
+  @override
+  String get chatTyping => 'píše…';
+
+  @override
+  String chatTypingNamed(String name) {
+    return '$name píše…';
+  }
+
+  @override
+  String get chatTypingSeveral => 'Několik lidí píše…';
+
+  @override
+  String get settingsTypingTitle => 'Ukazovat, že píšu';
+
+  @override
+  String get settingsTypingSubtitle =>
+      'Oboustranné — kdo nesdílí, nevidí (výchozí vypnuto)';
+
+  @override
+  String get pollAttach => 'Anketa';
+
+  @override
+  String get pollCreateTitle => 'Nová anketa';
+
+  @override
+  String get pollQuestion => 'Otázka';
+
+  @override
+  String pollOptionHint(int number) {
+    return 'Možnost $number';
+  }
+
+  @override
+  String get pollAddOption => 'Přidat možnost';
+
+  @override
+  String get pollRemoveOption => 'Odebrat možnost';
+
+  @override
+  String get pollAllowMultiple => 'Povolit víc odpovědí';
+
+  @override
+  String get pollSingle => 'Anketa';
+
+  @override
+  String get pollMulti => 'Anketa, více voleb';
+
+  @override
+  String pollVoters(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count hlasů',
+      few: '$count hlasy',
+      one: '1 hlas',
+      zero: 'zatím bez hlasů',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String pollFallback(String question) {
+    return 'Anketa: $question';
+  }
+
+  @override
+  String get pollFallbackUpdate => 'Hlasovat jde v aktuální verzi Šepotu.';
+
+  @override
+  String get profilePhotoEdit => 'Změnit profilovou fotku';
+
+  @override
+  String get profilePhotoPick => 'Vybrat fotku';
+
+  @override
+  String get profilePhotoRemove => 'Odebrat fotku';
+
+  @override
+  String get profilePhotoHint =>
+      'Fotku uvidí jen lidé, se kterými si píšeš — šifrovaně, stejně jako zprávy. Poloha ani údaje o fotce se neposílají.';
+
+  @override
+  String profilePhotoFailed(String error) {
+    return 'Fotku se nepodařilo nastavit: $error';
+  }
 }

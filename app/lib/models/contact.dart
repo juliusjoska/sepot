@@ -1,3 +1,4 @@
+import 'package:sepot/models/avatar_ref.dart';
 import 'package:sepot/models/identity.dart';
 
 /// Kontakt — osoba, se kterou můžeme chatovat
@@ -14,6 +15,9 @@ class Contact {
   /// nezobrazí) a odesílání je v UI zablokované.
   bool blocked;
 
+  /// Profilová fotka, kterou kontakt sdílí (null = iniciály).
+  AvatarRef? avatar;
+
   Contact({
     required this.displayName,
     required this.publicIdentity,
@@ -21,6 +25,7 @@ class Contact {
     this.verified = false,
     this.notes,
     this.blocked = false,
+    this.avatar,
   });
 
   /// ID kontaktu = fingerprint identity klíče (identita = klíč).
@@ -58,6 +63,7 @@ class Contact {
         'verified': verified,
         'notes': notes,
         'blocked': blocked,
+        'avatar': avatar?.toJson(),
       };
 
   factory Contact.fromJson(Map<String, dynamic> json) {
@@ -70,6 +76,7 @@ class Contact {
       verified: json['verified'] as bool? ?? false,
       notes: json['notes'] as String?,
       blocked: json['blocked'] as bool? ?? false,
+      avatar: AvatarRef.fromJson(json['avatar']),
     );
   }
 }

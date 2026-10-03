@@ -9,10 +9,11 @@ class Conversation {
   DateTime lastActivity;
   int? disappearAfterSeconds; // Globální nastavení mizících zpráv
 
-  /// Ztlumení a archivace — čistě LOKÁLNÍ (neopouští zařízení).
+  /// Ztlumení, archivace a připnutí — čistě LOKÁLNÍ (neopouští zařízení).
   bool muted;
   DateTime? mutedUntil; // null + muted = navždy; jinak dočasně
   bool archived;
+  bool pinned; // připnutý nahoře v seznamu chatů (lokální)
 
   Conversation({
     required this.contactId,
@@ -22,6 +23,7 @@ class Conversation {
     this.muted = false,
     this.mutedUntil,
     this.archived = false,
+    this.pinned = false,
   })  : messages = messages ?? [],
         lastActivity = lastActivity ?? DateTime.now();
 
@@ -75,6 +77,7 @@ class Conversation {
         'muted': muted,
         'mutedUntil': mutedUntil?.toIso8601String(),
         'archived': archived,
+        'pinned': pinned,
       };
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
@@ -92,6 +95,7 @@ class Conversation {
           ? null
           : DateTime.parse(json['mutedUntil'] as String),
       archived: json['archived'] as bool? ?? false,
+      pinned: json['pinned'] as bool? ?? false,
     );
   }
 }

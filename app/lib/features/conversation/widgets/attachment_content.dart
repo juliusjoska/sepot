@@ -9,6 +9,7 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
@@ -17,6 +18,7 @@ import 'package:sepot/models/attachment.dart';
 import 'package:sepot/models/message.dart';
 import 'package:sepot/providers/conversations_provider.dart';
 import 'package:sepot/providers/messaging_provider.dart';
+import 'package:sepot/providers/storage_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 String formatBytes(AppLocalizations l10n, int bytes) {
@@ -65,13 +67,13 @@ class ImageAttachmentContent extends ConsumerWidget {
 
     return GestureDetector(
       onTap: switch (meta.state) {
-        AttachmentTransferState.ready => () {
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => ImageViewerScreen(message: message),
-              ),
-            );
-          },
+        // Listovat jde všemi staženými fotkami konverzace.
+        AttachmentTransferState.ready => () => ImageViewerScreen.open(
+              context,
+              message,
+              ref.read(conversationProvider(contactId)).valueOrNull?.messages ??
+                  [message],
+            ),
         AttachmentTransferState.failed => () => ref
             .read(conversationsProvider.notifier)
             .retryAttachmentDownload(contactId, message),
@@ -220,7 +222,13 @@ class AudioAttachmentContent extends ConsumerStatefulWidget {
 }
 
 class _AudioState extends ConsumerState<AudioAttachmentContent> {
+  /// Kolečko rychlostí jako u ostatních messengerů; zvolená rychlost platí
+  /// pro všechny hlasovky a pamatuje si ji šifrované nastavení.
+  static const _rates = [1.0, 1.5, 2.0];
+  static const rateSettingKey = 'voice_playback_rate';
+
   final _player = AudioPlayer();
+  double _rate = 1.0;
   final _subs = <StreamSubscription<dynamic>>[];
   bool _loading = false;
   bool _playing = false;
@@ -232,6 +240,7 @@ class _AudioState extends ConsumerState<AudioAttachmentContent> {
     super.initState();
     final dur = widget.message.attachment!.durationMs;
     _total = dur != null ? Duration(milliseconds: dur) : null;
+    _loadRate();
     _subs.add(_player.onPositionChanged.listen((p) {
       if (mounted) setState(() => _pos = p);
     }));
@@ -253,6 +262,21 @@ class _AudioState extends ConsumerState<AudioAttachmentContent> {
     }
     _player.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadRate() async {
+    final saved =
+        await ref.read(storageProvider).getSetting<num>(rateSettingKey);
+    if (mounted && saved != null && _rates.contains(saved.toDouble())) {
+      setState(() => _rate = saved.toDouble());
+    }
+  }
+
+  Future<void> _cycleRate() async {
+    final next = _rates[(_rates.indexOf(_rate) + 1) % _rates.length];
+    setState(() => _rate = next);
+    await _player.setPlaybackRate(next);
+    await ref.read(storageProvider).setSetting(rateSettingKey, next);
   }
 
   String _fmt(Duration d) {
@@ -279,6 +303,8 @@ class _AudioState extends ConsumerState<AudioAttachmentContent> {
     setState(() => _loading = false);
     if (bytes == null) return;
     await _player.play(BytesSource(bytes, mimeType: meta.mime));
+    // Rychlost až po startu — část platforem ji před přehráním zahodí.
+    if (_rate != 1.0) await _player.setPlaybackRate(_rate);
   }
 
   @override
@@ -356,7 +382,30 @@ class _AudioState extends ConsumerState<AudioAttachmentContent> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Icon(Icons.mic, size: 13, color: ink.withValues(alpha: .6)),
+                    if (_playing || _pos > Duration.zero)
+                      GestureDetector(
+                        onTap: _cycleRate,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: accent.withValues(alpha: 0.18),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            '${NumberFormat.decimalPattern(
+                              Localizations.localeOf(context).toLanguageTag(),
+                            ).format(_rate)}×',
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: accent),
+                          ),
+                        ),
+                      )
+                    else
+                      Icon(Icons.mic,
+                          size: 13, color: ink.withValues(alpha: .6)),
                     Text(
                       _playing || _pos > Duration.zero
                           ? _fmt(_pos)

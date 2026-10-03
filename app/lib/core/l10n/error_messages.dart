@@ -15,7 +15,10 @@ String describeError(AppLocalizations l10n, Object error) => switch (error) {
       ContactLinkIncompleteError() => l10n.errorContactLinkIncomplete,
       AttachmentTooLargeError(:final maxMb) =>
         l10n.errorAttachmentTooLarge(maxMb),
+      AttachmentUnavailableError() => l10n.errorAttachmentUnavailable,
       GroupNeedsMemberError() => l10n.errorGroupNeedsMember,
+      NotGroupAdminError() => l10n.errorGroupNotAdmin,
+      LastGroupAdminError() => l10n.errorGroupLastAdmin,
       GroupTooLargeError(:final maxMembers) =>
         l10n.errorGroupMaxMembers(maxMembers),
       MemberNoDeliveryAddressError(:final displayName) =>

@@ -19,6 +19,7 @@ class SepotColors {
   // Text
   static const Color textPrimary = Color(0xFFF0EEE8); // mléko
   static const Color textSecondary = Color(0xFF9AA0B5); // mlha
+  static const Color textEmphasis = Color(0xFFC4C8D6); // mlha, zvýrazněná
   static const Color textMuted = Color(0xFF626880);
 
   // Akcentní barvy
@@ -39,11 +40,56 @@ class SepotColors {
   // Bubliny zpráv — odeslaná teplá (ember), přijatá chladná (povrch)
   static const Color bubbleSent = Color(0xFFF0795A);
   static const Color bubbleReceived = Color(0xFF191C28);
+
+  /// Plovoucí lišty nad obsahem (hlavička chatu, pole pro psaní, navigace).
+  /// Průhlednost nese rozmazání pod sebou — bez něj by působila jako chyba.
+  static const Color glass = Color(0xC712141D);
+  static const Color glassBorder = Color(0x0FFFFFFF);
+
+  /// Podklad hlavičky profilu — o tón teplejší než noc, ať avatar vystoupí.
+  static const Color hero = Color(0xFF14131A);
+}
+
+/// Tóny avatarů: tlumený podklad + světlejší inkoust téže barvy. Člověk
+/// dostane tón podle otisku klíče, takže má všude a u všech stejnou barvu.
+class SepotTint {
+  const SepotTint(this.background, this.ink);
+
+  final Color background;
+  final Color ink;
+
+  static const all = [
+    SepotTint(Color(0xFF3A2A33), Color(0xFFF2A58F)), // ember
+    SepotTint(Color(0xFF22352B), Color(0xFFA6CFB2)), // sage
+    SepotTint(Color(0xFF1E2A3A), Color(0xFF9FB6D6)), // mist
+    SepotTint(Color(0xFF3A3222), Color(0xFFE6C27A)), // jantar
+    SepotTint(Color(0xFF2C2638), Color(0xFFC3B2E0)), // levandule
+  ];
+
+  /// Stabilní napříč spuštěními — String.hashCode to Dart nezaručuje.
+  static SepotTint of(String seed) {
+    var h = 0x811c9dc5;
+    for (final c in seed.codeUnits) {
+      h = ((h ^ c) * 0x01000193) & 0xFFFFFFFF;
+    }
+    return all[h % all.length];
+  }
 }
 
 /// Témata aplikace
 class SepotTheme {
   SepotTheme._();
+
+  /// Velký nadpis hlavních karet (Chaty, Kontakty, Nastavení).
+  static const largeTitle = TextStyle(
+    fontSize: 32,
+    fontWeight: FontWeight.w800,
+    letterSpacing: -0.6,
+    color: SepotColors.textPrimary,
+  );
+
+  /// Výška lišty s velkým nadpisem.
+  static const largeTitleBarHeight = 76.0;
 
   static ThemeData get dark {
     return ThemeData(

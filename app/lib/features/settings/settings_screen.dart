@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -15,6 +16,8 @@ import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/storage/secure_storage.dart';
 import 'package:sepot/models/identity.dart';
 import 'package:sepot/core/theme/app_theme.dart';
+import 'package:sepot/core/services/avatar_image.dart';
+import 'package:sepot/widgets/avatar.dart';
 import 'package:sepot/providers/contacts_provider.dart';
 import 'package:sepot/providers/conversations_provider.dart';
 import 'package:sepot/providers/identity_provider.dart';
@@ -38,7 +41,8 @@ class SettingsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.settingsTitle),
+        toolbarHeight: SepotTheme.largeTitleBarHeight,
+        title: Text(l10n.settingsTitle, style: SepotTheme.largeTitle),
       ),
       body: SingleChildScrollView(
         child: Column(
@@ -47,7 +51,7 @@ class SettingsScreen extends ConsumerWidget {
             identityAsync.when(
               data: (identity) {
                 if (identity == null) return const SizedBox.shrink();
-                return _buildProfileCard(context, identity);
+                return _buildProfileCard(context, ref, identity);
               },
               loading: () => const SizedBox.shrink(),
               error: (_, _) => const SizedBox.shrink(),
@@ -118,6 +122,19 @@ class SettingsScreen extends ConsumerWidget {
                 value: ref.watch(readReceiptsProvider).valueOrNull ?? false,
                 onChanged: (v) =>
                     ref.read(readReceiptsProvider.notifier).set(v),
+                activeTrackColor: SepotColors.ember,
+              ),
+              onTap: () {},
+            ),
+            _buildTile(
+              icon: Icons.more_horiz_rounded,
+              title: l10n.settingsTypingTitle,
+              subtitle: l10n.settingsTypingSubtitle,
+              trailing: Switch(
+                value:
+                    ref.watch(typingIndicatorsProvider).valueOrNull ?? false,
+                onChanged: (v) =>
+                    ref.read(typingIndicatorsProvider.notifier).set(v),
                 activeTrackColor: SepotColors.ember,
               ),
               onTap: () {},
@@ -298,7 +315,69 @@ class SettingsScreen extends ConsumerWidget {
     }
   }
 
-  Widget _buildProfileCard(BuildContext context, LocalIdentity identity) {
+  /// Moje profilová fotka: vybrat z galerie (oříznutí a zmenšení běží
+  /// v izolátu), nebo odebrat. Protistrany ji dostanou s další zprávou.
+  Future<void> _editAvatar(BuildContext context, WidgetRef ref) async {
+    final service = ref.read(messagingServiceProvider);
+    final hasAvatar = service.myAvatar != null;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: SepotColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined,
+                  color: SepotColors.ember),
+              title: Text(context.l10n.profilePhotoPick),
+              onTap: () => Navigator.pop(ctx, 'pick'),
+            ),
+            if (hasAvatar)
+              ListTile(
+                leading: const Icon(Icons.delete_outline,
+                    color: SepotColors.error),
+                title: Text(context.l10n.profilePhotoRemove,
+                    style: const TextStyle(color: SepotColors.error)),
+                onTap: () => Navigator.pop(ctx, 'remove'),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+              child: Text(context.l10n.profilePhotoHint,
+                  style: const TextStyle(
+                      fontSize: 12, color: SepotColors.textSecondary)),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == null || !context.mounted) return;
+    try {
+      if (action == 'remove') {
+        await service.removeMyAvatar();
+      } else {
+        final picked = await ImagePicker()
+            .pickImage(source: ImageSource.gallery, maxWidth: 1600);
+        if (picked == null) return;
+        final jpeg = await prepareAvatarJpeg(await picked.readAsBytes());
+        if (jpeg == null) throw const FormatException('unreadable image');
+        await service.setMyAvatar(jpeg);
+      }
+      ref.invalidate(avatarProvider);
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(context.l10n
+            .profilePhotoFailed(describeError(context.l10n, e))),
+      ));
+    }
+  }
+
+  Widget _buildProfileCard(
+      BuildContext context, WidgetRef ref, LocalIdentity identity) {
     return Container(
       margin: const EdgeInsets.all(16),
       padding: const EdgeInsets.all(20),
@@ -309,18 +388,34 @@ class SettingsScreen extends ConsumerWidget {
       ),
       child: Column(
         children: [
-          CircleAvatar(
-            radius: 36,
-            backgroundColor: SepotColors.ember.withValues(alpha: 0.1),
-            child: Text(
-              identity.displayName.isEmpty
-                  ? '?'
-                  : identity.displayName.characters.first.toUpperCase(),
-              style: const TextStyle(
-                fontFamily: kFontSans,
-                fontSize: 28,
-                fontWeight: FontWeight.w600,
-                color: SepotColors.ember,
+          // Stejný tón jako „já“ v seznamu chatů a ve skupinách.
+          Semantics(
+            button: true,
+            label: context.l10n.profilePhotoEdit,
+            child: GestureDetector(
+              onTap: () => _editAvatar(context, ref),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  SepotAvatar(
+                      name: identity.displayName, seed: identity.id, size: 84),
+                  Positioned(
+                    right: -2,
+                    bottom: -2,
+                    child: Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: SepotColors.ember,
+                        shape: BoxShape.circle,
+                        border:
+                            Border.all(color: SepotColors.surface, width: 3),
+                      ),
+                      child: const Icon(Icons.photo_camera_rounded,
+                          size: 15, color: SepotColors.emberInk),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

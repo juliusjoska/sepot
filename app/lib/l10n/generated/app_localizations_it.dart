@@ -74,15 +74,66 @@ class AppLocalizationsIt extends AppLocalizations {
       'Non sei più nel gruppo. La cronologia resta, i nuovi messaggi non arriveranno.';
 
   @override
-  String groupsMembersWithCount(int count) {
-    return 'Membri ($count)';
-  }
-
-  @override
   String get groupsYou => 'Tu';
 
   @override
   String get groupsFounder => 'Fondatore';
+
+  @override
+  String get groupsAdmin => 'Amministratore';
+
+  @override
+  String get groupsMakeAdmin => 'Rendi amministratore';
+
+  @override
+  String get groupsDismissAdmin => 'Rimuovi ruolo di amministratore';
+
+  @override
+  String get groupsRemoveMember => 'Rimuovi dal gruppo';
+
+  @override
+  String groupsRemoveMemberConfirmTitle(String name) {
+    return 'Rimuovere $name dal gruppo?';
+  }
+
+  @override
+  String get groupsRemoveMemberConfirmBody =>
+      'Non riceverà più i nuovi messaggi del gruppo. La cronologia esistente resta.';
+
+  @override
+  String get groupsRemoveAction => 'Rimuovi';
+
+  @override
+  String get groupsViewContact => 'Vedi contatto';
+
+  @override
+  String get groupsAdminOnlyHint =>
+      'Solo gli amministratori possono cambiare nome, membri e amministratori del gruppo.';
+
+  @override
+  String get groupsAdminOnlyCompatHint =>
+      'Solo gli amministratori possono rinominare il gruppo o cambiare gli amministratori. Per ora chiunque può aggiungere persone, perché qualcuno nel gruppo ha una versione precedente di Šepot.';
+
+  @override
+  String groupsAdminActionFailed(String error) {
+    return 'Modifica non riuscita: $error';
+  }
+
+  @override
+  String get groupsResyncNotice =>
+      'Il gruppo si sta allineando con l\'amministratore. Le modifiche ai membri potrebbero arrivare in ritardo.';
+
+  @override
+  String get groupsRejectedChangeNotice =>
+      'Qualcuno senza permesso ha provato a modificare il gruppo. La modifica non è stata applicata.';
+
+  @override
+  String get errorGroupNotAdmin =>
+      'Solo un amministratore del gruppo può farlo.';
+
+  @override
+  String get errorGroupLastAdmin =>
+      'Sei l\'unico amministratore. Prima rendi amministratore qualcun altro.';
 
   @override
   String get groupsNameHint => 'Nome del gruppo';
@@ -192,6 +243,28 @@ class AppLocalizationsIt extends AppLocalizations {
   String get chatActionReply => 'Rispondi';
 
   @override
+  String get chatActionForward => 'Inoltra';
+
+  @override
+  String get forwardTitle => 'Inoltra a…';
+
+  @override
+  String get forwardSearchHint => 'Cerca contatto o gruppo';
+
+  @override
+  String get forwardEmpty => 'Nessun risultato';
+
+  @override
+  String forwardDone(String name) {
+    return 'Inoltrato a $name';
+  }
+
+  @override
+  String forwardFailed(String error) {
+    return 'Inoltro non riuscito: $error';
+  }
+
+  @override
   String get commonCopy => 'Copia';
 
   @override
@@ -248,6 +321,16 @@ class AppLocalizationsIt extends AppLocalizations {
   }
 
   @override
+  String get attachmentKeepsMetadataTitle => 'La foto includerà la posizione';
+
+  @override
+  String get attachmentKeepsMetadataBody =>
+      'Non riesco a rimuovere i metadati da questo formato (ad es. HEIC). Verrebbe inviata in originale, compresi il luogo dello scatto e i dati del telefono. È più sicuro inviarla dalla Galleria, dove i metadati vengono rimossi.';
+
+  @override
+  String get attachmentSendOriginal => 'Invia originale';
+
+  @override
   String attachmentPickFailed(String error) {
     return 'Selezione dell\'allegato non riuscita: $error';
   }
@@ -291,6 +374,10 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get errorGroupNeedsMember => 'Il gruppo ha bisogno di almeno 1 membro';
+
+  @override
+  String get errorAttachmentUnavailable =>
+      'L\'allegato non è più su questo telefono';
 
   @override
   String errorGroupMaxMembers(int maxMembers) {
@@ -601,17 +688,98 @@ class AppLocalizationsIt extends AppLocalizations {
   String get chatListNewConversation => 'Nuova conversazione';
 
   @override
-  String chatListPhotoWithCaptionPreview(String caption) {
-    return '📷 $caption';
-  }
-
-  @override
-  String chatListFilePreview(String fileName) {
-    return '📎 $fileName';
-  }
-
-  @override
   String get chatListReadReceiptPreview => 'Letto';
+
+  @override
+  String get chatListDraft => 'Bozza';
+
+  @override
+  String get notesTitle => 'Note per me';
+
+  @override
+  String get notesSubtitle => 'Solo su questo telefono, cifrato';
+
+  @override
+  String get callVoice => 'Chiama';
+
+  @override
+  String get callVideo => 'Videochiamata';
+
+  @override
+  String get callStatusRinging => 'Squilla…';
+
+  @override
+  String get callIncomingVoice => 'Chiamata in arrivo';
+
+  @override
+  String get callIncomingVideo => 'Videochiamata in arrivo';
+
+  @override
+  String get callStatusConnecting => 'Connessione…';
+
+  @override
+  String get callEnded => 'Chiamata terminata';
+
+  @override
+  String get callEndedBusy => 'Occupato';
+
+  @override
+  String get callEndedRejected => 'Chiamata rifiutata';
+
+  @override
+  String get callEndedUnanswered => 'Nessuna risposta';
+
+  @override
+  String get callEndedFailed => 'Connessione non riuscita';
+
+  @override
+  String get callEncrypted => 'Crittografia end-to-end';
+
+  @override
+  String get callAccept => 'Accetta';
+
+  @override
+  String get callReject => 'Rifiuta';
+
+  @override
+  String get callMute => 'Disattiva microfono';
+
+  @override
+  String get callSpeaker => 'Altoparlante';
+
+  @override
+  String get callCamera => 'Disattiva fotocamera';
+
+  @override
+  String get callSwitchCamera => 'Cambia fotocamera';
+
+  @override
+  String get callHangUp => 'Riaggancia';
+
+  @override
+  String get callLogMissed => 'Chiamata persa';
+
+  @override
+  String get callLogUnanswered => 'Chiamata senza risposta';
+
+  @override
+  String get callLogRejected => 'Chiamata rifiutata';
+
+  @override
+  String get callLogBusy => 'Occupato';
+
+  @override
+  String get callLogFailed => 'Chiamata non riuscita';
+
+  @override
+  String callLogVoice(String duration) {
+    return 'Chiamata · $duration';
+  }
+
+  @override
+  String callLogVideo(String duration) {
+    return 'Videochiamata · $duration';
+  }
 
   @override
   String get chatListTimeNow => 'adesso';
@@ -951,14 +1119,14 @@ class AppLocalizationsIt extends AppLocalizations {
       'I messaggi verranno scaricati solo all\'apertura dell\'app.';
 
   @override
-  String get pushModeUp => 'UnifiedPush (consigliato)';
+  String get pushModeUp => 'UnifiedPush (senza Google)';
 
   @override
   String get pushModeUpDesc =>
       'Senza Google — richiede l\'app ntfy (F-Droid/Play).';
 
   @override
-  String get pushModeFcm => 'Google (FCM)';
+  String get pushModeFcm => 'Google (FCM, predefinito)';
 
   @override
   String get pushModeFcmDesc =>
@@ -1003,7 +1171,7 @@ class AppLocalizationsIt extends AppLocalizations {
   String get pushNoDistributorFallback => 'nessun distributore';
 
   @override
-  String get pushSubtitleFcm => 'Google (FCM) — veloce, opt-in';
+  String get pushSubtitleFcm => 'Google (FCM)';
 
   @override
   String get restoreErrorNameRequired => 'Inserisci il nome visualizzato.';
@@ -1311,4 +1479,255 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get photoPreviewDecodeFailed => 'Impossibile caricare la foto';
+
+  @override
+  String get chatActionInfo => 'Info messaggio';
+
+  @override
+  String get messageInfoSent => 'Inviato';
+
+  @override
+  String get messageInfoDelivered => 'Consegnato';
+
+  @override
+  String get messageInfoRead => 'Letto';
+
+  @override
+  String get messageInfoPending => 'non ancora';
+
+  @override
+  String get messageInfoReadReceiptsOff =>
+      'Vedi quando i tuoi messaggi vengono letti solo se condividi anche tu le conferme di lettura (Impostazioni).';
+
+  @override
+  String chatStatusReadAt(String time) {
+    return 'Letto $time';
+  }
+
+  @override
+  String chatStatusDeliveredAt(String time) {
+    return 'Consegnato $time';
+  }
+
+  @override
+  String get groupsAddMembers => 'Aggiungi membri';
+
+  @override
+  String get groupsAddMembersAction => 'Aggiungi';
+
+  @override
+  String groupsAddMembersFailed(String error) {
+    return 'Impossibile aggiungere: $error';
+  }
+
+  @override
+  String get groupsNoContactsToAdd =>
+      'Tutti i tuoi contatti sono già nel gruppo. Aggiungi prima una nuova persona ai contatti tramite codice QR.';
+
+  @override
+  String get navChats => 'Chat';
+
+  @override
+  String get chatListNewChat => 'Nuova chat';
+
+  @override
+  String get chatListSearchHint => 'Cerca in chat e messaggi';
+
+  @override
+  String get chatFilterAll => 'Tutte';
+
+  @override
+  String get chatFilterUnread => 'Non lette';
+
+  @override
+  String get chatFilterGroups => 'Gruppi';
+
+  @override
+  String get chatFilterArchive => 'Archivio';
+
+  @override
+  String get chatListNoResults => 'Nessun risultato.';
+
+  @override
+  String get chatListFilterEmpty => 'Ancora niente qui.';
+
+  @override
+  String get chatListPin => 'Fissa';
+
+  @override
+  String get chatListUnpin => 'Sblocca';
+
+  @override
+  String get chatOpenProfile => 'Vedi profilo';
+
+  @override
+  String get groupsProfile => 'Info gruppo';
+
+  @override
+  String get chatSearchHint => 'Cerca nella chat';
+
+  @override
+  String get chatSearchNoMatches => 'Nessuno';
+
+  @override
+  String chatSearchCounter(int current, int total) {
+    return '$current di $total';
+  }
+
+  @override
+  String get chatSearchOlder => 'Risultato precedente';
+
+  @override
+  String get chatSearchNewer => 'Risultato successivo';
+
+  @override
+  String chatUnreadDivider(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count nuovi messaggi',
+      one: '1 nuovo messaggio',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get chatJumpToLatest => 'Vai ai più recenti';
+
+  @override
+  String get chatAttach => 'Allega';
+
+  @override
+  String get chatSend => 'Invia';
+
+  @override
+  String get chatRecordVoice => 'Registra messaggio vocale';
+
+  @override
+  String get profileSharedMedia => 'Media condivisi';
+
+  @override
+  String get profileMessage => 'Messaggio';
+
+  @override
+  String get profileSearch => 'Cerca';
+
+  @override
+  String get profileUnmute => 'Riattiva';
+
+  @override
+  String get profileDisappearing => 'Effimeri';
+
+  @override
+  String get profileCommonGroups => 'Gruppi in comune';
+
+  @override
+  String get profileSafetyNumber => 'Numero di sicurezza';
+
+  @override
+  String get profileSafetyNumberHint => 'Confronta di persona o con codice QR';
+
+  @override
+  String get profileVerifiedInPerson => 'Verificato di persona';
+
+  @override
+  String get profileVerifyNow => 'Verifica contatto';
+
+  @override
+  String get profileAdd => 'Aggiungi';
+
+  @override
+  String profileGroupSubtitle(String members, String date) {
+    return 'Gruppo · $members · creato il $date';
+  }
+
+  @override
+  String profileMembersOfMax(int count, int max) {
+    return '$count su $max';
+  }
+
+  @override
+  String get chatTyping => 'sta scrivendo…';
+
+  @override
+  String chatTypingNamed(String name) {
+    return '$name sta scrivendo…';
+  }
+
+  @override
+  String get chatTypingSeveral => 'Più persone stanno scrivendo…';
+
+  @override
+  String get settingsTypingTitle => 'Indicatore di scrittura';
+
+  @override
+  String get settingsTypingSubtitle =>
+      'Reciproco — se non lo condividi, non lo vedi (disattivato di default)';
+
+  @override
+  String get pollAttach => 'Sondaggio';
+
+  @override
+  String get pollCreateTitle => 'Nuovo sondaggio';
+
+  @override
+  String get pollQuestion => 'Domanda';
+
+  @override
+  String pollOptionHint(int number) {
+    return 'Opzione $number';
+  }
+
+  @override
+  String get pollAddOption => 'Aggiungi opzione';
+
+  @override
+  String get pollRemoveOption => 'Rimuovi opzione';
+
+  @override
+  String get pollAllowMultiple => 'Consenti più risposte';
+
+  @override
+  String get pollSingle => 'Sondaggio';
+
+  @override
+  String get pollMulti => 'Sondaggio, scelta multipla';
+
+  @override
+  String pollVoters(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count voti',
+      one: '1 voto',
+      zero: 'ancora nessun voto',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String pollFallback(String question) {
+    return 'Sondaggio: $question';
+  }
+
+  @override
+  String get pollFallbackUpdate => 'Aggiorna Šepot per votare.';
+
+  @override
+  String get profilePhotoEdit => 'Cambia foto profilo';
+
+  @override
+  String get profilePhotoPick => 'Scegli foto';
+
+  @override
+  String get profilePhotoRemove => 'Rimuovi foto';
+
+  @override
+  String get profilePhotoHint =>
+      'La vedranno solo le persone con cui chatti — cifrata come i messaggi. Posizione e metadati non vengono inviati.';
+
+  @override
+  String profilePhotoFailed(String error) {
+    return 'Impossibile impostare la foto: $error';
+  }
 }

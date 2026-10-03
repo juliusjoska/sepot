@@ -1,10 +1,13 @@
 import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sepot/core/constants/app_constants.dart';
+import 'package:sepot/core/errors.dart';
 import 'package:sepot/models/contact.dart';
 import 'package:sepot/models/conversation.dart';
 import 'package:sepot/models/group.dart';
 import 'package:sepot/models/message.dart';
+import 'package:sepot/models/poll.dart';
 import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 import 'package:sepot/providers/identity_provider.dart';
@@ -20,13 +23,23 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
   /// Odešli zprávu — E2E šifrovaně přes relay. `replyToId` = odpověď.
   /// `contactId` může být i gid skupiny (fanout členům).
   Future<void> sendMessage(String contactId, String text,
-      {String? replyToId}) async {
+      {String? replyToId, List<String> mentions = const []}) async {
+    if (isNotes(contactId)) {
+      return _addNote((me) => Message.text(
+            senderId: me,
+            recipientId: me,
+            content: text,
+            replyToId: replyToId,
+            status: MessageStatus.sent,
+          ));
+    }
     final storage = ref.read(storageProvider);
     final service = ref.read(messagingServiceProvider);
 
     final group = await _groupOrNull(contactId);
     if (group != null) {
-      await service.sendGroupText(group, text, replyToId: replyToId);
+      await service.sendGroupText(group, text,
+          replyToId: replyToId, mentions: mentions);
     } else {
       final contact = await _contact(contactId);
       // sendText zprávu po odeslání sám uloží (s reálným delivery stavem)
@@ -35,6 +48,51 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
 
     final conversations = await storage.loadConversations();
     state = AsyncData(conversations);
+  }
+
+  /// Pošle anketu. [fallback] je text, který uvidí starší verze appky
+  /// (skládá ho UI, protože zná jazyk uživatele).
+  Future<void> sendPoll(String convId, Poll poll, String fallback) async {
+    final service = ref.read(messagingServiceProvider);
+    final group = await _groupOrNull(convId);
+    if (group != null) {
+      await service.sendGroupText(group, fallback, poll: poll);
+    } else {
+      await service.sendText(await _contact(convId), fallback, poll: poll);
+    }
+    state = AsyncData(await ref.read(storageProvider).loadConversations());
+  }
+
+  /// Hlas v anketě (prázdná volba = zrušit).
+  Future<void> votePoll(String convId, String pollId, List<int> choice) async {
+    final service = ref.read(messagingServiceProvider);
+    final group = await _groupOrNull(convId);
+    await service.votePoll(
+      convId,
+      pollId,
+      choice,
+      group: group,
+      contact: group == null ? await _contact(convId) : null,
+    );
+  }
+
+  static bool isNotes(String id) => id == AppConstants.notesConversationId;
+
+  /// Poznámka pro sebe: jen šifrované úložiště v telefonu, nic do sítě.
+  Future<void> _addNote(Message Function(String myId) build) async {
+    final identity = ref.read(identityProvider).valueOrNull;
+    if (identity == null) return;
+    final storage = ref.read(storageProvider);
+    await storage.addMessage(
+        AppConstants.notesConversationId, build(identity.id));
+    state = AsyncData(await storage.loadConversations());
+  }
+
+  /// Otevře poznámky; prázdné je založí, aby byly vidět i v seznamu chatů.
+  Future<void> ensureNotes() async {
+    final storage = ref.read(storageProvider);
+    await storage.ensureConversation(AppConstants.notesConversationId);
+    state = AsyncData(await storage.loadConversations());
   }
 
   Future<Contact> _contact(String contactId) async {
@@ -67,6 +125,17 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
   /// Úprava textu odeslané zprávy.
   Future<void> editMessage(
       String contactId, String messageId, String newText) async {
+    if (isNotes(contactId)) {
+      final storage = ref.read(storageProvider);
+      final conv = await storage.loadConversation(contactId);
+      final old = conv?.messages.where((m) => m.id == messageId).firstOrNull;
+      if (conv == null || old == null) return;
+      conv.updateMessage(
+          old.copyWith(content: newText, editedAt: DateTime.now()));
+      await storage.saveConversation(conv);
+      state = AsyncData(await storage.loadConversations());
+      return;
+    }
     final service = ref.read(messagingServiceProvider);
     final group = await _groupOrNull(contactId);
     if (group != null) {
@@ -112,6 +181,18 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
     state = AsyncData(await storage.loadConversations());
   }
 
+  /// Připnout / odepnout konverzaci (lokální). Archivovaná se připnutím
+  /// vrací mezi aktivní — připnutý chat v archivu by nikdo neviděl.
+  Future<void> setPinned(String contactId, bool pinned) async {
+    final storage = ref.read(storageProvider);
+    final conv = await storage.loadConversation(contactId);
+    if (conv == null) return;
+    conv.pinned = pinned;
+    if (pinned) conv.archived = false;
+    await storage.saveConversation(conv);
+    state = AsyncData(await storage.loadConversations());
+  }
+
   /// Smazání zprávy jen u mě (lokálně) — protistraně se nic neposílá.
   Future<void> deleteLocalMessage(String contactId, String messageId) async {
     final storage = ref.read(storageProvider);
@@ -133,6 +214,18 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
   }) async {
     final storage = ref.read(storageProvider);
     final service = ref.read(messagingServiceProvider);
+
+    if (isNotes(contactId)) {
+      final meta = await service.prepareNoteAttachment(
+          bytes: bytes, fileName: fileName, mime: mime);
+      return _addNote((me) => Message.attachment(
+            senderId: me,
+            recipientId: me,
+            attachment: meta,
+            caption: caption,
+            status: MessageStatus.sent,
+          ));
+    }
 
     final group = await _groupOrNull(contactId);
     if (group != null) {
@@ -167,6 +260,19 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
   }) async {
     final storage = ref.read(storageProvider);
     final service = ref.read(messagingServiceProvider);
+    if (isNotes(contactId)) {
+      final meta = await service.prepareNoteAttachment(
+          bytes: bytes,
+          fileName: 'voice-message.m4a',
+          mime: mime,
+          durationMs: durationMs);
+      return _addNote((me) => Message.attachment(
+            senderId: me,
+            recipientId: me,
+            attachment: meta,
+            status: MessageStatus.sent,
+          ));
+    }
     final group = await _groupOrNull(contactId);
     if (group != null) {
       await service.sendGroupAttachment(
@@ -186,6 +292,33 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
       );
     }
     state = AsyncData(await storage.loadConversations());
+  }
+
+  /// Přepošle zprávu do jiné konverzace (kontakt i skupina). Příloha se
+  /// dešifruje a odešle znovu s novým klíčem: odkaz na původní blob by
+  /// vypršel s ním (relay drží bloby 30 dní) a cíl by ho neměl čím otevřít.
+  Future<void> forwardMessage(Message message, String targetId) async {
+    final meta = message.attachment;
+    if (meta == null) {
+      await sendMessage(targetId, message.content ?? '');
+      return;
+    }
+    final bytes = await ref
+        .read(messagingServiceProvider)
+        .loadDecryptedAttachment(message);
+    if (bytes == null) throw const AttachmentUnavailableError();
+    if (meta.mime.startsWith('audio/') && meta.durationMs != null) {
+      await sendVoiceMessage(targetId,
+          bytes: bytes, durationMs: meta.durationMs!, mime: meta.mime);
+      return;
+    }
+    await sendAttachment(
+      targetId,
+      bytes: bytes,
+      fileName: meta.name ?? 'attachment',
+      mime: meta.mime,
+      caption: message.content,
+    );
   }
 
   /// Ruční opakování downloadu blobu (stav failed).
@@ -210,23 +343,26 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
     // přečtení (sendReadReceipts sám zkontroluje, jestli je funkce zapnutá).
     final justRead = conv.messages
         .where((m) => !m.isMine(identity.id) && !m.isRead)
-        .map((m) => m.id)
         .toList();
 
     conv.markAllRead(identity.id);
     await storage.saveConversation(conv);
     state = AsyncData(await storage.loadConversations());
 
-    // Potvrzení přečtení ve skupině v1 neposíláme (fanout N receipts
-    // za každé otevření chatu; per-member matice až v2).
-    if (justRead.isNotEmpty && await _groupOrNull(contactId) == null) {
-      final contacts = await storage.loadContacts();
-      final contact = contacts.where((c) => c.id == contactId).firstOrNull;
-      if (contact != null) {
-        await ref
-            .read(messagingServiceProvider)
-            .sendReadReceipts(contact, justRead);
-      }
+    if (justRead.isEmpty) return;
+    // Ve skupině dostane potvrzení jen autor dané zprávy — ne celý roster.
+    // Otevření chatu tak stojí tolik obálek, kolik lidí mezitím psalo.
+    final group = await _groupOrNull(contactId);
+    final byAuthor = <String, List<String>>{};
+    for (final m in justRead) {
+      byAuthor.putIfAbsent(m.senderId, () => []).add(m.id);
+    }
+    final contacts = await storage.loadContacts();
+    final service = ref.read(messagingServiceProvider);
+    for (final MapEntry(key: author, value: ids) in byAuthor.entries) {
+      final contact = contacts.where((c) => c.id == author).firstOrNull;
+      if (contact == null) continue;
+      await service.sendReadReceipts(contact, ids, gid: group?.id);
     }
   }
 

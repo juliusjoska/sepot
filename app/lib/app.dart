@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
+import 'package:sepot/core/calls/call_controller.dart';
 import 'package:sepot/features/auth/change_pin_screen.dart';
+import 'package:sepot/features/calls/call_screen.dart';
 import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/features/onboarding/onboarding_screen.dart';
 import 'package:sepot/features/onboarding/restore_screen.dart';
@@ -17,6 +19,8 @@ import 'package:sepot/features/conversation/conversation_screen.dart';
 import 'package:sepot/features/contacts/contact_verify_screen.dart';
 import 'package:sepot/features/contacts/contacts_screen.dart';
 import 'package:sepot/features/groups/create_group_screen.dart';
+import 'package:sepot/features/profile/contact_profile_screen.dart';
+import 'package:sepot/features/profile/group_profile_screen.dart';
 import 'package:sepot/features/settings/settings_screen.dart';
 import 'package:sepot/features/safety/report_screen.dart';
 import 'package:sepot/features/qr_pairing/qr_share_screen.dart';
@@ -62,6 +66,21 @@ final _router = GoRouter(
       path: '/conversation/:contactId',
       builder: (context, state) => ConversationScreen(
         contactId: state.pathParameters['contactId']!,
+        startSearch: state.uri.queryParameters['search'] == '1',
+      ),
+    ),
+    GoRoute(
+      path: '/contact/:contactId',
+      builder: (context, state) => ContactProfileScreen(
+        contactId: state.pathParameters['contactId']!,
+        fromChat: state.uri.queryParameters['from'] == 'chat',
+      ),
+    ),
+    GoRoute(
+      path: '/group/:groupId',
+      builder: (context, state) => GroupProfileScreen(
+        groupId: state.pathParameters['groupId']!,
+        fromChat: state.uri.queryParameters['from'] == 'chat',
       ),
     ),
     GoRoute(
@@ -71,6 +90,11 @@ final _router = GoRouter(
     GoRoute(
       path: '/create-group',
       builder: (context, state) => const CreateGroupScreen(),
+    ),
+    GoRoute(
+      path: '/group/:groupId/add',
+      builder: (context, state) =>
+          CreateGroupScreen(addToGroupId: state.pathParameters['groupId']),
     ),
     GoRoute(
       path: '/verify/:contactId',
@@ -101,6 +125,10 @@ final _router = GoRouter(
       path: '/change-pin',
       builder: (context, state) => const ChangePinScreen(),
     ),
+    GoRoute(
+      path: '/call',
+      builder: (context, state) => const CallScreen(),
+    ),
   ],
 );
 
@@ -115,6 +143,16 @@ class SepotApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // null = systémový jazyk; než se volba načte z keystore, jede systém.
     final locale = ref.watch(localeProvider).valueOrNull;
+
+    // Příchozí i odchozí hovor otevře obrazovku hovoru odkudkoli.
+    ref.listen(callProvider.select((s) => s.phase), (previous, phase) {
+      final starting =
+          phase == CallPhase.incoming || phase == CallPhase.outgoing;
+      final path = _router.routerDelegate.currentConfiguration.uri.path;
+      if (starting && previous != phase && path != '/call') {
+        _router.push('/call');
+      }
+    });
 
     return _AutoLockGate(
       child: MaterialApp.router(

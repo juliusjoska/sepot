@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sepot/core/calls/call_controller.dart';
 import 'package:sepot/core/network/relay_client.dart';
 import 'package:sepot/core/push/push_notifier.dart';
 import 'package:sepot/core/services/messaging_service.dart';
@@ -14,6 +17,28 @@ final messagingServiceProvider = Provider<MessagingService>((ref) {
   final service = MessagingService(storage: ref.read(storageProvider));
   ref.onDispose(service.stop);
   return service;
+});
+
+/// Kdo právě píše: konverzace → otisky pisatelů. Prázdné, když je
+/// „píše…“ vypnuté (služba pak nic nepřijímá).
+final typingProvider = StreamProvider<Map<String, Set<String>>>((ref) async* {
+  final tracker = ref.watch(messagingServiceProvider).typing;
+  yield tracker.current;
+  yield* tracker.changes;
+});
+
+/// Profilová fotka člověka podle otisku (null = iniciály). Přepočítá se,
+/// když se změní kontakty — tam dorazí nový odkaz i stažení fotky.
+final avatarProvider =
+    FutureProvider.family<Uint8List?, String>((ref, fingerprint) async {
+  final service = ref.watch(messagingServiceProvider);
+  final me = ref.watch(identityProvider).valueOrNull;
+  final contacts = ref.watch(contactsProvider).valueOrNull ?? const [];
+  if (!service.isStarted) return null;
+  final avatar = fingerprint == me?.id
+      ? service.myAvatar
+      : contacts.where((c) => c.id == fingerprint).firstOrNull?.avatar;
+  return avatar == null ? null : service.loadAvatar(avatar);
 });
 
 /// Nastartuje službu, jakmile existuje identita. Watchovat z první
@@ -46,15 +71,20 @@ final messagingStartProvider = FutureProvider<void>((ref) async {
 
   // Appka běží, ale není v popředí (jiná appka / zhasnutý displej se
   // živým procesem) → systémová notifikace. Jen jméno, žádný obsah.
-  // Ztlumená konverzace notifikaci potlačí (unread badge běží dál).
-  service.onMessageReceived = (contact, message) async {
+  // Ztlumená konverzace notifikaci potlačí (unread badge běží dál),
+  // zmínka mě ve skupině projde i tak.
+  service.onMessageReceived = (contact, message, convId) async {
     final visible = WidgetsBinding.instance.lifecycleState ==
         AppLifecycleState.resumed;
     if (visible) return;
-    final conv = await ref.read(storageProvider).loadConversation(contact.id);
-    if (conv?.isMuted == true) return;
+    final conv = await ref.read(storageProvider).loadConversation(convId);
+    final mentionedMe = message.mentions.contains(identity.id);
+    if (conv?.isMuted == true && !mentionedMe) return;
     PushNotifier.showMessageNotification(contact.displayName);
   };
+
+  service.onCallSignal = (contact, signal) =>
+      ref.read(callProvider.notifier).onSignal(contact, signal);
 
   await service.start(identity);
 });

@@ -22,27 +22,34 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
-import 'package:libsignal/libsignal.dart' show IdentityKeyPair, ProtocolAddress;
+import 'package:libsignal/libsignal.dart'
+    show IdentityKeyPair, PrivateKey, ProtocolAddress;
 import 'package:mime/mime.dart' show lookupMimeType;
 import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/crypto/attachment_cipher.dart';
+import 'package:sepot/core/crypto/group_admin.dart';
 import 'package:sepot/core/errors.dart';
 import 'package:sepot/core/crypto/sepot_crypto.dart';
 import 'package:sepot/core/network/relay_client.dart';
 import 'package:sepot/core/network/relay_transport.dart';
+import 'package:sepot/core/services/group_admin_policy.dart';
 import 'package:sepot/core/services/image_processor.dart';
+import 'package:sepot/core/services/typing_tracker.dart';
 import 'package:sepot/core/storage/attachment_store.dart';
 import 'package:sepot/core/storage/crypto_db.dart';
 import 'package:sepot/core/storage/persistent_stores.dart';
 import 'package:sepot/core/storage/secure_storage.dart';
 import 'package:sepot/models/attachment.dart';
+import 'package:sepot/models/avatar_ref.dart';
 import 'package:sepot/models/contact.dart';
 import 'package:sepot/models/group.dart';
 import 'package:sepot/models/identity.dart';
 import 'package:sepot/models/message.dart';
+import 'package:sepot/models/poll.dart';
 import 'package:sepot/proto/sepot.pb.dart' as pb;
 import 'package:uuid/uuid.dart';
 
@@ -62,7 +69,26 @@ class MessagingService {
 
   /// Přijatá zpráva (po uložení + ACK) — provider přes ni ukazuje
   /// systémovou notifikaci, když appka není v popředí.
-  void Function(Contact contact, Message message)? onMessageReceived;
+  /// `convId` = gid u skupiny, jinak id kontaktu — podle něj se řídí
+  /// ztlumení (ztlumená skupina ≠ ztlumený chat s autorem).
+  void Function(Contact contact, Message message, String convId)?
+      onMessageReceived;
+
+  /// TURN údaje pro hovor (null = relay je nevydal, zkusí se jen STUN).
+  Future<pb.TurnCredentials?> turnCredentials() async {
+    final relay = _relay;
+    if (relay == null || relay.state != RelayConnectionState.connected) {
+      return null;
+    }
+    try {
+      return await relay.requestTurn();
+    } on TimeoutException {
+      return null;
+    }
+  }
+
+  /// Příchozí signalizace hovoru (nabídka, odpověď, zavěšení…).
+  void Function(Contact contact, Map<String, dynamic> signal)? onCallSignal;
 
   CryptoDb? _db;
   SepotCrypto? _crypto;
@@ -98,6 +124,82 @@ class MessagingService {
   pb.RegisterPush? _lastPush;
 
   bool get isStarted => _crypto != null;
+
+  // ── „píše…“ ────────────────────────────────────────────────────────
+  //
+  // Stejně jako potvrzení přečtení: volitelné, výchozí vypnuto, reciproční.
+  // Jde šifrovaným kanálem jako obálka EPHEMERAL — relay ji doručí jen
+  // živému spojení, offline příjemce se nebudí a nic se neukládá.
+
+  static const typingSettingKey = 'typing_indicators_enabled';
+
+  /// Nejvýš jedno „píšu“ za tuhle dobu na konverzaci.
+  static const _typingThrottle = Duration(seconds: 4);
+
+  /// Po DROPPED (příjemce offline) chvíli nic neposílat: každá zahozená
+  /// obálka posune ratchet a příjemce by pak mezeru musel přeskakovat.
+  static const _typingBackoff = Duration(minutes: 1);
+
+  /// Ve větší skupině by každé „píšu“ znamenalo desítky obálek.
+  static const _typingMaxGroup = 20;
+
+  final typing = TypingTracker();
+  final _typingSentAt = <String, DateTime>{};
+  final _typingBackoffUntil = <String, DateTime>{};
+
+  Future<bool> _typingEnabled() async =>
+      (await storage.getSetting<bool>(typingSettingKey)) ?? false;
+
+  /// Dá protistraně (členům skupiny) vědět, že píšu. Volat při psaní —
+  /// omezení frekvence řeší metoda sama. Best-effort, nikdy nehází.
+  Future<void> sendTyping(String convId) async {
+    if (!isStarted || !await _typingEnabled()) return;
+    final now = DateTime.now();
+    final last = _typingSentAt[convId];
+    if (last != null && now.difference(last) < _typingThrottle) return;
+    _typingSentAt[convId] = now;
+
+    final group = await storage.loadGroup(convId);
+    if (group != null &&
+        (group.left || group.memberIds.length > _typingMaxGroup)) {
+      return;
+    }
+    final contacts = await storage.loadContacts();
+    final targets = contacts.where((c) =>
+        !c.blocked &&
+        (group == null
+            ? c.id == convId
+            : group.memberIds.contains(c.id) && c.id != _identity?.id));
+    for (final c in targets) {
+      final until = _typingBackoffUntil[c.id];
+      if (until != null && until.isAfter(now)) continue;
+      unawaited(_sendTypingTo(c, group?.id));
+    }
+  }
+
+  Future<void> _sendTypingTo(Contact contact, String? gid) async {
+    try {
+      final status = await _sendSealed(
+        contact,
+        {
+          'v': 1,
+          'id': const Uuid().v4(),
+          't': 'typ',
+          'ts': DateTime.now().millisecondsSinceEpoch,
+          'gid': ?gid,
+        },
+        ephemeral: true,
+      );
+      if (status == pb.Receipt_Status.STATUS_DROPPED) {
+        _typingBackoffUntil[contact.id] =
+            DateTime.now().add(_typingBackoff);
+      } else {
+        _typingBackoffUntil.remove(contact.id);
+      }
+    } catch (_) {
+      // „píše…“ je jen ozdoba — výpadek sítě nesmí nic rozbít ani hlásit.
+    }
+  }
   bool get isTorEnabled => _useTor;
   RelayConnectionState get connectionState =>
       _relay?.state ?? RelayConnectionState.disconnected;
@@ -135,6 +237,9 @@ class MessagingService {
       regId = int.parse(utf8.decode(regIdRaw));
     }
 
+    _myAvatar = AvatarRef.fromJson(
+        await storage.getSetting<Map<String, dynamic>>(_myAvatarKey));
+
     // Transport podle uloženého nastavení (odemčený storage — čte se z DB).
     _useTor = (await storage.getSetting<bool>('tor_enabled')) ?? false;
     _socksPort = (await storage.getSetting<int>('tor_socks_port')) ?? 9050;
@@ -163,7 +268,10 @@ class MessagingService {
     _deliverSub = relay.deliveries.listen(_onDeliver);
     // Po každém (re)connectu dorazit, co zůstalo viset ve frontě odchozích.
     _stateSub = relay.stateStream.listen((state) {
-      if (state == RelayConnectionState.connected) unawaited(_flushOutbox());
+      if (state == RelayConnectionState.connected) {
+        unawaited(_flushOutbox());
+        unawaited(_refreshMyAvatarIfOld());
+      }
     });
 
     if (existingAccount != null) {
@@ -231,7 +339,10 @@ class MessagingService {
     _deliverSub = relay.deliveries.listen(_onDeliver);
     // Po každém (re)connectu dorazit, co zůstalo viset ve frontě odchozích.
     _stateSub = relay.stateStream.listen((state) {
-      if (state == RelayConnectionState.connected) unawaited(_flushOutbox());
+      if (state == RelayConnectionState.connected) {
+        unawaited(_flushOutbox());
+        unawaited(_refreshMyAvatarIfOld());
+      }
     });
 
     final existingAccount = accountId;
@@ -349,8 +460,9 @@ class MessagingService {
 
   // ── Odeslání ────────────────────────────────────────────────────────
 
+  /// S [poll] je [text] záložní podoba ankety pro starší appky.
   Future<Message> sendText(Contact contact, String text,
-      {String? replyToId}) async {
+      {String? replyToId, Poll? poll}) async {
     final identity = _identity ?? (throw StateError('Service not started'));
     final ttl = await _conversationTtl(contact.id);
 
@@ -363,6 +475,7 @@ class MessagingService {
       replyToId: replyToId,
       disappearAfterSeconds: ttl,
       status: MessageStatus.sending,
+      poll: poll,
     );
     await storage.addMessage(contact.id, message);
     onUpdate?.call();
@@ -376,6 +489,7 @@ class MessagingService {
         'txt': text,
         're': ?replyToId,
         'ttl': ?ttl,
+        'poll': ?poll?.toWire(),
         'p': _profile(),
       });
       final sent = message.copyWith(
@@ -465,8 +579,8 @@ class MessagingService {
     required String fileName,
     String? mime,
     int? durationMs,
+    bool upload = true,
   }) async {
-    final relay = _relay!;
     final guessedMime = mime ??
         lookupMimeType(fileName, headerBytes: bytes) ??
         'application/octet-stream';
@@ -497,7 +611,9 @@ class MessagingService {
     }
 
     final encrypted = await AttachmentCipher.encrypt(payload);
-    final blobId = await relay.uploadAttachment(encrypted.blob);
+    final blobId = upload
+        ? await _relay!.uploadAttachment(encrypted.blob)
+        : _localBlobId();
     await _attachments.save(blobId, encrypted.blob);
 
     return AttachmentMeta(
@@ -516,6 +632,32 @@ class MessagingService {
     );
   }
 
+  /// Příloha poznámky pro sebe: stejné zpracování i šifrování jako při
+  /// odeslání, ale blob zůstane jen v telefonu — na relay nemá co dělat.
+  Future<AttachmentMeta> prepareNoteAttachment({
+    required Uint8List bytes,
+    required String fileName,
+    String? mime,
+    int? durationMs,
+  }) =>
+      _prepareAttachment(
+        bytes: bytes,
+        fileName: fileName,
+        mime: mime,
+        durationMs: durationMs,
+        upload: false,
+      );
+
+  /// Stejný tvar jako id blobu na relayi (32 hex), aby úložiště příloh
+  /// nemuselo rozlišovat původ.
+  String _localBlobId() {
+    final rnd = Random.secure();
+    return [
+      for (var i = 0; i < 16; i++)
+        rnd.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ].join();
+  }
+
   /// TTL mizících zpráv nastavené na konverzaci (null = vypnuto).
   Future<int?> _conversationTtl(String contactId) async {
     final conv = await storage.loadConversation(contactId);
@@ -532,7 +674,127 @@ class MessagingService {
       // pole vynecháme (protistrana ho doplní z pozdějšího profilu), NIKDY
       // `da!` (null-check pád = „Null check operator used on a null value").
       'da': ?(da == null ? null : base64Encode(da)),
+      // Profil BEZ 'av' = fotku jsem odebral (protistrana ji smaže).
+      'av': ?_myAvatar?.toWire(),
     };
+  }
+
+  // ── Profilová fotka ─────────────────────────────────────────────────
+
+  static const _myAvatarKey = 'my_avatar';
+
+  /// Blob na relayi žije 30 dní — s týdenní rezervou se nahraje znovu,
+  /// aby ho stáhli i lidé, kteří mi napíšou poprvé až za měsíc.
+  static const _avatarRefreshAfter = Duration(days: 23);
+
+  AvatarRef? _myAvatar;
+  final _avatarCache = <String, Uint8List>{};
+
+  AvatarRef? get myAvatar => _myAvatar;
+
+  /// Nastaví moji fotku ([jpeg] už zmenšený a bez metadat). Protistrany
+  /// se o ní dozví s další zprávou (odkaz jede v profilu).
+  Future<void> setMyAvatar(Uint8List jpeg) async {
+    final relay = _relay ?? (throw StateError('Service not started'));
+    final encrypted = await AttachmentCipher.encrypt(jpeg);
+    final blobId = await relay.uploadAttachment(encrypted.blob);
+    await _attachments.save(blobId, encrypted.blob);
+    final old = _myAvatar;
+    _myAvatar = AvatarRef(
+      blobId: blobId,
+      key: encrypted.key,
+      nonce: encrypted.nonce,
+      digest: encrypted.digest,
+      uploadedAt: DateTime.now(),
+    );
+    await storage.setSetting(_myAvatarKey, _myAvatar!.toJson());
+    _avatarCache[blobId] = jpeg;
+    if (old != null) await _forgetAvatar(old);
+    onUpdate?.call();
+  }
+
+  Future<void> removeMyAvatar() async {
+    final old = _myAvatar;
+    if (old == null) return;
+    _myAvatar = null;
+    await storage.setSetting(_myAvatarKey, null);
+    await _forgetAvatar(old);
+    onUpdate?.call();
+  }
+
+  Future<void> _forgetAvatar(AvatarRef ref) async {
+    _avatarCache.remove(ref.blobId);
+    await _attachments.delete(ref.blobId);
+  }
+
+  /// Znovu nahraje TENTÝŽ šifrovaný blob pod novým id (klíč se nemění),
+  /// než na relayi vyprší. Best-effort — zkusí se při dalším připojení.
+  Future<void> _refreshMyAvatarIfOld() async {
+    final ref = _myAvatar;
+    final relay = _relay;
+    if (ref == null || relay == null) return;
+    final uploaded = ref.uploadedAt;
+    if (uploaded != null &&
+        DateTime.now().difference(uploaded) < _avatarRefreshAfter) {
+      return;
+    }
+    try {
+      final blob = await _attachments.load(ref.blobId);
+      if (blob == null) return;
+      final blobId = await relay.uploadAttachment(blob);
+      await _attachments.save(blobId, blob);
+      _myAvatar = AvatarRef(
+        blobId: blobId,
+        key: ref.key,
+        nonce: ref.nonce,
+        digest: ref.digest,
+        uploadedAt: DateTime.now(),
+      );
+      await storage.setSetting(_myAvatarKey, _myAvatar!.toJson());
+      await _attachments.delete(ref.blobId);
+    } catch (_) {
+      // Bez sítě / relay ještě nezná zařízení — zkusí se příště.
+    }
+  }
+
+  /// Stáhne fotku kontaktu, ověří velikost a digest a uloží ji šifrovanou.
+  Future<void> _downloadAvatar(AvatarRef ref) async {
+    final relay = _relay;
+    if (relay == null || await _attachments.exists(ref.blobId)) return;
+    try {
+      final blob = await relay.downloadAttachment(ref.blobId);
+      if (blob.length > AvatarRef.maxBlobBytes) return;
+      final digest = await AttachmentCipher.sha256(blob);
+      if (!_listEquals(digest, ref.digest)) return;
+      await _attachments.save(ref.blobId, blob);
+      onUpdate?.call();
+    } catch (_) {
+      // Blob vypršel nebo síť selhala — ukáží se iniciály, další profil
+      // (s obnoveným blobem) to zkusí znovu.
+    }
+  }
+
+  /// Dešifrovaná fotka pro UI (null = není stažená / vadná → iniciály).
+  Future<Uint8List?> loadAvatar(AvatarRef ref) async {
+    final cached = _avatarCache[ref.blobId];
+    if (cached != null) return cached;
+    final blob = await _attachments.load(ref.blobId);
+    if (blob == null) {
+      unawaited(_downloadAvatar(ref));
+      return null;
+    }
+    try {
+      final bytes = await AttachmentCipher.decrypt(
+        blob: blob,
+        key: ref.key,
+        nonce: ref.nonce,
+        expectedDigest: ref.digest,
+      );
+      _avatarCache[ref.blobId] = bytes;
+      return bytes;
+    } on Object {
+      return null;
+    }
   }
 
   // ── Reakce / editace / mazání (control zprávy) ──────────────────────
@@ -572,14 +834,15 @@ class MessagingService {
   }
 
   /// Pošle odesílateli potvrzení přečtení pro dané zprávy — jen když mám
-  /// read receipts ZAPNUTÉ (default vypnuto). Best-effort.
-  Future<void> sendReadReceipts(
-      Contact contact, List<String> messageIds) async {
+  /// read receipts ZAPNUTÉ (default vypnuto). Best-effort. Ve skupině
+  /// (`gid`) jde jen autorovi zpráv, ne všem členům.
+  Future<void> sendReadReceipts(Contact contact, List<String> messageIds,
+      {String? gid}) async {
     if (messageIds.isEmpty) return;
     final enabled =
         (await storage.getSetting<bool>('read_receipts_enabled')) ?? false;
     if (!enabled) return;
-    await _sendControl(contact, {'t': 'rr', 'ids': messageIds});
+    await _sendControl(contact, {'t': 'rr', 'ids': messageIds, 'gid': ?gid});
   }
 
   /// Smaže zprávu pro všechny (tombstone u obou stran).
@@ -596,6 +859,9 @@ class MessagingService {
       await _sendContent(contact, {
         'v': 1,
         'id': const Uuid().v4(),
+        // Čas vzniku, ne doručení — potvrzení přečtení z offline telefonu
+        // má ukázat, kdy si to člověk přečetl, ne kdy se připojil.
+        'ts': DateTime.now().millisecondsSinceEpoch,
         ...extra,
         'p': _profile(),
       });
@@ -603,6 +869,29 @@ class MessagingService {
       // síť selhala — lokální stav zůstává, protistrana se dozví později
       // jen když znovu odešleme (v1: bez retry fronty pro control zprávy)
     }
+  }
+
+  /// Signalizace hovoru (`t:'call'`). Na rozdíl od ostatních
+  /// řídicích zpráv chybu nepolyká — hovor, který neodešel, musí UI ukončit.
+  /// [ring] = nabídka: relay offline příjemce budí VoIP pushem.
+  Future<pb.Receipt_Status?> sendCallSignal(
+    Contact contact,
+    Map<String, dynamic> signal, {
+    bool ring = false,
+  }) {
+    final content = {
+      'v': 1,
+      'id': const Uuid().v4(),
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      't': 'call',
+      ...signal,
+    };
+    final tap = debugSendTap;
+    if (tap != null) {
+      tap(contact.id, content);
+      return Future.value(pb.Receipt_Status.STATUS_DELIVERED_ONLINE);
+    }
+    return _sendSealed(contact, content, ring: ring);
   }
 
   /// Najde zprávu podle id v konverzaci a aplikuje transformaci.
@@ -617,13 +906,17 @@ class MessagingService {
   }
 
   // ── Skupiny (párový fanout) ─────────────────────────────────────────
+
+  static const _groupControlTypes = {'ginv', 'gleave', 'gmeta', 'gop', 'gsync'};
   //
   // Skupina nemá vlastní krypto vrstvu — každá zpráva jede existujícím
   // párovým Double Ratchet kanálem každému členovi zvlášť (`gid` v E2E
   // obsahu ji směruje do skupinové konverzace). Autor = sealed-sender
   // fingerprint, nikdy self-declared pole.
 
-  /// Založí skupinu a rozešle pozvánku (`ginv` s úplným rosterem).
+  /// Založí skupinu a rozešle pozvánku (`ginv` s úplným rosterem). Pozvánka
+  /// nese i podepsaný stav epochy 0, takže v2 členové znají správce hned;
+  /// v1 členové použijí samotný `ginv`.
   /// Všichni členové musí mít routing (aid+da) — bez něj jim fanout
   /// nemá kam doručit.
   Future<Group> createGroup(String name, List<Contact> members) async {
@@ -651,12 +944,24 @@ class MessagingService {
     await storage.ensureConversation(group.id);
     onUpdate?.call();
 
-    await _fanoutInvite(group);
+    final genesis = GroupAdminOp(
+      gid: group.id,
+      epoch: 0,
+      action: GroupAdminAction.add,
+      actor: _myFingerprint,
+      members: group.memberIds,
+      admins: group.admins,
+      name: group.name,
+      prev: Uint8List(0),
+    );
+    await _fanoutInvite(group, op: _signOp(genesis));
     return group;
   }
 
   /// Přidá členy: rozšíří roster a rozešle nový úplný stav VŠEM členům
-  /// (noví z něj poprvé uvidí skupinu).
+  /// (noví z něj poprvé uvidí skupinu). Správce přidává podepsanou
+  /// operací; ne-správce jen v kompatibilním režimu starým `ginv`, jak to
+  /// v1 klienti ve skupině stejně umějí.
   Future<void> addGroupMembers(Group group, List<Contact> added) async {
     final ids = {...group.memberIds};
     for (final m in added) {
@@ -669,40 +974,111 @@ class MessagingService {
     if (ids.length > Group.maxMembers) {
       throw GroupTooLargeError(Group.maxMembers);
     }
+    if (group.isAdmin(_myFingerprint)) {
+      await _publishAdminOp(
+        group,
+        buildGroupOp(
+          group: group,
+          me: _myFingerprint,
+          action: GroupAdminAction.add,
+          members: ids.toList(),
+        ),
+      );
+      return;
+    }
+    if (group.isEnforced(_myFingerprint)) throw const NotGroupAdminError();
     group.memberIds = ids.toList();
     await storage.saveGroup(group);
     onUpdate?.call();
     await _fanoutInvite(group);
   }
 
-  /// Přejmenuje skupinu (lokálně hned, členům `gmeta` best-effort).
+  /// Odebere člena (jen správce). Odebraný dostane výsledný stav taky —
+  /// v2 klient se z něj dozví, že ve skupině už není.
+  Future<void> removeGroupMember(Group group, String fingerprint) async {
+    if (fingerprint == _myFingerprint) return leaveGroup(group);
+    await _publishAdminOp(
+      group,
+      buildGroupOp(
+        group: group,
+        me: _myFingerprint,
+        action: GroupAdminAction.remove,
+        members: group.memberIds.where((f) => f != fingerprint).toList(),
+        admins: group.admins.where((f) => f != fingerprint).toList(),
+      ),
+    );
+  }
+
+  /// Udělí nebo odebere roli správce (jen správce). Sebe smí správce
+  /// degradovat, jen když zůstane jiný správce.
+  Future<void> setGroupAdmin(
+      Group group, String fingerprint, bool admin) async {
+    if (!group.isMember(fingerprint)) return;
+    if (group.isAdmin(fingerprint) == admin) return;
+    await _publishAdminOp(
+      group,
+      buildGroupOp(
+        group: group,
+        me: _myFingerprint,
+        action: admin ? GroupAdminAction.promote : GroupAdminAction.demote,
+        admins: admin
+            ? [...group.admins, fingerprint]
+            : group.admins.where((f) => f != fingerprint).toList(),
+      ),
+    );
+  }
+
+  /// Přejmenuje skupinu (jen správce; lokálně hned, členům best-effort).
   Future<void> renameGroup(Group group, String newName) async {
-    group.name = newName.trim();
-    await storage.saveGroup(group);
-    onUpdate?.call();
-    await _fanoutToGroup(group, {
-      'v': 1,
-      't': 'gmeta',
-      'id': const Uuid().v4(),
-      'gid': group.id,
-      'gname': group.name,
-      'p': _profile(),
-    });
+    await _publishAdminOp(
+      group,
+      buildGroupOp(
+        group: group,
+        me: _myFingerprint,
+        action: GroupAdminAction.rename,
+        name: newName.trim(),
+      ),
+    );
   }
 
   /// Opustí skupinu: oznámí členům `gleave`, lokálně označí `left`
   /// (historie zůstává, vstup i příjem jsou mrtvé).
+  ///
+  /// Správce navíc odchod podepíše jako odebrání sebe sama, aby v2 členové
+  /// zůstali na stejném řetězu. Kdyby odcházel poslední správce, předá
+  /// roli nejmenšímu fingerprintu — tomu, koho by si bez podpisu stejně
+  /// vybrali všichni přes Group.normalizeAdmins, takže `gleave` i podepsaná
+  /// operace vedou ke stejnému výsledku.
   Future<void> leaveGroup(Group group) async {
-    await _fanoutToGroup(group, {
-      'v': 1,
-      't': 'gleave',
-      'id': const Uuid().v4(),
-      'gid': group.id,
-      'p': _profile(),
-    });
+    final others = group.memberIds.where((f) => f != _myFingerprint).toList();
+    if (group.isAdmin(_myFingerprint) && others.isNotEmpty) {
+      var admins = group.admins.where((f) => f != _myFingerprint).toList();
+      if (admins.isEmpty) admins = [([...others]..sort()).first];
+      await _publishAdminOp(
+        group,
+        buildGroupOp(
+          group: group,
+          me: _myFingerprint,
+          action: GroupAdminAction.remove,
+          members: others,
+          admins: admins,
+        ),
+      );
+    }
+    await _fanoutToGroup(
+      group,
+      {
+        'v': 1,
+        't': 'gleave',
+        'id': const Uuid().v4(),
+        'gid': group.id,
+        'p': _profile(),
+      },
+      recipients: others,
+    );
     group.left = true;
-    group.memberIds =
-        group.memberIds.where((f) => f != _myFingerprint).toList();
+    group.memberIds = others;
+    group.normalizeAdmins();
     await storage.saveGroup(group);
     onUpdate?.call();
   }
@@ -711,7 +1087,7 @@ class MessagingService {
   /// člen přijal → `sent`; všichni selhali → `failed`; `delivered` až po
   /// první doručence.
   Future<Message> sendGroupText(Group group, String text,
-      {String? replyToId}) async {
+      {String? replyToId, Poll? poll, List<String> mentions = const []}) async {
     final identity = _identity ?? (throw StateError('Service not started'));
     final ttl = await _conversationTtl(group.id);
 
@@ -722,6 +1098,8 @@ class MessagingService {
       replyToId: replyToId,
       disappearAfterSeconds: ttl,
       status: MessageStatus.sending,
+      poll: poll,
+      mentions: mentions,
     );
     await storage.addMessage(group.id, message);
     onUpdate?.call();
@@ -736,6 +1114,8 @@ class MessagingService {
         'txt': text,
         're': ?replyToId,
         'ttl': ?ttl,
+        'poll': ?poll?.toWire(),
+        if (mentions.isNotEmpty) 'mn': mentions,
         'p': _profile(),
       });
       final sent = message.copyWith(
@@ -808,6 +1188,32 @@ class MessagingService {
     }
   }
 
+  /// Můj hlas v anketě (prázdná volba = hlas zrušen). Lokálně hned,
+  /// ostatním jako řídicí zpráva — ve skupině všem členům, ať počty sedí
+  /// každému.
+  Future<void> votePoll(String convId, String pollId, List<int> choice,
+      {Group? group, Contact? contact}) async {
+    await _mutateLocalMessage(convId, pollId, (m) {
+      final poll = m.poll;
+      return poll == null
+          ? m
+          : m.copyWith(poll: poll.withVote(_myFingerprint, choice));
+    });
+    final control = {'t': 'vote', 'ref': pollId, 'o': choice};
+    if (group != null) {
+      await _fanoutToGroup(group, {
+        'v': 1,
+        'id': const Uuid().v4(),
+        'ts': DateTime.now().millisecondsSinceEpoch,
+        'gid': group.id,
+        ...control,
+        'p': _profile(),
+      });
+    } else if (contact != null) {
+      await _sendControl(contact, control);
+    }
+  }
+
   /// Reakce ve skupině (emoji == null = odebrat).
   Future<void> sendGroupReaction(
       Group group, String targetId, String? emoji) async {
@@ -861,8 +1267,9 @@ class MessagingService {
     });
   }
 
-  /// Rozešle `ginv` s úplným rosterem všem členům kromě mě.
-  Future<void> _fanoutInvite(Group group) async {
+  /// Rozešle `ginv` s úplným rosterem všem členům kromě mě. S [op] nese
+  /// pozvánka i podepsaný stav pro v2 členy (v1 klient pole `gop` ignoruje).
+  Future<void> _fanoutInvite(Group group, {GroupOpMessage? op}) async {
     final roster = await _buildRoster(group);
     await _fanoutToGroup(group, {
       'v': 1,
@@ -871,8 +1278,76 @@ class MessagingService {
       'gid': group.id,
       'gname': group.name,
       'roster': roster,
+      'gop': ?op?.toWire(),
       'p': _profile(),
     });
+  }
+
+  /// Podepíše operaci mým identity klíčem (XEdDSA, stejný klíč jako AUTH).
+  GroupOpMessage _signOp(GroupAdminOp op,
+      {List<Map<String, dynamic>>? roster}) {
+    final key = PrivateKey.deserialize(
+        bytes: _identity!.identityPrivateKey.toList());
+    return GroupOpMessage(
+      op: op,
+      sig: op.signWith(
+          (m) => Uint8List.fromList(key.sign(message: m).toList())),
+      roster: roster,
+    );
+  }
+
+  /// Aplikuje mou správcovskou operaci lokálně a rozešle ji starým i novým
+  /// členům (odebraný se tak dozví, že už ve skupině není).
+  ///
+  /// Dokud je ve skupině člen bez v2, jede operace uvnitř legacy `ginv` /
+  /// `gmeta` — v1 klient z nich převezme výsledný roster a jméno, v2 klient
+  /// ověří vnořený `gop` a stín ignoruje. Jedna obálka místo dvou: nemůže
+  /// se stát, že stín dorazí bez operace nebo v opačném pořadí.
+  Future<void> _publishAdminOp(Group group, GroupAdminOp op) async {
+    final before = {...group.memberIds};
+    applyGroupOp(group, op, _myFingerprint);
+    await storage.saveGroup(group);
+    onUpdate?.call();
+
+    final recipients = {...before, ...group.memberIds}..remove(_myFingerprint);
+    final enforced = group.isEnforced(_myFingerprint);
+    final isRename = op.action == GroupAdminAction.rename;
+    // Roster potřebuje nový člen (add) a v1 stín `ginv`; `gmeta` ho nenese.
+    final roster = (enforced ? op.action == GroupAdminAction.add : !isRename)
+        ? await _buildRoster(group)
+        : null;
+    final Map<String, dynamic> content;
+    if (enforced) {
+      content = {
+        'v': 1,
+        't': 'gop',
+        'id': const Uuid().v4(),
+        ..._signOp(op, roster: roster).toWire(),
+        'p': _profile(),
+      };
+    } else if (isRename) {
+      content = {
+        'v': 1,
+        't': 'gmeta',
+        'id': const Uuid().v4(),
+        'gid': group.id,
+        'gname': group.name,
+        'gop': _signOp(op).toWire(),
+        'p': _profile(),
+      };
+    } else {
+      content = {
+        'v': 1,
+        't': 'ginv',
+        'id': const Uuid().v4(),
+        'gid': group.id,
+        'gname': group.name,
+        'roster': roster,
+        'gop': _signOp(op).toWire(),
+        'p': _profile(),
+      };
+    }
+    await _fanoutToGroup(group, content, recipients: recipients);
   }
 
   /// Testovací vstup do skupinové příjmové cesty bez relaye a krypta:
@@ -887,13 +1362,26 @@ class MessagingService {
           String senderFp, Map<String, dynamic> content) =>
       _handleGroupInvite(senderFp, content);
 
+  /// Libovolná správa skupiny (`ginv`/`gmeta`/`gleave`/`gop`/`gsync`).
+  @visibleForTesting
+  Future<void> debugHandleGroupControl(
+          String senderFp, Map<String, dynamic> content) =>
+      _handleGroupControl(senderFp, content['t'] as String?, content);
+
   @visibleForTesting
   Future<Group?> debugGroupForIncoming(String gid, String senderFp) =>
       _groupForIncoming(gid, senderFp);
 
-  /// Roster = [{f, n, ik, aid, da}] pro všechny členy včetně mě.
+  /// Když je nastavený, odchozí obsah místo relaye dostane test
+  /// (fingerprint příjemce + content JSON) a odeslání se bere jako úspěšné.
+  @visibleForTesting
+  void Function(String toFingerprint, Map<String, dynamic> content)?
+      debugSendTap;
+
+  /// Roster = [{f, n, ik, aid, da, v}] pro všechny členy včetně mě.
   /// Člen bez routingu se vynechá (příjemci mu psát nemohou, ale
-  /// zprávy od něj membership guardem projdou).
+  /// zprávy od něj membership guardem projdou). `v: 2` = člen inzeroval
+  /// podporu správců; v1 klient pole ignoruje.
   Future<List<Map<String, dynamic>>> _buildRoster(Group group) async {
     final contacts = await storage.loadContacts();
     final byFp = {for (final c in contacts) c.id: c};
@@ -904,8 +1392,12 @@ class MessagingService {
       'f': _myFingerprint,
       'n': me.displayName,
       'ik': base64Encode(me.identityKey),
-      'aid': me.accountId,
-      'da': base64Encode(me.deliveryAddress!),
+      // Před doběhnutím registrace routing nemám — vynechat, ne `!`.
+      'aid': ?me.accountId,
+      'da': ?(me.deliveryAddress == null
+          ? null
+          : base64Encode(me.deliveryAddress!)),
+      'v': groupProtocolVersion,
     });
 
     for (final fp in group.memberIds) {
@@ -921,25 +1413,32 @@ class MessagingService {
         'ik': base64Encode(p.identityKey),
         'aid': p.accountId,
         'da': base64Encode(p.deliveryAddress!),
+        if (group.v2Members.contains(fp)) 'v': groupProtocolVersion,
       });
     }
     return roster;
   }
 
-  /// Fanout obsahu všem členům kromě mě. Vrací true, když aspoň jedno
-  /// odeslání prošlo (per-member retry v1 není — stejná hranice jako
-  /// u 1:1 control zpráv).
-  Future<bool> _fanoutToGroup(
-      Group group, Map<String, dynamic> content) async {
+  /// Verze skupinového protokolu, kterou inzeruju (`gv` v obsahu, `v`
+  /// v rosteru). 2 = rozumím správcům a `gop`.
+  static const groupProtocolVersion = 2;
+
+  /// Fanout obsahu členům kromě mě (nebo jen [recipients]). Vrací true,
+  /// když aspoň jedno odeslání prošlo (per-member retry v1 není — stejná
+  /// hranice jako u 1:1 control zpráv). Každý skupinový obsah nese `gv`,
+  /// aby ostatní poznali, kdy už ve skupině žádný v1 klient není.
+  Future<bool> _fanoutToGroup(Group group, Map<String, dynamic> content,
+      {Iterable<String>? recipients}) async {
     final contacts = await storage.loadContacts();
     final byFp = {for (final c in contacts) c.id: c};
+    final payload = {...content, 'gv': groupProtocolVersion};
     var anyOk = false;
-    for (final fp in group.memberIds) {
+    for (final fp in recipients ?? group.memberIds) {
       if (fp == _myFingerprint) continue;
       final c = byFp[fp];
       if (c == null || c.blocked) continue;
       try {
-        await _sendContent(c, content);
+        await _sendContent(c, payload);
         anyOk = true;
       } catch (_) {
         // člen offline/bez routingu — v1 bez per-member retry fronty
@@ -957,27 +1456,306 @@ class MessagingService {
     return group;
   }
 
-  /// Zpracuje `ginv` (pozvánka / úplná aktualizace rosteru).
-  /// Bezpečnostní pravidla: fingerprint každého záznamu
-  /// musí sedět s jeho identity klíčem, odesílatel i já musíme být
-  /// v rosteru, identity klíč existujícího kontaktu se NIKDY nepřepisuje.
-  Future<void> _handleGroupInvite(
-      String senderFp, Map<String, dynamic> content) async {
-    final gid = content['gid'] as String?;
-    final gname = (content['gname'] as String?)?.trim();
-    final rosterRaw = content['roster'] as List?;
-    if (gid == null || gid.isEmpty || gid.length > 64) return;
-    if (gname == null || gname.isEmpty || rosterRaw == null) return;
-    if (rosterRaw.length > Group.maxMembers) return;
+  /// Zapamatuje si, že člen inzeruje v2 (`gv` je v obsahu každé skupinové
+  /// zprávy v2 klienta). Vrací true, když se stav skupiny změnil.
+  bool _noteCapability(Group group, String fp, Map<String, dynamic> content) {
+    final gv = content['gv'];
+    if (gv is! int || gv < groupProtocolVersion) return false;
+    if (!group.isMember(fp)) return false;
+    return group.v2Members.add(fp);
+  }
 
-    // Ověř roster: f musí být fingerprint ik (anti-spoof).
+  // ── Správa skupin: příjem ───────────────────────────────────────────
+  //
+  // Pravda o členství/rolích/jménu je řetěz podepsaných operací `gop`.
+  // Legacy `ginv`/`gmeta` od ne-správce se bere jen
+  // v kompatibilním režimu (ve skupině je aspoň jeden v1 člen) — v1 klient
+  // jinou cestu nemá a odmítnutí by skupinu rozdělilo.
+
+  /// Jak často nejvýš žádat správce o stav jedné skupiny. Chrání před
+  /// smyčkou i zahlcením, když správce nemá co poslat nebo je offline.
+  static const _groupSyncRequestEvery = Duration(minutes: 10);
+
+  /// Jak často nejvýš odpovídat stejnému členovi na žádost o stav.
+  static const _groupSyncAnswerEvery = Duration(minutes: 1);
+
+  final _groupSyncRequestedAt = <String, DateTime>{};
+  final _groupSyncAnsweredAt = <String, DateTime>{};
+
+  Future<void> _handleGroupControl(
+      String senderFp, String? type, Map<String, dynamic> content) async {
+    final gid = content['gid'];
+    if (gid is! String || gid.isEmpty || gid.length > 64) return;
+    if (type == 'gsync') return _answerGroupSync(senderFp, gid, content);
+
+    final opRaw = type == 'gop' ? content : content['gop'];
+    if (opRaw != null) {
+      final msg = GroupOpMessage.fromWire(opRaw);
+      final consumed = msg != null &&
+          msg.op.gid == gid &&
+          await _handleGroupOp(senderFp, msg, content['roster']);
+      // Odmítnutý vnořený `gop` nechá promluvit legacy stín: odesílatel je
+      // pak posuzován jako kterýkoli v1 člen (kompatibilní režim).
+      if (consumed || type == 'gop') return;
+    }
+
+    switch (type) {
+      case 'ginv':
+        await _handleGroupInvite(senderFp, content);
+      case 'gmeta':
+        await _handleLegacyMeta(senderFp, gid, content);
+      case 'gleave':
+        await _handleLeave(senderFp, gid);
+    }
+  }
+
+  /// Zpracuje podepsanou operaci. Vrací true, když je tím zpráva vyřízená
+  /// (aplikovaná, zastaralá, podržená); false = operace neplatí a legacy
+  /// stín se má posoudit podle pravidel kompatibilního režimu.
+  Future<bool> _handleGroupOp(
+      String senderFp, GroupOpMessage msg, Object? outerRoster) async {
+    final local = await storage.loadGroup(msg.op.gid);
+    if (local == null) return _joinFromOp(senderFp, msg, outerRoster);
+    // Opuštěná skupina se znovu neotevírá (stejně jako v1 pozvánka).
+    if (local.left) return true;
+
+    final keys = await _identityKeysByFp();
+    final verdict = checkGroupOp(
+      local: local,
+      msg: msg,
+      senderFp: senderFp,
+      me: _myFingerprint,
+      actorIdentityKey: keys[msg.op.actor],
+    );
+    switch (verdict) {
+      case GopVerdict.apply:
+        await _applyVerifiedOp(local, msg, senderFp, outerRoster);
+        return true;
+      case GopVerdict.stale:
+        return true;
+      case GopVerdict.gap:
+        await _holdAndResync(local, senderFp, msg, outerRoster);
+        return true;
+      case GopVerdict.fork:
+        // Operace navazuje na stav, který nemám — nejde ji podržet (nikdy
+        // nenaváže). Stav od správce s vyšší epochou ji stejně obsahuje.
+        local.needsResync = true;
+        await storage.saveGroup(local);
+        onUpdate?.call();
+        await _requestGroupSync(local, senderFp);
+        return true;
+      case GopVerdict.notAdmin when msg.op.epoch > local.epoch + 1:
+        // Z budoucnosti: podepisující mohl správcem (nebo i členem) být
+        // jmenován v epoše, která mi chybí. Neaplikovat, ale ani nezahodit.
+        await _holdAndResync(local, senderFp, msg, outerRoster);
+        return true;
+      case GopVerdict.notAdmin:
+      case GopVerdict.badSignature:
+      case GopVerdict.spoof:
+      case GopVerdict.invalid:
+        local.rejectedOpAt = DateTime.now();
+        await storage.saveGroup(local);
+        onUpdate?.call();
+        return false;
+    }
+  }
+
+  Future<Map<String, Uint8List>> _identityKeysByFp() async => {
+        for (final c in await storage.loadContacts())
+          c.id: c.publicIdentity.identityKey,
+      };
+
+  Future<void> _applyVerifiedOp(Group group, GroupOpMessage msg,
+      String senderFp, Object? outerRoster) async {
+    applyGroupOp(group, msg.op, _myFingerprint);
+    group.v2Members.add(senderFp);
+    await _absorbOpRoster(group, msg, outerRoster);
+    await _drainPendingOps(group);
+    group.needsResync = group.pendingOps.isNotEmpty;
+    await storage.saveGroup(group);
+    onUpdate?.call();
+  }
+
+  /// Z rosteru ověřené operace založí kontakty nových členů (stejná TOFU
+  /// pravidla jako `ginv`) a převezme jejich inzerovanou v2 — tu tu ručí
+  /// podepsaný správce.
+  Future<void> _absorbOpRoster(
+      Group group, GroupOpMessage msg, Object? outerRoster) async {
+    final roster = _validRosterEntries(msg.roster ?? outerRoster);
+    roster.removeWhere((f, _) => !group.isMember(f));
+    await _ingestRoster(roster.values);
+    for (final e in roster.values) {
+      if (e['v'] == groupProtocolVersion) group.v2Members.add(e['f'] as String);
+    }
+  }
+
+  Future<void> _holdAndResync(Group group, String senderFp,
+      GroupOpMessage msg, Object? outerRoster) async {
+    final roster = msg.roster ??
+        (outerRoster is List
+            ? [
+                for (final e in outerRoster)
+                  if (e is Map) e.cast<String, dynamic>(),
+              ]
+            : null);
+    holdGroupOp(
+      group,
+      PendingGroupOp(
+        senderFp: senderFp,
+        wire: GroupOpMessage(op: msg.op, sig: msg.sig, roster: roster)
+            .toWire(),
+      ),
+    );
+    group.needsResync = true;
+    await storage.saveGroup(group);
+    onUpdate?.call();
+    await _requestGroupSync(group, senderFp);
+  }
+
+  /// Zkusí podržené operace znovu po posunu stavu. Každá se ověřuje celá
+  /// znovu (správci se mezitím mohli změnit).
+  Future<void> _drainPendingOps(Group group) async {
+    var progressed = true;
+    while (progressed && group.pendingOps.isNotEmpty) {
+      progressed = false;
+      final keys = await _identityKeysByFp();
+      for (final p in [...group.pendingOps]) {
+        final msg = GroupOpMessage.fromWire(p.wire);
+        final verdict = msg == null
+            ? GopVerdict.invalid
+            : checkGroupOp(
+                local: group,
+                msg: msg,
+                senderFp: p.senderFp,
+                me: _myFingerprint,
+                actorIdentityKey: keys[msg.op.actor],
+              );
+        final stillFuture = verdict == GopVerdict.gap ||
+            (verdict == GopVerdict.notAdmin &&
+                msg!.op.epoch > group.epoch + 1);
+        if (stillFuture) continue;
+        group.pendingOps = group.pendingOps.where((x) => x != p).toList();
+        if (verdict == GopVerdict.apply) {
+          applyGroupOp(group, msg!.op, _myFingerprint);
+          group.v2Members.add(p.senderFp);
+          await _absorbOpRoster(group, msg, null);
+          progressed = true;
+          break;
+        }
+      }
+    }
+  }
+
+  /// Požádá správce (a odesílatele operace, která nenavázala) o aktuální
+  /// podepsaný stav. Omezené frekvencí — odpověď žádost nikdy nevyvolá,
+  /// takže smyčka nevznikne.
+  Future<void> _requestGroupSync(Group group, String hintFp) async {
+    final now = DateTime.now();
+    final last = _groupSyncRequestedAt[group.id];
+    if (last != null && now.difference(last) < _groupSyncRequestEvery) return;
+    _groupSyncRequestedAt[group.id] = now;
+    await _fanoutToGroup(
+      group,
+      {
+        'v': 1,
+        't': 'gsync',
+        'id': const Uuid().v4(),
+        'gid': group.id,
+        'ep': group.epoch,
+        'p': _profile(),
+      },
+      recipients: {...group.admins, if (group.isMember(hintFp)) hintFp},
+    );
+  }
+
+  /// Odpověď správce na žádost o stav: můj aktuální stav podepsaný jako
+  /// `sync`. Jen členovi, jen když jsem opravdu dál, a jen jednou za chvíli.
+  Future<void> _answerGroupSync(
+      String senderFp, String gid, Map<String, dynamic> content) async {
+    final group = await _groupForIncoming(gid, senderFp);
+    if (group == null || !group.isAdmin(_myFingerprint)) return;
+    final theirs = content['ep'];
+    if (theirs is! int || theirs >= group.epoch) return;
+
+    final key = '$gid|$senderFp';
+    final now = DateTime.now();
+    final last = _groupSyncAnsweredAt[key];
+    if (last != null && now.difference(last) < _groupSyncAnswerEvery) return;
+    _groupSyncAnsweredAt[key] = now;
+
+    final snapshot = _signOp(
+      buildGroupOp(
+        group: group,
+        me: _myFingerprint,
+        action: GroupAdminAction.sync,
+      ),
+      roster: await _buildRoster(group),
+    );
+    await _fanoutToGroup(
+      group,
+      {
+        'v': 1,
+        't': 'gop',
+        'id': const Uuid().v4(),
+        ...snapshot.toWire(),
+        'p': _profile(),
+      },
+      recipients: [senderFp],
+    );
+  }
+
+  /// Pozvánka do skupiny, kterou ještě neznám, s podepsaným stavem. Klíč
+  /// podepisujícího: z mých kontaktů, jinak z rosteru (fingerprint ověřený
+  /// proti klíči — stejná důvěra jako u v1 pozvánky).
+  Future<bool> _joinFromOp(
+      String senderFp, GroupOpMessage msg, Object? outerRoster) async {
+    final op = msg.op;
+    final roster = _validRosterEntries(msg.roster ?? outerRoster);
+    final keys = await _identityKeysByFp();
+    final rosterIk = roster[op.actor]?['ik'] as String?;
+    final verdict = checkJoinOp(
+      msg: msg,
+      senderFp: senderFp,
+      me: _myFingerprint,
+      actorIdentityKey:
+          keys[op.actor] ?? (rosterIk == null ? null : base64Decode(rosterIk)),
+    );
+    if (verdict != GopVerdict.apply) return false;
+
+    roster.removeWhere((f, _) => !op.members.contains(f));
+    await _ingestRoster(roster.values);
+    final group = Group(
+      id: op.gid,
+      name: op.name,
+      memberIds: op.members,
+      createdBy: op.actor,
+      admins: op.admins,
+      epoch: op.epoch,
+      v2Members: {
+        senderFp,
+        for (final e in roster.values)
+          if (e['v'] == groupProtocolVersion) e['f'] as String,
+      },
+    );
+    await storage.saveGroup(group);
+    await storage.ensureConversation(group.id);
+    onUpdate?.call();
+    return true;
+  }
+
+  /// Roster entry, jejichž fingerprint sedí s identity klíčem (anti-spoof);
+  /// ostatní se tiše vynechají. Nad strop členů = nic.
+  Map<String, Map<String, dynamic>> _validRosterEntries(Object? rosterRaw) {
     final members = <String, Map<String, dynamic>>{};
+    if (rosterRaw is! List || rosterRaw.length > Group.maxMembers) {
+      return members;
+    }
     for (final raw in rosterRaw) {
       if (raw is! Map) continue;
       final e = raw.cast<String, dynamic>();
-      final f = e['f'] as String?;
-      final ikB64 = e['ik'] as String?;
-      if (f == null || ikB64 == null) continue;
+      final f = e['f'];
+      final ikB64 = e['ik'];
+      if (f is! String || ikB64 is! String) continue;
       final Uint8List ik;
       try {
         ik = base64Decode(ikB64);
@@ -987,21 +1765,15 @@ class MessagingService {
       if (SepotFingerprint.ofPublicKey(ik).display != f) continue;
       members[f] = e;
     }
-    if (!members.containsKey(senderFp)) return;
-    if (!members.containsKey(_myFingerprint)) return;
+    return members;
+  }
 
-    final existing = await storage.loadGroup(gid);
-    if (existing != null) {
-      if (existing.left) return;
-      // Aktualizaci rosteru smí poslat jen stávající člen.
-      if (!existing.isMember(senderFp)) return;
-    }
-
-    // Neznámé členy založ jako běžné (neověřené) kontakty; existujícím
-    // nanejvýš doplň chybějící routing (jen při shodě identity klíče).
+  /// Neznámé členy založ jako běžné (neověřené) kontakty; existujícím
+  /// nanejvýš doplň chybějící routing (jen při shodě identity klíče).
+  Future<void> _ingestRoster(Iterable<Map<String, dynamic>> entries) async {
     final contacts = await storage.loadContacts();
     final byFp = {for (final c in contacts) c.id: c};
-    for (final e in members.values) {
+    for (final e in entries) {
       final f = e['f'] as String;
       if (f == _myFingerprint) continue;
       final aid = e['aid'] as String?;
@@ -1036,16 +1808,96 @@ class MessagingService {
         deliveryAddress: daB64 == null ? null : base64Decode(daB64),
       )));
     }
+  }
 
+  /// Zpracuje legacy `ginv` (pozvánka / aktualizace rosteru bez podpisu).
+  /// Bezpečnostní pravidla: fingerprint každého záznamu
+  /// musí sedět s jeho identity klíčem, odesílatel i já musíme být
+  /// v rosteru, identity klíč existujícího kontaktu se NIKDY nepřepisuje.
+  ///
+  /// U známé skupiny jen PŘIDÁVÁ: v1 klient jinou změnu než přidání
+  /// neumí, takže chybějící člen v jeho rosteru znamená nanejvýš, že ho
+  /// nezná — ne že ho má kdo odebrat. Odebírá jen podepsaný `gop` a `gleave`.
+  Future<void> _handleGroupInvite(
+      String senderFp, Map<String, dynamic> content) async {
+    final gid = content['gid'] as String?;
+    final gname = (content['gname'] as String?)?.trim();
+    final rosterRaw = content['roster'] as List?;
+    if (gid == null || gid.isEmpty || gid.length > 64) return;
+    if (gname == null || gname.isEmpty || rosterRaw == null) return;
+    if (rosterRaw.length > Group.maxMembers) return;
+
+    final members = _validRosterEntries(rosterRaw);
+    if (!members.containsKey(senderFp)) return;
+    if (!members.containsKey(_myFingerprint)) return;
+    final senderV2 = members[senderFp]!['v'] == groupProtocolVersion;
+
+    final existing = await storage.loadGroup(gid);
+    if (existing != null) {
+      if (existing.left) return;
+      // Aktualizaci rosteru smí poslat jen stávající člen.
+      if (!existing.isMember(senderFp)) return;
+      if (senderV2) existing.v2Members.add(senderFp);
+      _noteCapability(existing, senderFp, content);
+      final merged = {...existing.memberIds, ...members.keys};
+      if (merged.length > Group.maxMembers) return;
+      if (!existing.isAdmin(senderFp) &&
+          existing.isEnforced(_myFingerprint)) {
+        existing.rejectedOpAt = DateTime.now();
+        await storage.saveGroup(existing);
+        onUpdate?.call();
+        return;
+      }
+      await _ingestRoster(members.values);
+      existing
+        ..memberIds = merged.toList()
+        ..name = gname;
+      await storage.saveGroup(existing);
+      onUpdate?.call();
+      return;
+    }
+
+    await _ingestRoster(members.values);
+    // Bez podpisu nevím, kdo je skutečný správce — odhad je odesílatel,
+    // první podepsaný stav ho opraví (Group.provisional).
     final group = Group(
       id: gid,
       name: gname,
       memberIds: members.keys.toList(),
-      createdBy: existing?.createdBy ?? senderFp,
-      createdAt: existing?.createdAt,
+      createdBy: senderFp,
+      provisional: true,
+      v2Members: {if (senderV2) senderFp},
     );
     await storage.saveGroup(group);
     await storage.ensureConversation(gid);
+    onUpdate?.call();
+  }
+
+  /// Legacy přejmenování (`gmeta` bez podpisu): od správce vždy, od
+  /// ostatních jen v kompatibilním režimu.
+  Future<void> _handleLegacyMeta(
+      String senderFp, String gid, Map<String, dynamic> content) async {
+    final group = await _groupForIncoming(gid, senderFp);
+    if (group == null) return;
+    _noteCapability(group, senderFp, content);
+    final gname = (content['gname'] as String?)?.trim();
+    if (!group.isAdmin(senderFp) && group.isEnforced(_myFingerprint)) {
+      group.rejectedOpAt = DateTime.now();
+    } else if (gname != null && gname.isNotEmpty) {
+      group.name = gname;
+    }
+    await storage.saveGroup(group);
+    onUpdate?.call();
+  }
+
+  /// Odchod smí oznámit každý sám za sebe; odešel-li poslední správce,
+  /// nastoupí náhradník podle Group.normalizeAdmins.
+  Future<void> _handleLeave(String senderFp, String gid) async {
+    final group = await _groupForIncoming(gid, senderFp);
+    if (group == null) return;
+    group.memberIds = group.memberIds.where((f) => f != senderFp).toList();
+    group.normalizeAdmins();
+    await storage.saveGroup(group);
     onUpdate?.call();
   }
 
@@ -1165,6 +2017,24 @@ class MessagingService {
     Contact contact,
     Map<String, dynamic> content,
   ) async {
+    final tap = debugSendTap;
+    if (tap != null) {
+      tap(contact.id, content);
+      return true;
+    }
+    return await _sendSealed(contact, content) ==
+        pb.Receipt_Status.STATUS_DELIVERED_ONLINE;
+  }
+
+  /// Zašifruje obsah pro kontakt a pošle obálku. U [ephemeral] se nová
+  /// session nezakládá (X3DH kvůli „píše…“ nedává smysl) — bez session
+  /// vrací null.
+  Future<pb.Receipt_Status?> _sendSealed(
+    Contact contact,
+    Map<String, dynamic> content, {
+    bool ephemeral = false,
+    bool ring = false,
+  }) async {
     final crypto = _crypto ?? (throw StateError('Service not started'));
     final relay = _relay!;
 
@@ -1186,6 +2056,7 @@ class MessagingService {
     // První zpráva: X3DH z bundle. Identity klíč v bundle MUSÍ sedět
     // s klíčem z kontaktu (jinak by relay mohl podstrčit vlastní).
     if (!await crypto.hasSession(peerAddr)) {
+      if (ephemeral) return null;
       final bundle = await relay.fetchBundle(peerDa);
       if (!_listEquals(bundle.identityKey, peer.identityKey)) {
         throw const IdentityKeyMismatchError();
@@ -1199,9 +2070,16 @@ class MessagingService {
       senderCertificate: await _senderCertificate(),
     );
 
-    final receipt =
-        await relay.sendEnvelope(dstAddress: peerDa, payload: sealed);
-    return receipt.status == pb.Receipt_Status.STATUS_DELIVERED_ONLINE;
+    final receipt = await relay.sendEnvelope(
+      dstAddress: peerDa,
+      payload: sealed,
+      hint: ephemeral
+          ? pb.ContentHint.CONTENT_HINT_EPHEMERAL
+          : ring
+              ? pb.ContentHint.CONTENT_HINT_CALL
+              : pb.ContentHint.CONTENT_HINT_DEFAULT,
+    );
+    return receipt.status;
   }
 
   // ── Příjem ──────────────────────────────────────────────────────────
@@ -1233,8 +2111,8 @@ class MessagingService {
           jsonDecode(utf8.decode(opened.plaintext)) as Map<String, dynamic>;
       final type = content['t'] as String?;
       const known = {
-        'txt', 'att', 'rx', 'edit', 'del', 'dlv', 'rr', // 1:1 + skupiny
-        'ginv', 'gleave', 'gmeta', // správa skupin
+        'txt', 'att', 'rx', 'edit', 'del', 'dlv', 'rr', 'typ', 'vote',
+        ..._groupControlTypes,
       };
       if (content['v'] != 1 || !known.contains(type)) {
         // Neznámý typ/verze: obsah je pro tuhle verzi navždy nečitelný
@@ -1253,29 +2131,20 @@ class MessagingService {
         return;
       }
 
-      // Správa skupin: pozvánka/roster, odchod, přejmenování. Autorita
-      // = sealed-sender fingerprint; guardy uvnitř handlerů. ACK vždy
-      // (retry z fronty nepomůže).
-      if (type == 'ginv') {
-        await _handleGroupInvite(senderFp, content);
+      // Hovory jen 1:1; skupinový gid tu nemá co dělat.
+      // Nic se neukládá — záznam „Hovor · 3:12“ si zapíše obsluha hovoru.
+      if (type == 'call') {
+        if (content['gid'] == null) onCallSignal?.call(contact, content);
         _relay!.ack(envelope.msgUuid);
         return;
       }
-      if (type == 'gleave' || type == 'gmeta') {
-        final gid = content['gid'] as String?;
-        final group =
-            gid == null ? null : await _groupForIncoming(gid, senderFp);
-        if (group != null) {
-          if (type == 'gleave') {
-            group.memberIds =
-                group.memberIds.where((f) => f != senderFp).toList();
-          } else {
-            final gname = (content['gname'] as String?)?.trim();
-            if (gname != null && gname.isNotEmpty) group.name = gname;
-          }
-          await storage.saveGroup(group);
-          onUpdate?.call();
-        }
+
+      // Správa skupin: pozvánka/roster, odchod, přejmenování, podepsané
+      // operace správců a žádost o jejich stav. Autorita = sealed-sender
+      // fingerprint; guardy uvnitř handlerů. ACK vždy (retry z fronty
+      // nepomůže).
+      if (_groupControlTypes.contains(type)) {
+        await _handleGroupControl(senderFp, type, content);
         _relay!.ack(envelope.msgUuid);
         return;
       }
@@ -1283,52 +2152,55 @@ class MessagingService {
       // Skupinový obsah: membership guard (skupinu znám, neopustil jsem
       // ji, odesílatel je člen) — jinak tichý drop s ACK.
       final gid = content['gid'] as String?;
-      if (gid != null && await _groupForIncoming(gid, senderFp) == null) {
+      final group =
+          gid == null ? null : await _groupForIncoming(gid, senderFp);
+      if (gid != null && group == null) {
         _relay!.ack(envelope.msgUuid);
         return;
+      }
+      if (group != null && _noteCapability(group, senderFp, content)) {
+        await storage.saveGroup(group);
       }
       // Konverzace, do které obsah patří: skupina (gid), jinak 1:1.
       final convId = gid ?? contact.id;
 
-      // Doručenka: příjemce potvrdil, že moje zpráva dorazila na jeho
-      // zařízení → povýšíme ✓ (odesláno) na ✓✓ (doručeno). Off-line zprávy
-      // se tak dočkají ✓✓ ve chvíli, kdy si je protistrana vyzvedne.
-      // Ve skupině povyšuje první doručenka (per-member matice v2).
-      if (type == 'dlv') {
-        final ref = content['ref'] as String?;
-        if (ref != null) {
-          await _mutateLocalMessage(
-            convId,
-            ref,
-            (m) => m.isMine(_identity!.id) &&
-                    m.status != MessageStatus.delivered
-                ? m.copyWith(
-                    isDelivered: true, status: MessageStatus.delivered)
-                : m,
-          );
-        }
+      // „píše…“: jen když ho sám sdílím a jen čerstvé — zdržené v síti
+      // by ukazovalo psaní, které už dávno skončilo.
+      if (type == 'typ') {
+        final fresh = DateTime.now().difference(wireSentAt(content['ts'])) <
+            TypingTracker.showFor;
+        if (fresh && await _typingEnabled()) typing.mark(convId, senderFp);
         _relay!.ack(envelope.msgUuid);
-        onUpdate?.call();
         return;
       }
 
-      // Potvrzení přečtení: povýší moje doručené zprávy na „přečteno".
-      // Respektujeme jen když mám read receipts ZAPNUTÉ (reciproční).
-      if (type == 'rr') {
-        final enabled =
-            (await storage.getSetting<bool>('read_receipts_enabled')) ?? false;
+      // Doručenka (✓✓) a potvrzení přečtení: zapíšou čas od daného
+      // příjemce. Off-line zprávy se ✓✓ dočkají, až si je protistrana
+      // vyzvedne. Potvrzení přečtení respektujeme jen když ho sám sdílím
+      // (reciproční, default vypnuto).
+      if (type == 'dlv' || type == 'rr') {
+        final read = type == 'rr';
+        final enabled = !read ||
+            ((await storage.getSetting<bool>('read_receipts_enabled')) ??
+                false);
         if (enabled) {
           // whereType přeskočí netypové prvky — podvržené 'ids' nesmí
           // shodit příjem (jinak by se obálka bez ACK doručovala donekonečna).
-          final ids =
-              (content['ids'] as List?)?.whereType<String>() ?? const <String>[];
+          final ids = read
+              ? (content['ids'] as List?)?.whereType<String>() ??
+                  const <String>[]
+              : [?content['ref'] as String?];
+          final at = wireSentAt(content['ts']);
+          final recipients = group == null
+              ? 1
+              : group.memberIds.where((f) => f != _identity!.id).length;
           for (final id in ids) {
             await _mutateLocalMessage(
               convId,
               id,
-              (m) => m.isMine(_identity!.id) &&
-                      m.status != MessageStatus.read
-                  ? m.copyWith(status: MessageStatus.read, isDelivered: true)
+              (m) => m.isMine(_identity!.id)
+                  ? applyReceipt(m,
+                      from: senderFp, at: at, read: read, recipients: recipients)
                   : m,
             );
           }
@@ -1340,7 +2212,7 @@ class MessagingService {
 
       // Control zprávy (reakce/edit/del) mění existující zprávu, nevytvářejí
       // novou bublinu. Aplikujeme a ACKneme (retry z fronty nepomůže).
-      if (type == 'rx' || type == 'edit' || type == 'del') {
+      if (type == 'rx' || type == 'edit' || type == 'del' || type == 'vote') {
         await _applyIncomingControl(convId, type!, content, opened);
         _relay!.ack(envelope.msgUuid);
         onUpdate?.call();
@@ -1373,6 +2245,11 @@ class MessagingService {
           timestamp: wireSentAt(content['ts']),
           isDelivered: true,
           disappearAfterSeconds: ttl,
+          // Vadná anketa = null → ukáže se záložní text, nic se nerozbije.
+          poll: Poll.fromWire(content['poll']),
+          // Zmínky dávají smysl jen ve skupině; v 1:1 by šly zneužít
+          // k obejití ztlumení.
+          mentions: gid == null ? const [] : mentionsFromWire(content['mn']),
         );
       } else {
         final AttachmentMeta meta;
@@ -1403,6 +2280,8 @@ class MessagingService {
         );
       }
       final isNew = await storage.addMessage(convId, message);
+      // Zpráva dorazila → „píše…“ od autora skončilo.
+      typing.clear(convId, senderFp);
 
       // Uloženo na disku → teprve teď smí relay obálku zahodit.
       // (Blob přílohy do fronty nepatří — stahuje se na pozadí a při
@@ -1422,7 +2301,7 @@ class MessagingService {
       }
 
       onUpdate?.call();
-      onMessageReceived?.call(contact, message);
+      onMessageReceived?.call(contact, message, convId);
 
       // Pošli odesílateli doručenku (✓✓) — best-effort, nesmí blokovat
       // příjem ani ACK. Jen pro skutečné zprávy (txt/att), ne pro control.
@@ -1450,6 +2329,51 @@ class MessagingService {
       // pokus po reconnectu za nic nedá, i když duplicitní decrypt
       // pravděpodobně selže. Trvalé chyby obsahu řeší větve výše.
     }
+  }
+
+  /// Zapíše doručenku/potvrzení přečtení od příjemce `from` do mé zprávy.
+  ///
+  /// Stav nikdy nesestupuje: doručenka poslaná znovu po výpadku spojení
+  /// často dorazí až PO potvrzení přečtení a nesmí vrátit „přečteno" na
+  /// „doručeno". Ve skupině platí ✓✓ / přečteno až za všechny ostatní
+  /// členy (`recipients`); dílčí stav ukáže Info o zprávě. Opakované
+  /// potvrzení čas nepřepíše — platí první.
+  @visibleForTesting
+  static Message applyReceipt(
+    Message m, {
+    required String from,
+    required DateTime at,
+    required bool read,
+    int recipients = 1,
+  }) {
+    // Hodiny příjemce se můžou opožďovat — přečtení před odesláním
+    // by v Info o zprávě vypadalo jako chyba.
+    final when = at.isBefore(m.timestamp) ? m.timestamp : at;
+    final deliveredTo = {...m.deliveredTo}..putIfAbsent(from, () => when);
+    final readBy =
+        read ? ({...m.readBy}..putIfAbsent(from, () => when)) : m.readBy;
+
+    int rank(MessageStatus s) => switch (s) {
+          MessageStatus.sending || MessageStatus.failed => 0,
+          MessageStatus.sent => 1,
+          MessageStatus.delivered => 2,
+          MessageStatus.read => 3,
+        };
+    // Doručenka sama dokazuje, že zpráva odešla — i když ji odesílatel
+    // stihl označit za neodeslanou (timeout před ACK relaye).
+    final target = readBy.length >= recipients
+        ? MessageStatus.read
+        : deliveredTo.length >= recipients
+            ? MessageStatus.delivered
+            : MessageStatus.sent;
+    final status = rank(target) > rank(m.status) ? target : m.status;
+
+    return m.copyWith(
+      status: status,
+      isDelivered: true,
+      deliveredTo: deliveredTo,
+      readBy: readBy,
+    );
   }
 
   /// Čas odeslání z drátu (ms). Bez něj by zpráva dostala čas doručení —
@@ -1506,6 +2430,12 @@ class MessagingService {
           if (m.senderId != senderFp) return m;
           return m.copyWith(
               isDeleted: true, content: '', reactions: const {});
+        case 'vote':
+          final poll = m.poll;
+          final choice = content['o'];
+          if (poll == null || m.isDeleted || choice is! List) return m;
+          return m.copyWith(
+              poll: poll.withVote(senderFp, choice.whereType<int>().toList()));
         default:
           return m;
       }
@@ -1592,31 +2522,45 @@ class MessagingService {
 
     final profile = content['p'] as Map<String, dynamic>?;
     final profileDa = profile?['da'] as String?;
+    // Fotka: jen zprávy s profilem ji mění; profil bez 'av' = odebraná.
+    final avatar = AvatarRef.fromWire(profile?['av']);
 
     for (final c in contacts) {
       if (c.publicIdentity.fingerprint.display != senderFp) continue;
       // Doplnit/aktualizovat routing (accountId poprvé, rotace adresy…)
       final known = c.publicIdentity;
-      if (known.accountId != opened.senderName ||
+      final routingChanged = known.accountId != opened.senderName ||
           (profileDa != null &&
               (known.deliveryAddress == null ||
-                  base64Encode(known.deliveryAddress!) != profileDa))) {
-        final updated = Contact(
-          displayName: c.displayName,
-          publicIdentity: known.withRouting(
-            accountId: opened.senderName,
-            deliveryAddress: profileDa != null
-                ? base64Decode(profileDa)
-                : known.deliveryAddress ?? Uint8List(0),
-          ),
-          addedAt: c.addedAt,
-          verified: c.verified,
-          notes: c.notes,
-        );
-        await storage.saveContact(updated);
-        return updated;
+                  base64Encode(known.deliveryAddress!) != profileDa));
+      final avatarChanged =
+          profile != null && avatar?.blobId != c.avatar?.blobId;
+      if (!routingChanged && !avatarChanged) return c;
+
+      final updated = Contact(
+        displayName: c.displayName,
+        publicIdentity: routingChanged
+            ? known.withRouting(
+                accountId: opened.senderName,
+                deliveryAddress: profileDa != null
+                    ? base64Decode(profileDa)
+                    : known.deliveryAddress ?? Uint8List(0),
+              )
+            : known,
+        addedAt: c.addedAt,
+        verified: c.verified,
+        notes: c.notes,
+        // Bez tohohle se zablokovaný kontakt při změně adresy odblokoval.
+        blocked: c.blocked,
+        avatar: avatarChanged ? avatar : c.avatar,
+      );
+      await storage.saveContact(updated);
+      if (avatarChanged) {
+        final old = c.avatar;
+        if (old != null) await _forgetAvatar(old);
+        if (avatar != null) unawaited(_downloadAvatar(avatar));
       }
-      return c;
+      return updated;
     }
 
     // Neznámý odesílatel → nový (neověřený) kontakt
@@ -1629,8 +2573,9 @@ class MessagingService {
       accountId: opened.senderName,
       deliveryAddress: profileDa == null ? null : base64Decode(profileDa),
     );
-    final contact = Contact.fromPublicIdentity(identity);
+    final contact = Contact.fromPublicIdentity(identity)..avatar = avatar;
     await storage.saveContact(contact);
+    if (avatar != null) unawaited(_downloadAvatar(avatar));
     return contact;
   }
 
@@ -1681,6 +2626,8 @@ class MessagingService {
 
   Future<void> stop() async {
     _registerRetryTimer?.cancel();
+    typing.dispose();
+    _avatarCache.clear();
     _purgeTimer?.cancel();
     _purgeTimer = null;
     await _deliverSub?.cancel();
