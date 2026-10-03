@@ -43,6 +43,19 @@ class ImageProcessor {
   /// sealed-sender obálku) — držet výrazně pod tím.
   static const int thumbMaxBytes = 48 * 1024;
 
+  /// Jestli z obrázku umíme odstranit metadata. Formát, který knihovna
+  /// nepřečte (HEIC z galerie odeslaný jako dokument, RAW…), by odešel
+  /// v originále včetně GPS — UI se proto nejdřív zeptá uživatele.
+  static Future<bool> canStripMetadata(Uint8List bytes) {
+    return Isolate.run(() {
+      try {
+        return img.decodeImage(bytes) != null;
+      } on Object {
+        return false;
+      }
+    });
+  }
+
   /// Zpracuje obrázek v izolátu (dekódování megapixelů by blokovalo UI).
   /// Vrací null, když bajty nejsou dekódovatelný obrázek — volající je
   /// pak pošle jako dokument.
@@ -51,7 +64,13 @@ class ImageProcessor {
     String? mimeHint,
   }) {
     return Isolate.run(() {
-      final decoded = img.decodeImage(original);
+      final img.Image? decoded;
+      try {
+        decoded = img.decodeImage(original);
+      } on Object {
+        // Dekodéry na poškozených datech háží místo null.
+        return null;
+      }
       if (decoded == null) return null;
 
       // GIF beze změny — re-encode by zabil animaci
@@ -77,6 +96,7 @@ class ImageProcessor {
       // Samotný alfa kanál nestačí — plně krytý RGBA PNG (screenshot,
       // canvas render z editoru fotek) je jako JPEG několikanásobně menší.
       final keepPng = mimeHint == 'image/png' && _hasTransparency(decoded);
+      stripMetadata(image);
       final bytes = keepPng
           ? Uint8List.fromList(img.encodePng(image))
           : Uint8List.fromList(img.encodeJpg(image, quality: jpegQuality));
@@ -101,6 +121,15 @@ class ImageProcessor {
     return false;
   }
 
+  /// Zahodí EXIF (GPS, model telefonu, čas focení) a textová metadata.
+  /// Knihovna je při ořezu i zmenšení kopíruje a encodeJpg/encodePng je
+  /// znovu zapíše — re-encode sám o sobě metadata NEodstraní.
+  static void stripMetadata(img.Image image) {
+    image
+      ..exif = img.ExifData()
+      ..textData = null;
+  }
+
   static Uint8List _thumbnail(img.Image source) {
     var thumb = max(source.width, source.height) > thumbDimension
         ? (source.width >= source.height
@@ -114,6 +143,7 @@ class ImageProcessor {
       img.compositeImage(flat, thumb);
       thumb = flat;
     }
+    stripMetadata(thumb);
     var quality = 70;
     var encoded = Uint8List.fromList(img.encodeJpg(thumb, quality: quality));
     // Náhled je jen placeholder, než dorazí ostrá fotka — kvalitu držíme
