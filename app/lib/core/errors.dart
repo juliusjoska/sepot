@@ -56,6 +56,30 @@ class AttachmentTooLargeError extends SepotUserError {
   String toString() => 'attachment too large (max $maxBytes bytes)';
 }
 
+/// Příloha pro přeposlání už v telefonu není (smazaná, mizící, nestažená).
+class AttachmentUnavailableError extends SepotUserError {
+  const AttachmentUnavailableError();
+
+  @override
+  String toString() => 'attachment not available locally';
+}
+
+/// Změnu skupiny smí udělat jen správce.
+class NotGroupAdminError extends SepotUserError {
+  const NotGroupAdminError();
+
+  @override
+  String toString() => 'only a group admin can do this';
+}
+
+/// Poslední správce se nesmí odebrat ani zbavit role.
+class LastGroupAdminError extends SepotUserError {
+  const LastGroupAdminError();
+
+  @override
+  String toString() => 'the last group admin cannot step down';
+}
+
 /// Skupina bez jediného dalšího člena nedává smysl.
 class GroupNeedsMemberError extends SepotUserError {
   const GroupNeedsMemberError();
