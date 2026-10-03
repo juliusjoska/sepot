@@ -4,6 +4,96 @@ Všechny podstatné změny v aplikaci Šepot. Formát dle
 [Keep a Changelog](https://keepachangelog.com/cs/1.1.0/),
 verzování dle [ajtak standardu](#verzování).
 
+## [1.2.0] – 2026-10-01
+
+### Nový vzhled
+- **Domovská obrazovka s kartami Chaty, Kontakty a Nastavení.** Velký
+  nadpis, hledání v chatech i v obsahu zpráv (najde „klic“ i „klíč“),
+  filtry Vše / Nepřečtené / Skupiny, připnuté chaty nahoře.
+- **Konverzace s hloubkou.** Průsvitná hlavička a pole pro psaní nad jemnou
+  tapetou, zprávy od stejného člověka se skládají do bloků, ve skupině
+  avatar a jméno autora v jeho barvě.
+- **Odpověď tahem doprava**, řádek „N nových zpráv“ na místě, kde jsi
+  skončil, a tlačítko na nejnovější zprávy s počtem nových.
+- **Hledání v konverzaci** se zvýrazněním a přeskakováním mezi výsledky;
+  klepnutí na citaci skočí na původní zprávu.
+- **Profil kontaktu a skupiny** po klepnutí na jméno nebo avatar: ověření,
+  sdílené fotky, společné skupiny, mizící zprávy, ztlumení, blokování;
+  u skupiny členové, přidání lidí, přejmenování a odchod.
+- **Fotky přes celou obrazovku s listováním** všemi fotkami konverzace.
+- **Každý člověk má vlastní barvu avataru** — všude stejnou, i po
+  přejmenování.
+- **„Přečteno“ je poznat na první pohled** — plná pilulka místo
+  modrošedých fajfek, které na korálové bublině skoro nebyly vidět.
+
+### Přidáno
+- **Hovory a videohovory** 1:1, šifrované end-to-end. Tlačítka v hlavičce
+  chatu; telefon zazvoní i se zavřenou aplikací (na iPhonu přes CallKit).
+  Když přímé spojení nejde, hovor šifrovaně přepošle náš server.
+  V chatu zůstane záznam „Hovor · 3:12“ nebo „Zmeškaný hovor“.
+- **Rozepsaná zpráva zůstane.** Když odejdeš z chatu, text v poli
+  počká, a v seznamu chatů je vidět jako „Koncept: …“.
+- **Přeposlání** zprávy, fotky, souboru i hlasovky do jiného chatu nebo
+  skupiny (podržet zprávu → Přeposlat).
+- **Poznámky pro sebe** v kartě Kontakty: chat sám se sebou na odkazy,
+  fotky a poznámky. Zůstává jen v telefonu, šifrovaně, nic nejde na server.
+- **@zmínky ve skupinách.** Po napsání „@“ se nabídnou členové; zmíněný
+  dostane upozornění, i když má skupinu ztlumenou.
+- **Rychlejší přehrávání hlasovek** — 1,5× a 2×, rychlost si Šepot pamatuje.
+- **Správci skupin.** Zakladatel je správce a může udělat správcem
+  i další členy. Odebrat člena, měnit správce a přejmenovat skupinu smí
+  jen správce; každou takovou změnu podepíše svým klíčem a ostatní telefony
+  podpis ověří, takže ji nikdo nemůže podvrhnout ani za správce vydávat.
+  U členů je odznak „Správce“, ostatní vidí akce neaktivní s vysvětlením.
+  Dokud má někdo ve skupině starší verzi Šepotu, přidávat lidi smí dál
+  každý, aby se skupina nerozdělila; se staršími verzemi skupiny fungují
+  jako dosud. Existující skupiny se převedou samy, bez jediné zprávy.
+- **Profilová fotka.** V Nastavení klepni na svůj avatar. Fotka se ořízne,
+  zmenší a zbaví metadat a tvým kontaktům dorazí šifrovaně s další
+  zprávou; u nich se ukáže všude místo iniciál.
+- **Ankety** v chatu i ve skupině (plus → Anketa): jedna nebo víc
+  odpovědí, pruhy výsledků a kdo jak hlasoval, hlas jde změnit i zrušit.
+  Starší verze Šepotu uvidí otázku a možnosti jako text.
+- **„píše…“** v hlavičce chatu, v seznamu chatů a jako tři tečky pod
+  poslední zprávou. Stejně jako potvrzení přečtení je volitelné (výchozí
+  vypnuto) a oboustranné. Offline protistraně se nic neposílá do fronty ani
+  ji to nebudí — server takové oznámení doručí jen živému spojení.
+- **Čas doručení a přečtení.** Pod poslední odeslanou zprávou je vidět, kdy
+  dorazila a kdy ji druhá strana přečetla. Po podržení zprávy ukáže „Info
+  o zprávě“ čas odeslání, doručení a přečtení — ve skupině u každého člena
+  zvlášť. Čas přečtení se ukazuje jen lidem, kteří potvrzení přečtení
+  sdílejí oboustranně (výchozí vypnuto).
+- **Přidání lidí do skupiny.** Do existující skupiny jde nově přidat
+  kontakty z nabídky skupiny nebo ze seznamu členů.
+
+### Změněno
+- **Notifikace jsou na Androidu zapnuté od začátku.** Bez nich systém
+  Šepot na pozadí uspí a zprávy čekají, dokud aplikaci neotevřeš. Kdo má
+  UnifiedPush distributor (např. ntfy), dostane ho; ostatním se zapne
+  budíček přes Google (FCM). Google přitom vidí jen to, že má telefon
+  probudit — ne obsah ani odesílatele. Přepnout či vypnout jde v Nastavení.
+- **Dvojitá fajfka ve skupině** svítí až ve chvíli, kdy zpráva dorazila
+  všem členům, ne jen prvnímu.
+
+### Opraveno
+- **Ztlumená skupina dál posílala upozornění.** Ztlumení se u skupinové
+  zprávy kontrolovalo v chatu s autorem, ne ve skupině.
+- **Odesílané fotky nesly polohu (GPS) a údaje o telefonu.** Zpracování
+  fotky před odesláním metadata EXIF nečekaně zachovávalo — v odeslané
+  fotce i v jejím náhledu. Nově se před odesláním vždy odstraní.
+- **Zablokovaný kontakt se mohl sám odblokovat**, když změnil adresu pro
+  doručování.
+- **„Přečteno“ se už nevrací na „doručeno“.** Když potvrzení o doručení
+  dorazilo po potvrzení přečtení (typicky po výpadku spojení), zpráva se
+  tvářila jako nepřečtená.
+- **Zpráva označená jako neodeslaná** se po doručení sama opraví na
+  doručenou.
+- **Nastavení ukazovalo starou verzi aplikace.** Číslo verze bylo v kódu
+  napsané ručně a při vydání 1.1.1 a 1.1.2 se ho zapomnělo přepsat, takže
+  se všude hlásila 1.1.0 — včetně hlášení zneužití, u kterých pak nešlo
+  dohledat, ze které verze přišla. Verze se nově čte z nainstalovaného
+  balíčku a k hlášení se přikládá i číslo buildu.
+
 ## [1.1.2] – 2026-08-13
 
 ### Opraveno
