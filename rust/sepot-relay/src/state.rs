@@ -124,6 +124,8 @@ pub struct AppState {
     pub fcm: Option<std::sync::Arc<crate::fcm::FcmSender>>,
     /// APNs nativní iOS push (None = nenakonfigurováno).
     pub apns: Option<std::sync::Arc<crate::apns::ApnsSender>>,
+    /// TURN pro hovory (None = relay údaje nevydává).
+    pub turn: Option<crate::turn::TurnConfig>,
 }
 
 impl AppState {
@@ -144,6 +146,7 @@ impl AppState {
             attachments,
             fcm: crate::fcm::FcmSender::from_env(),
             apns: crate::apns::ApnsSender::from_env(),
+            turn: crate::turn::TurnConfig::from_env(),
         }
     }
 
@@ -160,6 +163,10 @@ impl AppState {
             || env.payload.len() > MAX_ENVELOPE_PAYLOAD
         {
             anyhow::bail!("neplatná obálka");
+        }
+
+        if env.content_hint == v1::ContentHint::Ephemeral as i32 {
+            return Ok(self.route_ephemeral(env).await);
         }
 
         let dst = env.dst_address.clone();
@@ -179,6 +186,7 @@ impl AppState {
         // enqueued_at → sama se nikdy nezahodí, padne jen starý přebytek.
         self.trim_queue(&dst, MAX_QUEUE_BYTES_PER_RECIPIENT).await?;
 
+        let is_call = env.content_hint == v1::ContentHint::Call as i32;
         if let Some(dev) = self.online.get(&dst) {
             let deliver = v1::ServerFrame {
                 frame: Some(v1::server_frame::Frame::Deliver(env)),
@@ -194,8 +202,32 @@ impl AppState {
             }
         }
         // Offline, zatuchlé nebo selhalý kanál → zkusit push budíček.
-        self.wake(&dst).await;
+        if is_call {
+            self.wake_call(&dst).await;
+        } else {
+            self.wake(&dst).await;
+        }
         Ok(v1::receipt::Status::StoredOffline)
+    }
+
+    /// Jen živé doručení („píše…“): do fronty nic, push nic. Zatuchlé
+    /// spojení se nepočítá — obálka by v mrtvém kanálu zmizela stejně
+    /// a odesílatel se má dozvědět, že příjemce nikdo neposlouchá.
+    async fn route_ephemeral(&self, env: v1::Envelope) -> v1::receipt::Status {
+        let Some(dev) = self.online.get(&env.dst_address) else {
+            return v1::receipt::Status::Dropped;
+        };
+        if !dev.is_fresh(self.now_ms()) {
+            return v1::receipt::Status::Dropped;
+        }
+        let deliver = v1::ServerFrame {
+            frame: Some(v1::server_frame::Frame::Deliver(env)),
+        };
+        if dev.tx.send(deliver).await.is_ok() {
+            v1::receipt::Status::DeliveredOnline
+        } else {
+            v1::receipt::Status::Dropped
+        }
     }
 
     /// FIFO strop fronty příjemce: nech nejnovější obálky do `cap_bytes`
@@ -242,6 +274,48 @@ impl AppState {
         });
     }
 
+    /// Budíček pro příchozí hovor: iPhone s VoIP tokenem dostane VoIP push
+    /// (CallKit zazvoní i u zabité appky), ostatní běžný budíček — FCM
+    /// s krátkou platností, ať po hodině nezvoní hovor, který dávno skončil.
+    async fn wake_call(&self, dst_address: &[u8]) {
+        let Some(target) = self.push_target_full(dst_address).await else {
+            return;
+        };
+        let client = self.http.clone();
+        let fcm = self.fcm.clone();
+        let apns = self.apns.clone();
+        tokio::spawn(async move {
+            crate::push::send_call_wake(&client, &target, fcm.as_deref(), apns.as_deref())
+                .await;
+        });
+    }
+
+    /// Push cíl včetně VoIP tokenu (hovory).
+    pub(crate) async fn push_target_full(
+        &self,
+        dst_address: &[u8],
+    ) -> Option<crate::push::PushTarget> {
+        let row: Option<(i16, Option<Vec<u8>>, Option<Vec<u8>>)> = sqlx::query_as(
+            "SELECT p.platform, p.token, p.voip_token FROM push_tokens p
+             JOIN devices d USING (device_uuid)
+             WHERE d.delivery_address = $1",
+        )
+        .bind(dst_address)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+        let (platform, token, voip_token) = row?;
+        if token.is_none() && voip_token.is_none() {
+            return None;
+        }
+        Some(crate::push::PushTarget {
+            platform,
+            token,
+            voip_token,
+        })
+    }
+
     /// Dohledá push cíl (platform, token) pro delivery_address příjemce.
     /// `pub(crate)` kvůli integračnímu testu correctness JOINu.
     pub(crate) async fn push_target(&self, dst_address: &[u8]) -> Option<(i16, Vec<u8>)> {
@@ -268,6 +342,7 @@ impl AppState {
         device_uuid: &[u8],
         platform: i16,
         endpoint: Option<&[u8]>,
+        voip_token: Option<&[u8]>,
     ) -> anyhow::Result<()> {
         if platform == crate::push::PLATFORM_NONE || endpoint.is_none() {
             sqlx::query("DELETE FROM push_tokens WHERE device_uuid = $1")
@@ -277,16 +352,18 @@ impl AppState {
             return Ok(());
         }
         sqlx::query(
-            "INSERT INTO push_tokens (device_uuid, platform, token, updated_at)
-             VALUES ($1, $2, $3, now())
+            "INSERT INTO push_tokens (device_uuid, platform, token, voip_token, updated_at)
+             VALUES ($1, $2, $3, $4, now())
              ON CONFLICT (device_uuid)
              DO UPDATE SET platform = excluded.platform,
                            token = excluded.token,
+                           voip_token = excluded.voip_token,
                            updated_at = now()",
         )
         .bind(device_uuid)
         .bind(platform)
         .bind(endpoint)
+        .bind(voip_token)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -556,7 +633,7 @@ mod db_tests {
         // UnifiedPush endpoint
         let ep1 = b"https://ntfy.sh/UPabc".to_vec();
         state
-            .register_push(&device_uuid, crate::push::PLATFORM_UNIFIEDPUSH, Some(&ep1))
+            .register_push(&device_uuid, crate::push::PLATFORM_UNIFIEDPUSH, Some(&ep1), None)
             .await
             .unwrap();
         assert_eq!(
@@ -567,7 +644,7 @@ mod db_tests {
         // upsert na WebPush (jiná platforma i token)
         let ep2 = b"https://push.example/w".to_vec();
         state
-            .register_push(&device_uuid, crate::push::PLATFORM_WEBPUSH, Some(&ep2))
+            .register_push(&device_uuid, crate::push::PLATFORM_WEBPUSH, Some(&ep2), None)
             .await
             .unwrap();
         assert_eq!(
@@ -577,10 +654,68 @@ mod db_tests {
 
         // NONE → smaže (anonymní režim)
         state
-            .register_push(&device_uuid, crate::push::PLATFORM_NONE, None)
+            .register_push(&device_uuid, crate::push::PLATFORM_NONE, None, None)
             .await
             .unwrap();
         assert!(state.push_target(&delivery_address).await.is_none());
+
+        cleanup(&state, &account_id, &delivery_address).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn voip_token_se_ulozi_a_hovor_jde_do_fronty() {
+        let state = test_state().await;
+        let (account_id, device_uuid, delivery_address) = seed_device(&state).await;
+
+        state
+            .register_push(
+                &device_uuid,
+                crate::push::PLATFORM_APNS,
+                Some(b"apns-token"),
+                Some(b"voip-token"),
+            )
+            .await
+            .unwrap();
+        let target = state.push_target_full(&delivery_address).await.unwrap();
+        assert_eq!(target.platform, crate::push::PLATFORM_APNS);
+        assert_eq!(target.token.as_deref(), Some(&b"apns-token"[..]));
+        assert_eq!(target.voip_token.as_deref(), Some(&b"voip-token"[..]));
+        // Běžné zprávy dál budí běžný token, ne VoIP.
+        assert_eq!(
+            state.push_target(&delivery_address).await,
+            Some((crate::push::PLATFORM_APNS, b"apns-token".to_vec()))
+        );
+
+        // Nabídka hovoru offline příjemci: uloží se jako běžná obálka
+        // (vyzvedne si ji po probuzení), jen budíček je jiný.
+        let env = v1::Envelope {
+            dst_address: delivery_address.clone(),
+            msg_uuid: rand_bytes(16),
+            content_hint: v1::ContentHint::Call as i32,
+            payload: vec![0xCD; 64],
+        };
+        let status = state.route_envelope(env).await.unwrap();
+        assert_eq!(status, v1::receipt::Status::StoredOffline);
+        let queued: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM message_queue WHERE dst_address = $1")
+                .bind(&delivery_address)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(queued, 1);
+
+        // Nová registrace bez VoIP tokenu ho smaže (appka PushKit vypnula).
+        state
+            .register_push(&device_uuid, crate::push::PLATFORM_APNS, Some(b"apns-token"), None)
+            .await
+            .unwrap();
+        assert!(state
+            .push_target_full(&delivery_address)
+            .await
+            .unwrap()
+            .voip_token
+            .is_none());
 
         cleanup(&state, &account_id, &delivery_address).await;
     }
@@ -598,6 +733,7 @@ mod db_tests {
                 &device_uuid,
                 crate::push::PLATFORM_UNIFIEDPUSH,
                 Some(b"https://localhost/up"),
+                None,
             )
             .await
             .unwrap();
@@ -625,6 +761,33 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn ephemeral_offline_se_zahodi_bez_fronty() {
+        let state = test_state().await;
+        let (account_id, _device_uuid, delivery_address) = seed_device(&state).await;
+
+        let env = v1::Envelope {
+            dst_address: delivery_address.clone(),
+            msg_uuid: rand_bytes(16),
+            content_hint: v1::ContentHint::Ephemeral as i32,
+            payload: vec![0xAB; 64],
+        };
+        let status = state.route_envelope(env).await.unwrap();
+        assert_eq!(status, v1::receipt::Status::Dropped);
+
+        // „píše…“ pro offline příjemce nesmí skončit ve frontě
+        let queued: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM message_queue WHERE dst_address = $1")
+                .bind(&delivery_address)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(queued, 0);
+
+        cleanup(&state, &account_id, &delivery_address).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
     async fn delete_identity_smaze_ucet_frontu_i_push() {
         let state = test_state().await;
         let (account_id, device_uuid, delivery_address) = seed_device(&state).await;
@@ -635,6 +798,7 @@ mod db_tests {
                 &device_uuid,
                 crate::push::PLATFORM_UNIFIEDPUSH,
                 Some(b"https://localhost/up"),
+                None,
             )
             .await
             .unwrap();

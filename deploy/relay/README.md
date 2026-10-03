@@ -46,7 +46,9 @@ Tuhle `.onion` adresu pak nastav v klientu (`app/lib/core/constants/app_constant
 |---|---|
 | `POSTGRES_PASSWORD` | heslo DB — **povinné**, nikdy necommituj |
 | `SEPOT_APNS_*` | volitelné, jen pro iOS APNs push (Key ID, Team ID, cesta ke klíči) |
-| FCM service account | volitelné, jen pro Android FCM „fast mode" (mimo repo) |
+| FCM service account | volitelné, pro Android budíčky přes FCM (mimo repo) |
+| `SEPOT_TURN_URLS` | volitelné, pro hovory: čárkou oddělené `turn:`/`turns:` adresy vašeho coturnu |
+| `SEPOT_TURN_SECRET_FILE` / `SEPOT_TURN_SECRET` | sdílené tajemství coturnu (`use-auth-secret`, aspoň 32 znaků); bez něj relay TURN údaje nevydává a hovory jdou jen napřímo |
 
 Push je volitelný. Bez něj appka funguje přes UnifiedPush (degooglované) nebo
 si zprávy stáhne po otevření.

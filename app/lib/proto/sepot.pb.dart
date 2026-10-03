@@ -650,10 +650,12 @@ class RegisterPush extends $pb.GeneratedMessage {
   factory RegisterPush({
     RegisterPush_Platform? platform,
     $core.List<$core.int>? endpoint,
+    $core.List<$core.int>? voipToken,
   }) {
     final result = create();
     if (platform != null) result.platform = platform;
     if (endpoint != null) result.endpoint = endpoint;
+    if (voipToken != null) result.voipToken = voipToken;
     return result;
   }
 
@@ -674,6 +676,8 @@ class RegisterPush extends $pb.GeneratedMessage {
         enumValues: RegisterPush_Platform.values)
     ..a<$core.List<$core.int>>(
         2, _omitFieldNames ? '' : 'endpoint', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'voipToken', $pb.PbFieldType.OY)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -714,6 +718,141 @@ class RegisterPush extends $pb.GeneratedMessage {
   $core.bool hasEndpoint() => $_has(1);
   @$pb.TagNumber(2)
   void clearEndpoint() => $_clearField(2);
+
+  /// iOS: PushKit VoIP token pro příchozí hovory (vedle běžného APNs tokenu
+  /// v `endpoint`). Prázdné = zařízení VoIP push nemá.
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get voipToken => $_getN(2);
+  @$pb.TagNumber(3)
+  set voipToken($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasVoipToken() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearVoipToken() => $_clearField(3);
+}
+
+/// Dočasné údaje k TURN serveru pro hovory (REST schéma coturnu). Vydává je
+/// relay jen přihlášenému zařízení, aby TURN nebyl otevřený pro kohokoli.
+class TurnRequest extends $pb.GeneratedMessage {
+  factory TurnRequest() => create();
+
+  TurnRequest._();
+
+  factory TurnRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory TurnRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'TurnRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'sepot.v1'),
+      createEmptyInstance: create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TurnRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TurnRequest copyWith(void Function(TurnRequest) updates) =>
+      super.copyWith((message) => updates(message as TurnRequest))
+          as TurnRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static TurnRequest create() => TurnRequest._();
+  @$core.override
+  TurnRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static TurnRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<TurnRequest>(create);
+  static TurnRequest? _defaultInstance;
+}
+
+class TurnCredentials extends $pb.GeneratedMessage {
+  factory TurnCredentials({
+    $core.Iterable<$core.String>? urls,
+    $core.String? username,
+    $core.String? credential,
+    $core.int? ttlSeconds,
+  }) {
+    final result = create();
+    if (urls != null) result.urls.addAll(urls);
+    if (username != null) result.username = username;
+    if (credential != null) result.credential = credential;
+    if (ttlSeconds != null) result.ttlSeconds = ttlSeconds;
+    return result;
+  }
+
+  TurnCredentials._();
+
+  factory TurnCredentials.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory TurnCredentials.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'TurnCredentials',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'sepot.v1'),
+      createEmptyInstance: create)
+    ..pPS(1, _omitFieldNames ? '' : 'urls')
+    ..aOS(2, _omitFieldNames ? '' : 'username')
+    ..aOS(3, _omitFieldNames ? '' : 'credential')
+    ..aI(4, _omitFieldNames ? '' : 'ttlSeconds', fieldType: $pb.PbFieldType.OU3)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TurnCredentials clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TurnCredentials copyWith(void Function(TurnCredentials) updates) =>
+      super.copyWith((message) => updates(message as TurnCredentials))
+          as TurnCredentials;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static TurnCredentials create() => TurnCredentials._();
+  @$core.override
+  TurnCredentials createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static TurnCredentials getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<TurnCredentials>(create);
+  static TurnCredentials? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<$core.String> get urls => $_getList(0);
+
+  @$pb.TagNumber(2)
+  $core.String get username => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set username($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasUsername() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearUsername() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get credential => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set credential($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCredential() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCredential() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.int get ttlSeconds => $_getIZ(3);
+  @$pb.TagNumber(4)
+  set ttlSeconds($core.int value) => $_setUnsignedInt32(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasTtlSeconds() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearTtlSeconds() => $_clearField(4);
 }
 
 class SignedPreKey extends $pb.GeneratedMessage {
@@ -1137,6 +1276,7 @@ enum ClientFrame_Frame {
   ack,
   pong,
   registerPush,
+  turnRequest,
   notSet
 }
 
@@ -1148,6 +1288,7 @@ class ClientFrame extends $pb.GeneratedMessage {
     Ack? ack,
     Pong? pong,
     RegisterPush? registerPush,
+    TurnRequest? turnRequest,
   }) {
     final result = create();
     if (auth != null) result.auth = auth;
@@ -1156,6 +1297,7 @@ class ClientFrame extends $pb.GeneratedMessage {
     if (ack != null) result.ack = ack;
     if (pong != null) result.pong = pong;
     if (registerPush != null) result.registerPush = registerPush;
+    if (turnRequest != null) result.turnRequest = turnRequest;
     return result;
   }
 
@@ -1176,13 +1318,14 @@ class ClientFrame extends $pb.GeneratedMessage {
     4: ClientFrame_Frame.ack,
     5: ClientFrame_Frame.pong,
     6: ClientFrame_Frame.registerPush,
+    7: ClientFrame_Frame.turnRequest,
     0: ClientFrame_Frame.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'ClientFrame',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'sepot.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7])
     ..aOM<Auth>(1, _omitFieldNames ? '' : 'auth', subBuilder: Auth.create)
     ..aOM<AuthProof>(2, _omitFieldNames ? '' : 'authProof',
         subBuilder: AuthProof.create)
@@ -1192,6 +1335,8 @@ class ClientFrame extends $pb.GeneratedMessage {
     ..aOM<Pong>(5, _omitFieldNames ? '' : 'pong', subBuilder: Pong.create)
     ..aOM<RegisterPush>(6, _omitFieldNames ? '' : 'registerPush',
         subBuilder: RegisterPush.create)
+    ..aOM<TurnRequest>(7, _omitFieldNames ? '' : 'turnRequest',
+        subBuilder: TurnRequest.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1219,6 +1364,7 @@ class ClientFrame extends $pb.GeneratedMessage {
   @$pb.TagNumber(4)
   @$pb.TagNumber(5)
   @$pb.TagNumber(6)
+  @$pb.TagNumber(7)
   ClientFrame_Frame whichFrame() => _ClientFrame_FrameByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
   @$pb.TagNumber(2)
@@ -1226,6 +1372,7 @@ class ClientFrame extends $pb.GeneratedMessage {
   @$pb.TagNumber(4)
   @$pb.TagNumber(5)
   @$pb.TagNumber(6)
+  @$pb.TagNumber(7)
   void clearFrame() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -1293,6 +1440,17 @@ class ClientFrame extends $pb.GeneratedMessage {
   void clearRegisterPush() => $_clearField(6);
   @$pb.TagNumber(6)
   RegisterPush ensureRegisterPush() => $_ensure(5);
+
+  @$pb.TagNumber(7)
+  TurnRequest get turnRequest => $_getN(6);
+  @$pb.TagNumber(7)
+  set turnRequest(TurnRequest value) => $_setField(7, value);
+  @$pb.TagNumber(7)
+  $core.bool hasTurnRequest() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearTurnRequest() => $_clearField(7);
+  @$pb.TagNumber(7)
+  TurnRequest ensureTurnRequest() => $_ensure(6);
 }
 
 enum ServerFrame_Frame {
@@ -1303,6 +1461,7 @@ enum ServerFrame_Frame {
   ping,
   error,
   authOk,
+  turnCredentials,
   notSet
 }
 
@@ -1315,6 +1474,7 @@ class ServerFrame extends $pb.GeneratedMessage {
     Ping? ping,
     Error? error,
     AuthOk? authOk,
+    TurnCredentials? turnCredentials,
   }) {
     final result = create();
     if (challenge != null) result.challenge = challenge;
@@ -1324,6 +1484,7 @@ class ServerFrame extends $pb.GeneratedMessage {
     if (ping != null) result.ping = ping;
     if (error != null) result.error = error;
     if (authOk != null) result.authOk = authOk;
+    if (turnCredentials != null) result.turnCredentials = turnCredentials;
     return result;
   }
 
@@ -1345,13 +1506,14 @@ class ServerFrame extends $pb.GeneratedMessage {
     5: ServerFrame_Frame.ping,
     6: ServerFrame_Frame.error,
     7: ServerFrame_Frame.authOk,
+    8: ServerFrame_Frame.turnCredentials,
     0: ServerFrame_Frame.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'ServerFrame',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'sepot.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8])
     ..aOM<Challenge>(1, _omitFieldNames ? '' : 'challenge',
         subBuilder: Challenge.create)
     ..aOM<Receipt>(2, _omitFieldNames ? '' : 'receipt',
@@ -1363,6 +1525,8 @@ class ServerFrame extends $pb.GeneratedMessage {
     ..aOM<Ping>(5, _omitFieldNames ? '' : 'ping', subBuilder: Ping.create)
     ..aOM<Error>(6, _omitFieldNames ? '' : 'error', subBuilder: Error.create)
     ..aOM<AuthOk>(7, _omitFieldNames ? '' : 'authOk', subBuilder: AuthOk.create)
+    ..aOM<TurnCredentials>(8, _omitFieldNames ? '' : 'turnCredentials',
+        subBuilder: TurnCredentials.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1391,6 +1555,7 @@ class ServerFrame extends $pb.GeneratedMessage {
   @$pb.TagNumber(5)
   @$pb.TagNumber(6)
   @$pb.TagNumber(7)
+  @$pb.TagNumber(8)
   ServerFrame_Frame whichFrame() => _ServerFrame_FrameByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
   @$pb.TagNumber(2)
@@ -1399,6 +1564,7 @@ class ServerFrame extends $pb.GeneratedMessage {
   @$pb.TagNumber(5)
   @$pb.TagNumber(6)
   @$pb.TagNumber(7)
+  @$pb.TagNumber(8)
   void clearFrame() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -1477,6 +1643,17 @@ class ServerFrame extends $pb.GeneratedMessage {
   void clearAuthOk() => $_clearField(7);
   @$pb.TagNumber(7)
   AuthOk ensureAuthOk() => $_ensure(6);
+
+  @$pb.TagNumber(8)
+  TurnCredentials get turnCredentials => $_getN(7);
+  @$pb.TagNumber(8)
+  set turnCredentials(TurnCredentials value) => $_setField(8, value);
+  @$pb.TagNumber(8)
+  $core.bool hasTurnCredentials() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearTurnCredentials() => $_clearField(8);
+  @$pb.TagNumber(8)
+  TurnCredentials ensureTurnCredentials() => $_ensure(7);
 }
 
 const $core.bool _omitFieldNames =

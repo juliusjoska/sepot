@@ -15,6 +15,13 @@ enum ContentHint {
   CONTENT_HINT_DEFAULT = 0;       // běžná zpráva
   CONTENT_HINT_RESYNC = 1;        // řízení retry po session poruše
   CONTENT_HINT_SUPPLEMENTARY = 2; // doprovodná (receipt apod.)
+  // Jen živé doručení (např. „píše…“): offline příjemci se neukládá do
+  // fronty ani nebudí pushem — zastaralá by po vyzvednutí jen mátla.
+  CONTENT_HINT_EPHEMERAL = 3;
+  // Nabídka hovoru: ukládá se jako běžná zpráva, ale offline příjemce se
+  // budí VoIP pushem (iOS) nebo FCM s krátkou platností — zvonit má hned.
+  // Relay se tím dozví, že zařízení někdo volá; kdo, dál neví.
+  CONTENT_HINT_CALL = 4;
 }
 
 message Envelope {
@@ -35,6 +42,7 @@ message Receipt {
     STATUS_QUEUED = 0;
     STATUS_DELIVERED_ONLINE = 1;
     STATUS_STORED_OFFLINE = 2;
+    STATUS_DROPPED = 3;           // EPHEMERAL a příjemce nebyl online
   }
   bytes msg_uuid = 1;
   Status status = 2;
@@ -91,6 +99,20 @@ message RegisterPush {
   // UnifiedPush/WebPush endpoint URL (utf-8 bytes), nebo FCM/APNs token.
   // Prázdné, když platform=NONE.
   bytes endpoint = 2;
+  // iOS: PushKit VoIP token pro příchozí hovory (vedle běžného APNs tokenu
+  // v `endpoint`). Prázdné = zařízení VoIP push nemá.
+  bytes voip_token = 3;
+}
+
+// Dočasné údaje k TURN serveru pro hovory (REST schéma coturnu). Vydává je
+// relay jen přihlášenému zařízení, aby TURN nebyl otevřený pro kohokoli.
+message TurnRequest {}
+
+message TurnCredentials {
+  repeated string urls = 1;       // turn:/turns: adresy
+  string username = 2;            // "<unix expirace>:<náhodné id>"
+  string credential = 3;          // base64(HMAC-SHA1(secret, username))
+  uint32 ttl_seconds = 4;
 }
 
 // ── Prekey typy (REST /v1/register, /v1/keys — sdílené s bundle fetch) ─
@@ -137,6 +159,7 @@ message ClientFrame {
     Ack ack = 4;
     Pong pong = 5;
     RegisterPush register_push = 6;
+    TurnRequest turn_request = 7;
   }
 }
 
@@ -149,5 +172,6 @@ message ServerFrame {
     Ping ping = 5;
     Error error = 6;
     AuthOk auth_ok = 7;
+    TurnCredentials turn_credentials = 8;
   }
 }

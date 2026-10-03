@@ -22,13 +22,16 @@ const ContentHint$json = {
     {'1': 'CONTENT_HINT_DEFAULT', '2': 0},
     {'1': 'CONTENT_HINT_RESYNC', '2': 1},
     {'1': 'CONTENT_HINT_SUPPLEMENTARY', '2': 2},
+    {'1': 'CONTENT_HINT_EPHEMERAL', '2': 3},
+    {'1': 'CONTENT_HINT_CALL', '2': 4},
   ],
 };
 
 /// Descriptor for `ContentHint`. Decode as a `google.protobuf.EnumDescriptorProto`.
 final $typed_data.Uint8List contentHintDescriptor = $convert.base64Decode(
     'CgtDb250ZW50SGludBIYChRDT05URU5UX0hJTlRfREVGQVVMVBAAEhcKE0NPTlRFTlRfSElOVF'
-    '9SRVNZTkMQARIeChpDT05URU5UX0hJTlRfU1VQUExFTUVOVEFSWRAC');
+    '9SRVNZTkMQARIeChpDT05URU5UX0hJTlRfU1VQUExFTUVOVEFSWRACEhoKFkNPTlRFTlRfSElO'
+    'VF9FUEhFTUVSQUwQAxIVChFDT05URU5UX0hJTlRfQ0FMTBAE');
 
 @$core.Deprecated('Use envelopeDescriptor instead')
 const Envelope$json = {
@@ -90,15 +93,16 @@ const Receipt_Status$json = {
     {'1': 'STATUS_QUEUED', '2': 0},
     {'1': 'STATUS_DELIVERED_ONLINE', '2': 1},
     {'1': 'STATUS_STORED_OFFLINE', '2': 2},
+    {'1': 'STATUS_DROPPED', '2': 3},
   ],
 };
 
 /// Descriptor for `Receipt`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List receiptDescriptor = $convert.base64Decode(
     'CgdSZWNlaXB0EhkKCG1zZ191dWlkGAEgASgMUgdtc2dVdWlkEjAKBnN0YXR1cxgCIAEoDjIYLn'
-    'NlcG90LnYxLlJlY2VpcHQuU3RhdHVzUgZzdGF0dXMiUwoGU3RhdHVzEhEKDVNUQVRVU19RVUVV'
+    'NlcG90LnYxLlJlY2VpcHQuU3RhdHVzUgZzdGF0dXMiZwoGU3RhdHVzEhEKDVNUQVRVU19RVUVV'
     'RUQQABIbChdTVEFUVVNfREVMSVZFUkVEX09OTElORRABEhkKFVNUQVRVU19TVE9SRURfT0ZGTE'
-    'lORRAC');
+    'lORRACEhIKDlNUQVRVU19EUk9QUEVEEAM=');
 
 @$core.Deprecated('Use authDescriptor instead')
 const Auth$json = {
@@ -201,6 +205,7 @@ const RegisterPush$json = {
       '10': 'platform'
     },
     {'1': 'endpoint', '3': 2, '4': 1, '5': 12, '10': 'endpoint'},
+    {'1': 'voip_token', '3': 3, '4': 1, '5': 12, '10': 'voipToken'},
   ],
   '4': [RegisterPush_Platform$json],
 };
@@ -220,9 +225,36 @@ const RegisterPush_Platform$json = {
 /// Descriptor for `RegisterPush`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List registerPushDescriptor = $convert.base64Decode(
     'CgxSZWdpc3RlclB1c2gSOwoIcGxhdGZvcm0YASABKA4yHy5zZXBvdC52MS5SZWdpc3RlclB1c2'
-    'guUGxhdGZvcm1SCHBsYXRmb3JtEhoKCGVuZHBvaW50GAIgASgMUghlbmRwb2ludCJyCghQbGF0'
-    'Zm9ybRIRCg1QTEFURk9STV9OT05FEAASEAoMUExBVEZPUk1fRkNNEAESEQoNUExBVEZPUk1fQV'
-    'BOUxACEhgKFFBMQVRGT1JNX1VOSUZJRURQVVNIEAMSFAoQUExBVEZPUk1fV0VCUFVTSBAE');
+    'guUGxhdGZvcm1SCHBsYXRmb3JtEhoKCGVuZHBvaW50GAIgASgMUghlbmRwb2ludBIdCgp2b2lw'
+    'X3Rva2VuGAMgASgMUgl2b2lwVG9rZW4icgoIUGxhdGZvcm0SEQoNUExBVEZPUk1fTk9ORRAAEh'
+    'AKDFBMQVRGT1JNX0ZDTRABEhEKDVBMQVRGT1JNX0FQTlMQAhIYChRQTEFURk9STV9VTklGSUVE'
+    'UFVTSBADEhQKEFBMQVRGT1JNX1dFQlBVU0gQBA==');
+
+@$core.Deprecated('Use turnRequestDescriptor instead')
+const TurnRequest$json = {
+  '1': 'TurnRequest',
+};
+
+/// Descriptor for `TurnRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List turnRequestDescriptor =
+    $convert.base64Decode('CgtUdXJuUmVxdWVzdA==');
+
+@$core.Deprecated('Use turnCredentialsDescriptor instead')
+const TurnCredentials$json = {
+  '1': 'TurnCredentials',
+  '2': [
+    {'1': 'urls', '3': 1, '4': 3, '5': 9, '10': 'urls'},
+    {'1': 'username', '3': 2, '4': 1, '5': 9, '10': 'username'},
+    {'1': 'credential', '3': 3, '4': 1, '5': 9, '10': 'credential'},
+    {'1': 'ttl_seconds', '3': 4, '4': 1, '5': 13, '10': 'ttlSeconds'},
+  ],
+};
+
+/// Descriptor for `TurnCredentials`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List turnCredentialsDescriptor = $convert.base64Decode(
+    'Cg9UdXJuQ3JlZGVudGlhbHMSEgoEdXJscxgBIAMoCVIEdXJscxIaCgh1c2VybmFtZRgCIAEoCV'
+    'IIdXNlcm5hbWUSHgoKY3JlZGVudGlhbBgDIAEoCVIKY3JlZGVudGlhbBIfCgt0dGxfc2Vjb25k'
+    'cxgEIAEoDVIKdHRsU2Vjb25kcw==');
 
 @$core.Deprecated('Use signedPreKeyDescriptor instead')
 const SignedPreKey$json = {
@@ -391,6 +423,15 @@ const ClientFrame$json = {
       '9': 0,
       '10': 'registerPush'
     },
+    {
+      '1': 'turn_request',
+      '3': 7,
+      '4': 1,
+      '5': 11,
+      '6': '.sepot.v1.TurnRequest',
+      '9': 0,
+      '10': 'turnRequest'
+    },
   ],
   '8': [
     {'1': 'frame'},
@@ -404,7 +445,8 @@ final $typed_data.Uint8List clientFrameDescriptor = $convert.base64Decode(
     'dmVsb3BlGAMgASgLMhIuc2Vwb3QudjEuRW52ZWxvcGVIAFIIZW52ZWxvcGUSIQoDYWNrGAQgAS'
     'gLMg0uc2Vwb3QudjEuQWNrSABSA2FjaxIkCgRwb25nGAUgASgLMg4uc2Vwb3QudjEuUG9uZ0gA'
     'UgRwb25nEj0KDXJlZ2lzdGVyX3B1c2gYBiABKAsyFi5zZXBvdC52MS5SZWdpc3RlclB1c2hIAF'
-    'IMcmVnaXN0ZXJQdXNoQgcKBWZyYW1l');
+    'IMcmVnaXN0ZXJQdXNoEjoKDHR1cm5fcmVxdWVzdBgHIAEoCzIVLnNlcG90LnYxLlR1cm5SZXF1'
+    'ZXN0SABSC3R1cm5SZXF1ZXN0QgcKBWZyYW1l');
 
 @$core.Deprecated('Use serverFrameDescriptor instead')
 const ServerFrame$json = {
@@ -473,6 +515,15 @@ const ServerFrame$json = {
       '9': 0,
       '10': 'authOk'
     },
+    {
+      '1': 'turn_credentials',
+      '3': 8,
+      '4': 1,
+      '5': 11,
+      '6': '.sepot.v1.TurnCredentials',
+      '9': 0,
+      '10': 'turnCredentials'
+    },
   ],
   '8': [
     {'1': 'frame'},
@@ -487,4 +538,5 @@ final $typed_data.Uint8List serverFrameDescriptor = $convert.base64Decode(
     'Jla2V5c19sb3cYBCABKAsyFC5zZXBvdC52MS5QcmVrZXlzTG93SABSCnByZWtleXNMb3cSJAoE'
     'cGluZxgFIAEoCzIOLnNlcG90LnYxLlBpbmdIAFIEcGluZxInCgVlcnJvchgGIAEoCzIPLnNlcG'
     '90LnYxLkVycm9ySABSBWVycm9yEisKB2F1dGhfb2sYByABKAsyEC5zZXBvdC52MS5BdXRoT2tI'
-    'AFIGYXV0aE9rQgcKBWZyYW1l');
+    'AFIGYXV0aE9rEkYKEHR1cm5fY3JlZGVudGlhbHMYCCABKAsyGS5zZXBvdC52MS5UdXJuQ3JlZG'
+    'VudGlhbHNIAFIPdHVybkNyZWRlbnRpYWxzQgcKBWZyYW1l');

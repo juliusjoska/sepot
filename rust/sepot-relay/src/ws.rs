@@ -314,9 +314,13 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                     } else {
                         let endpoint =
                             (!reg.endpoint.is_empty()).then_some(reg.endpoint.as_slice());
+                        // VoIP token dává smysl jen vedle APNs (PushKit je iOS).
+                        let voip = (platform == crate::push::PLATFORM_APNS
+                            && !reg.voip_token.is_empty())
+                        .then_some(reg.voip_token.as_slice());
                         // Endpoint se ZÁMĚRNĚ neloguje (metadatový bod).
                         if let Err(e) =
-                            state.register_push(device, platform, endpoint).await
+                            state.register_push(device, platform, endpoint, voip).await
                         {
                             tracing::warn!("register_push selhal: {e}");
                         }
@@ -349,6 +353,16 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                         tracing::warn!("ack selhal: {e}");
                     }
                 }
+            }
+
+            Some(v1::client_frame::Frame::TurnRequest(_)) if authed_address.is_some() => {
+                let frame = match &state.turn {
+                    Some(turn) => server_frame(v1::server_frame::Frame::TurnCredentials(
+                        turn.credentials(chrono::Utc::now().timestamp()),
+                    )),
+                    None => error_frame(503, "TURN není nakonfigurován"),
+                };
+                let _ = tx.send(frame).await;
             }
 
             Some(v1::client_frame::Frame::Pong(_)) => {}

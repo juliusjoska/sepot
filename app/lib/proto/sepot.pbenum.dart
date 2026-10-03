@@ -22,14 +22,27 @@ class ContentHint extends $pb.ProtobufEnum {
   static const ContentHint CONTENT_HINT_SUPPLEMENTARY =
       ContentHint._(2, _omitEnumNames ? '' : 'CONTENT_HINT_SUPPLEMENTARY');
 
+  /// Jen živé doručení (např. „píše…“): offline příjemci se neukládá do
+  /// fronty ani nebudí pushem — zastaralá by po vyzvednutí jen mátla.
+  static const ContentHint CONTENT_HINT_EPHEMERAL =
+      ContentHint._(3, _omitEnumNames ? '' : 'CONTENT_HINT_EPHEMERAL');
+
+  /// Nabídka hovoru: ukládá se jako běžná zpráva, ale offline příjemce se
+  /// budí VoIP pushem (iOS) nebo FCM s krátkou platností — zvonit má hned.
+  /// Relay se tím dozví, že zařízení někdo volá; kdo, dál neví.
+  static const ContentHint CONTENT_HINT_CALL =
+      ContentHint._(4, _omitEnumNames ? '' : 'CONTENT_HINT_CALL');
+
   static const $core.List<ContentHint> values = <ContentHint>[
     CONTENT_HINT_DEFAULT,
     CONTENT_HINT_RESYNC,
     CONTENT_HINT_SUPPLEMENTARY,
+    CONTENT_HINT_EPHEMERAL,
+    CONTENT_HINT_CALL,
   ];
 
   static final $core.List<ContentHint?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 2);
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
   static ContentHint? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 
@@ -43,15 +56,18 @@ class Receipt_Status extends $pb.ProtobufEnum {
       Receipt_Status._(1, _omitEnumNames ? '' : 'STATUS_DELIVERED_ONLINE');
   static const Receipt_Status STATUS_STORED_OFFLINE =
       Receipt_Status._(2, _omitEnumNames ? '' : 'STATUS_STORED_OFFLINE');
+  static const Receipt_Status STATUS_DROPPED =
+      Receipt_Status._(3, _omitEnumNames ? '' : 'STATUS_DROPPED');
 
   static const $core.List<Receipt_Status> values = <Receipt_Status>[
     STATUS_QUEUED,
     STATUS_DELIVERED_ONLINE,
     STATUS_STORED_OFFLINE,
+    STATUS_DROPPED,
   ];
 
   static final $core.List<Receipt_Status?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 2);
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
   static Receipt_Status? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

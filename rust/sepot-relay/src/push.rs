@@ -3,6 +3,10 @@
 //! Klient se po probuzení sám připojí na WS a vyzvedne frontu sealed-sender
 //! kanálem. Endpoint se nikde neloguje.
 //!
+//! Jediná výjimka je příchozí hovor (`ContentHint::Call`): budíček nese
+//! `"k":"call"`, aby telefon začal zvonit hned (CallKit / celoobrazovkové
+//! zvonění) místo tichého probuzení. Kdo volá, v něm dál není.
+//!
 //! Podporované cesty:
 //!  - UnifiedPush (3) / WebPush (4): HTTP POST na endpoint URL distributora.
 //!  - FCM (1) / APNs (2): opt-in „fast mode" — vyžaduje externí credentials
@@ -30,6 +34,42 @@ pub const PLATFORM_MAX: i16 = 4;
 /// Konstantní budíček — žádná informace. Šifrovat (RFC 8291) netřeba,
 /// není co chránit.
 const WAKE_BODY: &str = "{\"v\":1}";
+
+/// Push cíl zařízení včetně iOS VoIP tokenu (jen pro hovory).
+pub struct PushTarget {
+    pub platform: i16,
+    pub token: Option<Vec<u8>>,
+    pub voip_token: Option<Vec<u8>>,
+}
+
+/// Budíček pro příchozí hovor. iPhone s VoIP tokenem → VoIP push (jediná
+/// cesta, jak iOS nechá zazvonit zabitou appku); Android FCM → budíček
+/// `k=call` s krátkou platností; ostatní (UnifiedPush, starší iOS appka)
+/// → běžný budíček, zazvoní až po vyzvednutí fronty.
+pub async fn send_call_wake(
+    client: &Client,
+    target: &PushTarget,
+    fcm: Option<&crate::fcm::FcmSender>,
+    apns: Option<&crate::apns::ApnsSender>,
+) {
+    if let (Some(sender), Some(Ok(voip))) = (
+        apns,
+        target.voip_token.as_deref().map(std::str::from_utf8),
+    ) {
+        sender.send_voip_call(client, voip).await;
+        return;
+    }
+    let Some(token) = target.token.as_deref() else {
+        return;
+    };
+    if target.platform == PLATFORM_FCM {
+        if let (Some(sender), Ok(device_token)) = (fcm, std::str::from_utf8(token)) {
+            sender.send_call_wake(client, device_token).await;
+        }
+        return;
+    }
+    send_wake(client, target.platform, token, fcm, apns).await;
+}
 
 /// HTTP klient pro budíčky: bez redirectů (anti-SSRF přes 3xx), krátký
 /// timeout, generický UA.

@@ -129,13 +129,6 @@ impl FcmSender {
     /// Pošle budíček na FCM registrační token. Best-effort; loguje se jen
     /// stavový kód (nikdy token).
     pub async fn send_wake(&self, http: &reqwest::Client, device_token: &str) {
-        let Some(access) = self.access_token(http).await else {
-            return;
-        };
-        let url = format!(
-            "https://fcm.googleapis.com/v1/projects/{}/messages:send",
-            self.project_id
-        );
         let body = serde_json::json!({
             "message": {
                 "token": device_token,
@@ -143,6 +136,33 @@ impl FcmSender {
                 "android": { "priority": "HIGH" }
             }
         });
+        self.send(http, body).await;
+    }
+
+    /// Budíček pro příchozí hovor: `k=call` spustí na telefonu zvonění
+    /// a platnost je krátká — zmeškaný hovor po návratu do sítě nezvoní.
+    pub async fn send_call_wake(&self, http: &reqwest::Client, device_token: &str) {
+        let body = serde_json::json!({
+            "message": {
+                "token": device_token,
+                "data": { "v": "1", "k": "call" },
+                "android": {
+                    "priority": "HIGH",
+                    "ttl": format!("{}s", crate::apns::CALL_RING_SECONDS)
+                }
+            }
+        });
+        self.send(http, body).await;
+    }
+
+    async fn send(&self, http: &reqwest::Client, body: serde_json::Value) {
+        let Some(access) = self.access_token(http).await else {
+            return;
+        };
+        let url = format!(
+            "https://fcm.googleapis.com/v1/projects/{}/messages:send",
+            self.project_id
+        );
         // warn, ne debug: relay běží na RUST_LOG=info, takže na debugu bylo
         // selhání pushe neviditelné a tiše se hromadila fronta. Protistranou
         // je Google, ne telefon uživatele — chyba tu znamená mrtvý token nebo

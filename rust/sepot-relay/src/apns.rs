@@ -35,6 +35,11 @@ fn wake_expiration(now: DateTime<Utc>) -> i64 {
     (now + chrono::Duration::days(crate::state::QUEUE_TTL_DAYS)).timestamp()
 }
 
+/// Jak dlouho může zvonit hovor, který telefon nezastihl hned. Stejná mez
+/// jako u klienta: nabídka starší než tohle se už nezvoní, jen zapíše jako
+/// zmeškaná.
+pub const CALL_RING_SECONDS: i64 = 45;
+
 #[derive(Serialize)]
 struct Claims<'a> {
     iss: &'a str,
@@ -147,6 +152,50 @@ impl ApnsSender {
             Err(e) => tracing::warn!("APNs budíček selhal: {e}"),
             _ => {}
         }
+    }
+
+    /// VoIP push (PushKit) pro příchozí hovor. iOS po něm MUSÍ hned ukázat
+    /// hovor v CallKit — to zařídí appka. Topic je `<bundle>.voip`, priorita
+    /// 10 (u typu voip povolená) a krátká expirace: zvonit po minutě nemá
+    /// smysl.
+    pub async fn send_voip_call(&self, client: &reqwest::Client, voip_token: &str) {
+        let Some(jwt) = self.auth_token().await else {
+            return;
+        };
+        let url = format!("{}/3/device/{}", self.host, voip_token);
+        let expiration = Utc::now().timestamp() + CALL_RING_SECONDS;
+        let resp = client
+            .post(&url)
+            .header("authorization", format!("bearer {jwt}"))
+            .header("apns-topic", format!("{}.voip", self.topic))
+            .header("apns-push-type", "voip")
+            .header("apns-priority", "10")
+            .header("apns-expiration", expiration.to_string())
+            .body(r#"{"aps":{},"k":"call"}"#)
+            .send()
+            .await;
+        match resp {
+            Ok(r) if !r.status().is_success() => {
+                tracing::warn!(status = %r.status(), "APNs VoIP push odmítnut");
+            }
+            Err(e) => tracing::warn!("APNs VoIP push selhal: {e}"),
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budicek_drzi_apns_stejne_dlouho_jako_fronta() {
+        let ted = DateTime::parse_from_rfc3339("2026-09-29T18:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let limit = wake_expiration(ted) - ted.timestamp();
+        assert_eq!(limit, crate::state::QUEUE_TTL_DAYS * 86_400);
+        assert!(limit <= 30 * 86_400, "APNs nedrží notifikace déle než 30 dní");
     }
 }
 
