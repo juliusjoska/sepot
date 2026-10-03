@@ -20,6 +20,7 @@ import 'dart:io' show Platform;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:sepot/core/calls/call_ringer.dart';
 import 'package:sepot/core/push/apns_ios.dart';
 import 'package:sepot/core/push/push_notifier.dart';
 import 'package:sepot/core/push/push_service.dart';
@@ -28,8 +29,14 @@ import 'package:unifiedpush/unifiedpush.dart';
 /// FCM budíček se zabitou appkou — plugin spouští handler ve vlastním
 /// background isolate. Stejný model jako UnifiedPush killed-state:
 /// DB je zamčená, nic nejde dešifrovat → jen generická notifikace.
+/// Budíček hovoru (`k=call`) místo ní rovnou zazvoní; kdo
+/// volá, appka zjistí až po odemčení z nabídky ve frontě.
 @pragma('vm:entry-point')
 Future<void> sepotFcmBackgroundWake(RemoteMessage message) async {
+  if (message.data['k'] == 'call') {
+    await CallRinger.ringFromPush();
+    return;
+  }
   await Firebase.initializeApp();
   await PushNotifier.showWakeNotification();
 }
@@ -52,8 +59,11 @@ class PushBootstrap {
 
   /// Režim pushů žije v OS keystore (NE v SQLCipher DB) — musí být
   /// čitelný před unlockem, aby main() věděl, zda registrovat FCM.
-  static Future<String> readMode() async =>
-      await _store.read(key: _modeKey) ?? 'off';
+  static Future<String> readMode() async => await readStoredMode() ?? 'off';
+
+  /// Uložený režim, nebo null, když ho uživatel ani appka ještě nevybrali
+  /// — to odlišuje čerstvou instalaci od vědomého „vypnuto".
+  static Future<String?> readStoredMode() => _store.read(key: _modeKey);
 
   static Future<void> writeMode(String mode) =>
       _store.write(key: _modeKey, value: mode);

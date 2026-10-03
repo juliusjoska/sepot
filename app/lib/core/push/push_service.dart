@@ -13,8 +13,11 @@
 /// killed-state startu `--unifiedpush-bg` bez UI); tahle třída je
 /// most bootstrap ↔ messaging + API pro nastavení.
 ///
-/// FCM „fast mode" (opt-in) je druhá cesta (viz [setModeFcm]); default je
-/// degooglovaný UnifiedPush.
+/// Výchozí režim na Androidu vybírá [restoreMode] při prvním startu: s
+/// UnifiedPush distributorem UnifiedPush, jinak FCM. Bez budíčku Android
+/// appku na pozadí uspí a zprávy čekají, než ji člověk otevře — to je pro
+/// messenger horší než token u Googlu (obsah ani odesílatel budíčkem nejde).
+/// Uživatel může kdykoli přepnout v Nastavení.
 library;
 
 import 'dart:async';
@@ -24,6 +27,7 @@ import 'dart:typed_data';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:sepot/core/calls/call_ringer.dart';
 import 'package:sepot/core/push/apns_ios.dart';
 import 'package:sepot/core/push/push_bootstrap.dart';
 import 'package:sepot/core/push/push_notifier.dart';
@@ -80,11 +84,25 @@ class PushService {
     }
   }
 
-  void _registerApnsToken(String token) {
-    _messaging.registerPush(_registration(
+  String? _apnsToken;
+
+  /// APNs token pro zprávy + VoIP token pro hovory v jedné registraci
+  /// (relay drží obojí u zařízení).
+  Future<void> _registerApnsToken(String token) async {
+    _apnsToken = token;
+    final voip = await CallRinger.voipToken();
+    final reg = _registration(
       pb.RegisterPush_Platform.PLATFORM_APNS,
       Uint8List.fromList(utf8.encode(token)),
-    ));
+    );
+    if (voip != null) reg.voipToken = utf8.encode(voip);
+    _messaging.registerPush(reg);
+  }
+
+  /// PushKit vydal (nový) VoIP token — přeregistrovat, pokud už APNs běží.
+  Future<void> refreshVoipToken() async {
+    final token = _apnsToken;
+    if (token != null) await _registerApnsToken(token);
   }
 
   /// iOS nativní push (APNs) — zapne registraci u Apple; token přijde
@@ -166,8 +184,8 @@ class PushService {
     return ok;
   }
 
-  /// FCM fast mode — OPT-IN: registrační token zařízení jde Googlu
-  /// (obsah budíčků nikdy, ťuk je konstantní `{"v":1}`).
+  /// FCM: registrační token zařízení jde Googlu (obsah budíčků nikdy,
+  /// ťuk je konstantní `{"v":1}`).
   Future<void> setModeFcm() async {
     await init();
     try {
@@ -222,6 +240,10 @@ class PushService {
       }
       return;
     }
+    if (await PushBootstrap.readStoredMode() == null) {
+      await _chooseDefaultMode();
+      return;
+    }
     switch (await currentMode()) {
       case 'up':
         await enable();
@@ -233,6 +255,25 @@ class PushService {
         }
       default:
         await init(); // aspoň attach (killed-state notifikace)
+    }
+  }
+
+  /// První start na Androidu (nebo instalace z doby, kdy byl push
+  /// opt-in a nikdo ho nezapnul). Kdo má nainstalovaný UnifiedPush
+  /// distributor, vybral si degooglovanou cestu sám — dostane ji.
+  /// Ostatním zapneme FCM. Telefon bez Google služeb token nedostane;
+  /// pak zapíšeme „off", ať se to nezkouší při každém startu — seznam
+  /// chatů na chybějící budíčky upozorní sám.
+  Future<void> _chooseDefaultMode() async {
+    try {
+      if ((await currentMode()) == 'up' ||
+          (await distributors()).isNotEmpty) {
+        if (await setModeUnifiedPush()) return;
+      }
+      await setModeFcm();
+    } catch (_) {
+      await init();
+      await PushBootstrap.writeMode('off');
     }
   }
 }

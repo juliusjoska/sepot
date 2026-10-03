@@ -1,5 +1,5 @@
 /* Šepot — iOS permission strings (English) */
-"NSCameraUsageDescription" = "The camera is used to scan contacts' QR codes and to take photos for attachments.";
+"NSCameraUsageDescription" = "The camera is used to scan contacts' QR codes, take photos for attachments and for video calls.";
 "NSPhotoLibraryUsageDescription" = "The photo library is used to pick photos to send in a conversation.";
 "NSFaceIDUsageDescription" = "Face ID unlocks the app instead of your PIN.";
-"NSMicrophoneUsageDescription" = "Šepot needs the microphone to record voice messages.";
+"NSMicrophoneUsageDescription" = "Šepot needs the microphone for voice messages and calls.";
