@@ -38,7 +38,7 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Log formát bez IP adres a bez identifikátorů klientů — DoD sprintu.
+    // Log formát bez IP adres a bez identifikátorů klientů — relay nesmí nic z toho uchovávat.
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
