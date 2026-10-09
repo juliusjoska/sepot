@@ -4,6 +4,42 @@ Všechny podstatné změny v aplikaci Šepot. Formát dle
 [Keep a Changelog](https://keepachangelog.com/cs/1.1.0/),
 verzování dle [ajtak standardu](#verzování).
 
+## [Nevydáno]
+
+### Opraveno
+- **Hovory se nedaly přijmout.** Příchozí signalizace hovoru se zahazovala dřív,
+  než se dostala k obsluze hovoru; volaný jen „zazvonil“ z budíčku a pak nic.
+- **Obrazovka hovoru po zavěšení:** avatar a jméno uskakovaly vlevo nahoru.
+- **Obnova ze 24 slov na novém telefonu** končila nekonečným čekáním — server
+  odmítal už existující identitu. Nové zařízení ji teď převezme podpisem.
+- **Tichá ztráta zpráv:** úklid mizících zpráv mohl přepsat čerstvě přijatou
+  zprávu; automatický zámek během zpracování zprávy ji mohl nenávratně zahodit;
+  souběžné šifrování pro téhož příjemce dávalo obálky, které druhá strana
+  zahodila. Všechny tři cesty opraveny.
+- **Velká fronta po delším výpadku** (stovky zpráv) se už neodpojuje v půlce
+  a server ji po osmi pokusech nemaže.
+- **Nátlakový PIN** otevíral relaci se skutečnou identitou, frází i přístupem ke
+  smazání účtu. Teď je izolovaná: náhodná identita, žádná síť, žádný zásah do
+  klíčů; smazání v ní nechá skutečný účet být.
+- Zvonění z budíčku bez skutečné nabídky končí po 12 s; server budíčky hovoru
+  omezuje na cíl, takže cizí člověk se znalostí adresy telefon nerozezvoní
+  pořád dokola.
+- Dodatečné odeslání z fronty neztrácí anketu ani zmínky; budíček při
+  „připojeno“ bez provozu obnoví spojení.
+
+### Bezpečnost
+- Hádání PINu: po pěti chybách prodleva 30 s, dál dvojnásobná až 15 minut.
+- Nátlakový a skutečný PIN se ověřují jednou derivací — čas odemčení neprozradí,
+  který byl zadán.
+- Biometrie jen biometricky (zámek telefonu appku neodemkne); zabezpečení
+  obrazovky je výchozí zapnuté a po odemčení skutečně platí; na iOS klíče
+  nepřecházejí do iCloud Keychain ani záloh; filtr proti dotykům přes překryvná okna.
+- Server: doplňování jednorázových klíčů a rotace podepsaných klíčů
+  (`POST /v1/keys`), omezení výdeje jednorázových klíčů na adresu, chyby v logu
+  bez adres push endpointů, připnutí DNS u budíčků, globální strop příloh,
+  limity délek, `/v1/ready`, uvolnění spojení při vypnutí, revize a zdroj
+  v `/v1/server-info`.
+
 ## [1.2.0] – 2026-10-01
 
 ### Nový vzhled

@@ -26,7 +26,7 @@ their app-store status is documented in detail below.
 
   Šepot relies on that stated position and, as an AGPL work, keeps its
   complete corresponding source available under the AGPL through channels
-  without app-store restrictions (this public repository, F-Droid, direct
+  without app-store restrictions (this public repository, direct
   APK). A written clarification for the current Rust `libsignal` has been
   requested from Signal (tracking: <https://github.com/signalapp/libsignal/issues/684>).
 

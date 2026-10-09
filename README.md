@@ -4,7 +4,7 @@
 
 The design goal is **metadata minimization with a public threat model** — never "zero metadata". The relay is deliberately dumb: it cannot read message content, does not learn who sent a message, and does not log IP addresses. What it *does* see is documented honestly below.
 
-> Status: pre-1.0. The Android client is the primary target; iOS builds run through TestFlight. See [`CHANGELOG.md`](CHANGELOG.md).
+> Status: 1.2.x. Android is on Google Play (production 1.1.2, 1.2.0 in internal testing); iOS builds run through TestFlight. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Features
 
@@ -14,7 +14,7 @@ The design goal is **metadata minimization with a public threat model** — neve
 - **Group chats** — up to 128 members, pairwise fan-out so every member gets full forward secrecy; the relay never learns a group exists.
 - **Attachments** — images and files are encrypted client-side (AES-256-GCM) and uploaded as opaque blobs with a TTL; image metadata (EXIF/GPS) is stripped on send.
 - **Disappearing messages**, read receipts (off by default), voice messages, replies, reactions, edits, contact verification (safety numbers).
-- **Push without Google by default** — UnifiedPush/ntfy; FCM (Android) and APNs (iOS) are opt-in. A push wake-up never carries content, sender, or count.
+- **Push with or without Google** — UnifiedPush/ntfy when a distributor is installed, otherwise FCM on Android (default since 1.2.0, can be switched off) and APNs on iOS. A push wake-up never carries content, sender, or count.
 - **Tor transport** (Android, via Orbot) — routes relay traffic over a `.onion` to hide the client IP. Off by default.
 - **Five languages** — Czech, English, German, Russian, Italian. The UI follows the system language and can be overridden in Settings.
 
@@ -71,10 +71,10 @@ UI strings live in `app/lib/l10n/app_*.arb` (`cs`, `en`, `de`, `ru`, `it`) and a
 
 ## Security
 
-Cryptography is implemented by Signal's `libsignal`, not by hand-rolled primitives. If you find a vulnerability, please report it privately to **bezpecnost@sepot.cz** rather than opening a public issue.
+Cryptography is implemented by Signal's `libsignal`, not by hand-rolled primitives. If you find a vulnerability, please report it privately to **security@sepot.cz** rather than opening a public issue — see [`SECURITY.md`](SECURITY.md) and [`/.well-known/security.txt`](https://sepot.cz/.well-known/security.txt).
 
 ## License
 
 Šepot is licensed under the **GNU Affero General Public License v3.0** — see [`LICENSE`](LICENSE).
 
-The license includes an **AGPL §7 additional permission for app-store distribution**: Šepot may be distributed through App Store / Google Play provided the complete corresponding source stays available under the AGPL through a channel *without* those store restrictions (this repository, F-Droid, direct APK). That permission covers only Šepot's own code. The bundled Signal `libsignal` is AGPL-3.0 held by Signal Messenger, LLC — its app-store status is documented in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+The license includes an **AGPL §7 additional permission for app-store distribution**: Šepot may be distributed through App Store / Google Play provided the complete corresponding source stays available under the AGPL through a channel *without* those store restrictions (this repository and the direct APK releases). That permission covers only Šepot's own code. The bundled Signal `libsignal` is AGPL-3.0 held by Signal Messenger, LLC — its app-store status is documented in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
