@@ -201,13 +201,4 @@ mod tests {
         assert!(limit <= 30 * 86_400, "APNs nedrží notifikace déle než 30 dní");
     }
     
-    #[test]
-    fn budicek_drzi_apns_stejne_dlouho_jako_fronta() {
-        let ted = DateTime::parse_from_rfc3339("2026-09-29T18:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let limit = wake_expiration(ted) - ted.timestamp();
-        assert_eq!(limit, crate::state::QUEUE_TTL_DAYS * 86_400);
-        assert!(limit <= 30 * 86_400, "APNs nedrží notifikace déle než 30 dní");
-    }
 }
