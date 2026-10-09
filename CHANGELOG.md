@@ -6,6 +6,8 @@ verzování dle [ajtak standardu](#verzování).
 
 ## [Nevydáno]
 
+## [1.2.1] – 2026-10-09
+
 ### Opraveno
 - **Hovory se nedaly přijmout.** Příchozí signalizace hovoru se zahazovala dřív,
   než se dostala k obsluze hovoru; volaný jen „zazvonil“ z budíčku a pak nic.
