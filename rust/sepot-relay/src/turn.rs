@@ -12,8 +12,9 @@ use sepot_proto::v1;
 use sha1::Sha1;
 
 /// Platnost údajů. Pokrývá i dlouhý hovor — coturn kontroluje expiraci jen
-/// při alokaci a jejím obnovení, ne u běžícího hovoru.
-pub const TTL_SECONDS: u32 = 24 * 3600;
+/// při alokaci a jejím obnovení, ne u běžícího hovoru. Dvanáct hodin stačí
+/// (dřív 24 h: zbytečně dlouhé okno pro údaje, které přežijí i smazání účtu).
+pub const TTL_SECONDS: u32 = 12 * 3600;
 
 pub struct TurnConfig {
     secret: Vec<u8>,

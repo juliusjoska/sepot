@@ -133,7 +133,9 @@ impl FcmSender {
             "message": {
                 "token": device_token,
                 "data": { "v": "1" },
-                "android": { "priority": "HIGH" }
+                // collapse_key: čekající budíčky pro zařízení mimo síť se
+                // slijí do jednoho (třicet zpráv ≠ třicet pushů).
+                "android": { "priority": "HIGH", "collapse_key": "wake" }
             }
         });
         self.send(http, body).await;
@@ -171,7 +173,7 @@ impl FcmSender {
             Ok(resp) if !resp.status().is_success() => {
                 tracing::warn!(status = %resp.status(), "FCM budíček odmítnut");
             }
-            Err(e) => tracing::warn!("FCM budíček selhal: {e}"),
+            Err(e) => tracing::warn!("FCM budíček selhal: {}", e.without_url()),
             _ => {}
         }
     }

@@ -51,6 +51,8 @@ tower-http = { version = "0.7.0", features = ["timeout"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # FCM fast mode: RS256 JWT pro OAuth2 service account flow
 jsonwebtoken = "9"
+# setrlimit(RLIMIT_NOFILE) při startu — docker dává soft limit 1024
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

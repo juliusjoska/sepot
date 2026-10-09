@@ -95,11 +95,29 @@ pub async fn send_wake(
     match platform {
         PLATFORM_UNIFIEDPUSH | PLATFORM_WEBPUSH => {
             let Ok(url) = std::str::from_utf8(token) else { return };
-            if !endpoint_allowed(url).await {
+            let Some(pinned) = endpoint_allowed(url).await else {
                 tracing::debug!("push endpoint odmítnut (scheme/SSRF guard)");
                 return;
+            };
+            // Adresy z guardu se připnou i pro vlastní POST — reqwest by
+            // jinak resolvoval znovu a DNS s TTL 0 by napodruhé vrátil
+            // vnitřní adresu (DNS rebinding).
+            match pinned {
+                Some((host, addrs)) => {
+                    let pinned_client = Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .timeout(Duration::from_secs(5))
+                        .connect_timeout(Duration::from_secs(3))
+                        .user_agent("sepot-relay")
+                        .resolve_to_addrs(&host, &addrs)
+                        .build();
+                    match pinned_client {
+                        Ok(c) => post_wake(&c, url).await,
+                        Err(_) => post_wake(client, url).await,
+                    }
+                }
+                None => post_wake(client, url).await,
             }
-            post_wake(client, url).await;
         }
         PLATFORM_FCM => {
             // Opt-in fast mode — jen když je relay nakonfigurován
@@ -139,7 +157,9 @@ async fn post_wake(client: &Client, url: &str) {
         Ok(r) if !r.status().is_success() => {
             tracing::warn!(status = %r.status(), "UnifiedPush budíček odmítnut");
         }
-        Err(e) => tracing::warn!("UnifiedPush budíček selhal: {e}"),
+        // without_url: chyba reqwest nese URL = endpoint = identifikátor
+        // uživatele; do logu nesmí.
+        Err(e) => tracing::warn!("UnifiedPush budíček selhal: {}", e.without_url()),
         _ => {}
     }
 }
@@ -147,32 +167,24 @@ async fn post_wake(client: &Client, url: &str) {
 /// Povolit jen bezpečné cíle. https vždy; http jen pro .onion (samo šifruje).
 /// Odmítnout hostitele resolvující na interní adresy (blind-SSRF ochrana).
 ///
-/// ZNÁMÁ LIMITACE (DNS rebinding / TOCTOU): guard resolvuje host přes
-/// `lookup_host` zde, ale samotný POST v `post_wake` resolvuje znovu. Mezi
-/// kontrolou a requestem může útočníkem řízené DNS vrátit napřed veřejnou a
-/// pak interní adresu, čímž guard obejde. Plný fix = resolvovat jednou a
-/// připojit se přímo na ověřenou IP (reqwest `resolve()` / vlastní connector),
-/// což je mimo rozsah tohoto vydání. Dopad je zúžen tím, že tělo je konstantní
-/// `{"v":1}`, redirecty jsou vypnuté a odpověď se nikam nevrací (blind).
-async fn endpoint_allowed(url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
+/// Vrací `None` = odmítnuto; `Some(None)` = povoleno bez DNS (.onion);
+/// `Some(Some((host, adresy)))` = povoleno, a tyhle adresy se mají pro POST
+/// připnout (ochrana proti DNS rebindingu mezi kontrolou a požadavkem).
+async fn endpoint_allowed(url: &str) -> Option<Option<(String, Vec<std::net::SocketAddr>)>> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
     let is_onion = host.ends_with(".onion");
 
     match parsed.scheme() {
         "https" => {}
         // .onion šifruje sám; relay stejně nemá tor egress, request tiše
         // selže — ale schéma povolíme, ať je to připravené.
-        "http" if is_onion => return true,
-        _ => return false,
+        "http" if is_onion => return Some(None),
+        _ => return None,
     }
     // .onion přes https (neobvyklé) — neresolvuje se přes DNS, pustit.
     if is_onion {
-        return true;
+        return Some(None);
     }
 
     // Vlastnit host+port, ať `parsed` nepřežívá await na lookup_host.
@@ -181,17 +193,18 @@ async fn endpoint_allowed(url: &str) -> bool {
     drop(parsed);
 
     let resolved = tokio::net::lookup_host((host.as_str(), port)).await;
-    let Ok(addrs) = resolved else {
-        return false; // host nejde resolvovat → nepouštět
-    };
-    let mut saw_any = false;
+    let addrs = resolved.ok()?; // host nejde resolvovat → nepouštět
+    let mut pinned = Vec::new();
     for a in addrs {
-        saw_any = true;
         if is_internal_ip(&a.ip()) {
-            return false; // aspoň jedna interní adresa → celé odmítnout
+            return None; // aspoň jedna interní adresa → celé odmítnout
         }
+        pinned.push(a);
     }
-    saw_any
+    if pinned.is_empty() {
+        return None;
+    }
+    Some(Some((host, pinned)))
 }
 
 fn is_internal_v4(v4: &std::net::Ipv4Addr) -> bool {
@@ -214,7 +227,14 @@ fn is_internal_ip(ip: &IpAddr) -> bool {
                 || v6.is_unspecified()
                 || (o[0] & 0xfe) == 0xfc // fc00::/7 ULA
                 || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80) // fe80::/10 link-local
+                || (o[0] == 0xfe && (o[1] & 0xc0) == 0xc0) // fec0::/10 site-local
                 || v6.to_ipv4_mapped().map(|v4| is_internal_v4(&v4)).unwrap_or(false)
+                // 64:ff9b::/96 NAT64 a 2002::/16 6to4 nesou vnořenou IPv4
+                || (o[..12] == [0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0]
+                    && is_internal_v4(&std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15])))
+                || (o[0] == 0x20
+                    && o[1] == 0x02
+                    && is_internal_v4(&std::net::Ipv4Addr::new(o[2], o[3], o[4], o[5])))
         }
     }
 }
@@ -252,20 +272,33 @@ mod tests {
         assert!(is_internal_ip(&mapped));
     }
 
+    #[test]
+    fn nat64_a_6to4_s_vnorenou_privatni_v4_jsou_interni() {
+        let nat64: IpAddr = "64:ff9b::10.0.0.1".parse().unwrap();
+        assert!(is_internal_ip(&nat64));
+        let sixtofour: IpAddr = "2002:c0a8:101::1".parse().unwrap(); // 192.168.1.1
+        assert!(is_internal_ip(&sixtofour));
+        let verejna_nat64: IpAddr = "64:ff9b::1.1.1.1".parse().unwrap();
+        assert!(!is_internal_ip(&verejna_nat64));
+    }
+
     #[tokio::test]
     async fn schema_a_ssrf_guard() {
         // http (ne-onion) se odmítne
-        assert!(!endpoint_allowed("http://ntfy.sh/abc").await);
+        assert!(endpoint_allowed("http://ntfy.sh/abc").await.is_none());
         // loopback se odmítne i přes https
-        assert!(!endpoint_allowed("https://127.0.0.1/abc").await);
-        assert!(!endpoint_allowed("https://localhost/abc").await);
+        assert!(endpoint_allowed("https://127.0.0.1/abc").await.is_none());
+        assert!(endpoint_allowed("https://localhost/abc").await.is_none());
         // interní IP se odmítne
-        assert!(!endpoint_allowed("https://10.0.0.5:8000/x").await);
-        // http na .onion se pustí (schéma OK)
-        assert!(endpoint_allowed("http://cipjsctoeyf4fcrntvdvt22o2ansgr73qvthmewo246vuntd7cqmykyd.onion/x").await);
+        assert!(endpoint_allowed("https://10.0.0.5:8000/x").await.is_none());
+        // http na .onion se pustí (schéma OK), bez DNS → nic k připnutí
+        assert_eq!(
+            endpoint_allowed("http://cipjsctoeyf4fcrntvdvt22o2ansgr73qvthmewo246vuntd7cqmykyd.onion/x").await,
+            Some(None)
+        );
         // nesmysl se odmítne
-        assert!(!endpoint_allowed("není url").await);
-        assert!(!endpoint_allowed("ftp://ntfy.sh/x").await);
+        assert!(endpoint_allowed("není url").await.is_none());
+        assert!(endpoint_allowed("ftp://ntfy.sh/x").await.is_none());
     }
 
     #[test]

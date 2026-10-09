@@ -37,6 +37,12 @@ pub const ATTACHMENT_TTL_DAYS: i64 = 30;
 /// Výchozí strop velikosti (šifrovaný blob). Přepis env `SEPOT_MAX_ATTACHMENT_BYTES`.
 const DEFAULT_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
+/// Výchozí strop součtu všech živých příloh na disku. Přepis env
+/// `SEPOT_ATTACHMENTS_TOTAL_BYTES`. Bez něj jeden registrovaný klient
+/// zaplní celý filesystem (v produkci 16 GB sdílených s Postgresem) za
+/// minuty a relay přestane zapisovat do DB.
+const DEFAULT_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 /// Osiřelé `.part` soubory (pád mezi zápisem a přejmenováním) starší než
 /// tohle se při úklidu mažou.
 const PART_MAX_AGE: StdDuration = StdDuration::from_secs(24 * 3600);
@@ -45,6 +51,7 @@ const PART_MAX_AGE: StdDuration = StdDuration::from_secs(24 * 3600);
 pub struct Config {
     pub dir: PathBuf,
     pub max_bytes: u64,
+    pub total_bytes: u64,
 }
 
 impl Config {
@@ -55,9 +62,14 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MAX_BYTES);
+        let total_bytes = std::env::var("SEPOT_ATTACHMENTS_TOTAL_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_TOTAL_BYTES);
         Self {
             dir: PathBuf::from(dir),
             max_bytes,
+            total_bytes,
         }
     }
 
@@ -115,6 +127,21 @@ pub async fn upload(
                 "příloha je příliš velká".into(),
             ));
         }
+    }
+
+    // Globální strop: součet živých příloh + tahle nesmí přesáhnout
+    // total_bytes. Jeden SELECT nad malou tabulkou; nic o zařízení se
+    // k blobu neváže.
+    let (used,): (i64,) =
+        sqlx::query_as("SELECT coalesce(sum(size_bytes), 0)::bigint FROM attachments")
+            .fetch_one(&state.pool)
+            .await
+            .map_err(internal)?;
+    if (used.max(0) as u64).saturating_add(cfg.max_bytes) > cfg.total_bytes {
+        return Err((
+            StatusCode::INSUFFICIENT_STORAGE,
+            "úložiště příloh je plné, zkus to později".into(),
+        ));
     }
 
     // ThreadRng je !Send — nesmí přežít přes await, proto vlastní scope.
@@ -229,6 +256,10 @@ pub async fn download(
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, size)
         .header(header::CACHE_CONTROL, "no-store")
+        // Blob je bearer URL na důvěryhodné doméně — prohlížeč ho nesmí
+        // ani zkoušet vykreslit (nosniff + attachment).
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::CONTENT_DISPOSITION, "attachment")
         .body(Body::from_stream(stream))
         .map_err(internal)
 }
@@ -309,6 +340,7 @@ mod db_tests {
             Config {
                 dir,
                 max_bytes: 1024,
+                total_bytes: 1 << 30,
             },
             trusted,
         )

@@ -121,6 +121,18 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Úklid značek budíčků a OTP oken (jen paměť)
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(600));
+            loop {
+                tick.tick().await;
+                state.prune_marks();
+            }
+        });
+    }
+
     let register_routes = Router::new()
         .route("/v1/register", post(rest::register))
         .layer(GovernorLayer::new(gov_register));
@@ -128,6 +140,8 @@ async fn main() -> anyhow::Result<()> {
     let general_routes = Router::new()
         .route("/v1/server-info", get(rest::server_info))
         .route("/v1/keys/{delivery_address}", get(rest::fetch_bundle))
+        // doplnění one-time prekeys / rotace signed a Kyber prekey (auth)
+        .route("/v1/keys", post(rest::upload_keys))
         .route("/v1/certificate/delivery", get(rest::certificate_delivery))
         .route("/v1/identity", delete(rest::delete_identity))
         .layer(GovernorLayer::new(gov_general));
@@ -152,16 +166,18 @@ async fn main() -> anyhow::Result<()> {
         ));
 
     let app = Router::new()
-        // health bez limitů — interní docker/uptime checky
+        // health bez limitů — interní docker/uptime checky; ready ověří i DB
         .route("/v1/health", get(rest::health))
+        .route("/v1/ready", get(rest::ready))
         // WS má vlastní limity (conn cap per IP, auth deadline, frame rate)
         .route("/v1/ws", get(ws::ws_handler))
         .merge(rest_routes)
         .merge(attachment_routes)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .with_state(state);
+        .with_state(state.clone());
 
-    tracing::info!(%bind, "sepot-relay startuje");
+    raise_nofile_limit();
+    tracing::info!(%bind, revision = %state.revision, "sepot-relay startuje");
     let listener = tokio::net::TcpListener::bind(&bind).await?.tap_io(|tcp| {
         // Bez TCP_NODELAY čeká každý další malý zápis na ACK klienta (Nagle
         // × zpožděné ACK = ~40 ms). Nejvíc to bolí hned po AUTH: AUTH_OK a
@@ -171,11 +187,48 @@ async fn main() -> anyhow::Result<()> {
             tracing::debug!("TCP_NODELAY nenastaven: {e}");
         }
     });
-    // ConnectInfo: peer adresa pro rate-limit fallback a WS conn cap
+    // ConnectInfo: peer adresa pro rate-limit fallback a WS conn cap.
+    // Graceful shutdown: SIGTERM od dockeru nechá doběhnout
+    // rozjeté uploady; WS klienti se jen přepojí.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM handler");
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+    tracing::info!("sepot-relay končí (signál)");
+}
+
+/// Soft limit otevřených souborů na hard limit. Každé WS spojení je jeden
+/// deskriptor; docker dává soft 1024 → strop ~1 000 klientů, zatímco hard
+/// bývá 2^19. Selhání se jen zaloguje.
+fn raise_nofile_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit/setrlimit jen čtou a zapisují předaný struct.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+            return;
+        }
+        if lim.rlim_cur < lim.rlim_max {
+            lim.rlim_cur = lim.rlim_max;
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) != 0 {
+                tracing::warn!("RLIMIT_NOFILE se nepodařilo zvednout");
+                return;
+            }
+        }
+    }
+    tracing::info!(nofile = lim.rlim_cur, "limit otevřených souborů");
 }

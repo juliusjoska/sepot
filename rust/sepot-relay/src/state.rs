@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
@@ -38,6 +39,36 @@ const MAX_DELIVERY_ATTEMPTS: i16 = 8;
 /// prokazatelně živé. Klient odpovídá na ping à 30 s (ws::PING_INTERVAL),
 /// takže dva zmeškané cykly znamenají, že už nedýchá.
 const FRESH_CONNECTION_MS: u64 = 70_000;
+
+/// Výchozí strop souběžných WS spojení z jedné IP. Env
+/// `SEPOT_MAX_CONNS_PER_IP` ho přepisuje — za CGNAT mobilních operátorů
+/// sdílí jednu IP stovky lidí.
+const DEFAULT_MAX_CONNS_PER_IP: u32 = 32;
+
+/// Běžný budíček na jeden cíl nejvýš jednou za tohle okno: třicet zpráv ve
+/// skupině během výpadku sítě = jeden push, ne třicet (APNs i FCM nápor
+/// tichých pushů škrtí, baterie taky).
+const WAKE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Budíček hovoru (VoIP push / FCM k=call) zvoní na telefonu hned a bez
+/// ověření — proto má vlastní, přísnější strop na cíl: nejvýš jeden za
+/// CALL_WAKE_MIN_INTERVAL a CALL_WAKE_MAX_PER_WINDOW za CALL_WAKE_WINDOW.
+/// Nad strop se obálka uloží a jde jen běžný budíček (phantom
+/// hovory od kohokoli, kdo zná adresu).
+const CALL_WAKE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+const CALL_WAKE_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
+const CALL_WAKE_MAX_PER_WINDOW: usize = 6;
+/// Kolik one-time prekeys smí relay vydat na jednu adresu za hodinu.
+/// Noví kontakti jsou jednotky za den; sto GET /v1/keys za dvacet sekund
+/// je vyčerpání zásoby cizím. Nad strop jde bundle bez OTP.
+const OTP_ISSUE_MAX_PER_HOUR: u32 = 30;
+const OTP_ISSUE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Značky budíčků jednoho cíle (jen v paměti, nikam se neukládají).
+#[derive(Default)]
+pub struct WakeMarks {
+    last_wake: Option<Instant>,
+    call_wakes: std::collections::VecDeque<Instant>,
+}
 
 /// Připojené zařízení: kanál na jeho WS + kdy od něj naposled něco přišlo.
 ///
@@ -126,6 +157,15 @@ pub struct AppState {
     pub apns: Option<std::sync::Arc<crate::apns::ApnsSender>>,
     /// TURN pro hovory (None = relay údaje nevydává).
     pub turn: Option<crate::turn::TurnConfig>,
+    /// Strop WS spojení na IP.
+    pub max_conns_per_ip: u32,
+    /// delivery_address → značky budíčků (throttling pushů a hovorů).
+    pub wake_marks: DashMap<Vec<u8>, WakeMarks>,
+    /// delivery_address → (začátek okna, vydaných OTP) — drain ochrana.
+    pub otp_issued: DashMap<Vec<u8>, (Instant, u32)>,
+    /// Odkaz na zdroj a revize běžící binárky (AGPL §13, /v1/server-info).
+    pub source_url: String,
+    pub revision: String,
 }
 
 impl AppState {
@@ -147,7 +187,94 @@ impl AppState {
             fcm: crate::fcm::FcmSender::from_env(),
             apns: crate::apns::ApnsSender::from_env(),
             turn: crate::turn::TurnConfig::from_env(),
+            max_conns_per_ip: std::env::var("SEPOT_MAX_CONNS_PER_IP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_MAX_CONNS_PER_IP),
+            wake_marks: DashMap::new(),
+            otp_issued: DashMap::new(),
+            source_url: std::env::var("SEPOT_SOURCE_URL")
+                .unwrap_or_else(|_| "https://github.com/juliusjoska/sepot".into()),
+            revision: std::env::var("SEPOT_REVISION").unwrap_or_else(|_| "dev".into()),
         }
+    }
+
+    /// Úklid značek starších než největší okno — volá periodická úloha.
+    pub fn prune_marks(&self) {
+        let now = Instant::now();
+        self.wake_marks.retain(|_, m| {
+            m.call_wakes
+                .retain(|t| now.duration_since(*t) < CALL_WAKE_WINDOW);
+            m.last_wake
+                .map(|t| now.duration_since(t) < CALL_WAKE_WINDOW)
+                .unwrap_or(false)
+                || !m.call_wakes.is_empty()
+        });
+        self.otp_issued
+            .retain(|_, (start, _)| now.duration_since(*start) < OTP_ISSUE_WINDOW);
+    }
+
+    /// Smí se vydat další OTP pro tuhle adresu? Počítá v hodinovém okně.
+    pub fn allow_otp_issue(&self, dst_address: &[u8]) -> bool {
+        let now = Instant::now();
+        let mut entry = self
+            .otp_issued
+            .entry(dst_address.to_vec())
+            .or_insert((now, 0));
+        if now.duration_since(entry.0) >= OTP_ISSUE_WINDOW {
+            *entry = (now, 0);
+        }
+        if entry.1 >= OTP_ISSUE_MAX_PER_HOUR {
+            return false;
+        }
+        entry.1 += 1;
+        true
+    }
+
+    /// Běžný budíček smí odejít nejvýš jednou za WAKE_MIN_INTERVAL na cíl.
+    fn allow_wake(&self, dst_address: &[u8]) -> bool {
+        let now = Instant::now();
+        let mut marks = self.wake_marks.entry(dst_address.to_vec()).or_default();
+        if marks
+            .last_wake
+            .map(|t| now.duration_since(t) < WAKE_MIN_INTERVAL)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        marks.last_wake = Some(now);
+        true
+    }
+
+    /// Budíček hovoru: vlastní strop na cíl (viz CALL_WAKE_*). Vrací false,
+    /// když je cíl v okně už vyčerpaný — pak jde nanejvýš běžný budíček.
+    fn allow_call_wake(&self, dst_address: &[u8]) -> bool {
+        let now = Instant::now();
+        let mut marks = self.wake_marks.entry(dst_address.to_vec()).or_default();
+        marks
+            .call_wakes
+            .retain(|t| now.duration_since(*t) < CALL_WAKE_WINDOW);
+        if let Some(last) = marks.call_wakes.back() {
+            if now.duration_since(*last) < CALL_WAKE_MIN_INTERVAL {
+                return false;
+            }
+        }
+        if marks.call_wakes.len() >= CALL_WAKE_MAX_PER_WINDOW {
+            return false;
+        }
+        marks.call_wakes.push_back(now);
+        marks.last_wake = Some(now);
+        true
+    }
+
+    /// Kolik one-time prekeys zařízení ještě má.
+    pub async fn one_time_prekey_count(&self, device_uuid: &[u8]) -> anyhow::Result<i64> {
+        let (n,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM one_time_prekeys WHERE device_uuid = $1")
+                .bind(device_uuid)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(n)
     }
 
     /// Přijme obálku: validace → perzistentní fronta (dedup) → pokud je
@@ -192,7 +319,11 @@ impl AppState {
                 frame: Some(v1::server_frame::Frame::Deliver(env)),
             };
             let fresh = dev.is_fresh(self.now_ms());
-            let queued = dev.tx.send(deliver).await.is_ok();
+            // try_send, ne send().await: plný kanál znamená, že příjemce ze
+            // socketu nečte. Čekat na něj by drželo odesílatelovo spojení
+            // (a jeho paměť) rukojmím — nečtoucí příjemci by tak shodili
+            // relay. Obálka je v DB, půjde budíček.
+            let queued = dev.tx.try_send(deliver).is_ok();
             // ONLINE hlásíme jen u spojení, které prokazatelně dýchá. Do
             // zatuchlého se sice pošle taky (kdyby to byl jen tichý klient),
             // ale propadne se i na push — jinak by mrtvé spojení budíček
@@ -201,10 +332,10 @@ impl AppState {
                 return Ok(v1::receipt::Status::DeliveredOnline);
             }
         }
-        // Offline, zatuchlé nebo selhalý kanál → zkusit push budíček.
-        if is_call {
+        // Offline, zatuchlé nebo plný kanál → zkusit push budíček.
+        if is_call && self.allow_call_wake(&dst) {
             self.wake_call(&dst).await;
-        } else {
+        } else if self.allow_wake(&dst) {
             self.wake(&dst).await;
         }
         Ok(v1::receipt::Status::StoredOffline)
@@ -223,7 +354,7 @@ impl AppState {
         let deliver = v1::ServerFrame {
             frame: Some(v1::server_frame::Frame::Deliver(env)),
         };
-        if dev.tx.send(deliver).await.is_ok() {
+        if dev.tx.try_send(deliver).is_ok() {
             v1::receipt::Status::DeliveredOnline
         } else {
             v1::receipt::Status::Dropped

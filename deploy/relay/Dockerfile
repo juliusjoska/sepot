@@ -4,7 +4,7 @@
 # Build stage potřebuje: protoc (prost-build generuje z proto/sepot.proto),
 # git (libsignal-protocol je git dependency s [patch.crates-io] zrcadlem).
 
-FROM rust:1.96-slim AS build
+FROM rust:1.99-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
       protobuf-compiler git pkg-config build-essential cmake \
     && rm -rf /var/lib/apt/lists/*
@@ -21,6 +21,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/sepot-relay /sepot-relay
 
 FROM debian:bookworm-slim
+# Revize zdroje: label pro `docker inspect` a env pro /v1/server-info
+# (AGPL §13 — uživatel relaye má vědět, který commit běží).
+ARG GIT_SHA=dev
+LABEL org.opencontainers.image.revision=$GIT_SHA \
+      org.opencontainers.image.source="https://github.com/juliusjoska/sepot"
+ENV SEPOT_REVISION=$GIT_SHA
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \

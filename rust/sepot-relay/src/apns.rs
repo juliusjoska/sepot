@@ -140,6 +140,8 @@ impl ApnsSender {
             .header("apns-push-type", "background")
             .header("apns-priority", "5")
             .header("apns-expiration", wake_expiration(Utc::now()).to_string())
+            // Víc budíčků pro jedno zařízení APNs sloučí do jednoho.
+            .header("apns-collapse-id", "wake")
             .body(r#"{"aps":{"content-available":1}}"#)
             .send()
             .await;
@@ -149,7 +151,8 @@ impl ApnsSender {
             Ok(r) if !r.status().is_success() => {
                 tracing::warn!(status = %r.status(), "APNs budíček odmítnut");
             }
-            Err(e) => tracing::warn!("APNs budíček selhal: {e}"),
+            // without_url: URL nese device token.
+            Err(e) => tracing::warn!("APNs budíček selhal: {}", e.without_url()),
             _ => {}
         }
     }
@@ -178,7 +181,7 @@ impl ApnsSender {
             Ok(r) if !r.status().is_success() => {
                 tracing::warn!(status = %r.status(), "APNs VoIP push odmítnut");
             }
-            Err(e) => tracing::warn!("APNs VoIP push selhal: {e}"),
+            Err(e) => tracing::warn!("APNs VoIP push selhal: {}", e.without_url()),
             _ => {}
         }
     }
@@ -197,12 +200,7 @@ mod tests {
         assert_eq!(limit, crate::state::QUEUE_TTL_DAYS * 86_400);
         assert!(limit <= 30 * 86_400, "APNs nedrží notifikace déle než 30 dní");
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
+    
     #[test]
     fn budicek_drzi_apns_stejne_dlouho_jako_fronta() {
         let ted = DateTime::parse_from_rfc3339("2026-09-29T18:00:00Z")

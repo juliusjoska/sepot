@@ -27,15 +27,28 @@ use tokio::time::Instant;
 
 use crate::state::AppState;
 
-/// Max souběžných WS spojení z jedné IP. Klientská IP jde přes trusted-proxy
-/// logiku (viz net.rs): za traefikem reálná IP z forwarded hlavičky, onion
-/// klienti sdílí IP tor kontejneru (jeden bucket) — proto ne moc těsně.
-const MAX_CONNS_PER_IP: u32 = 32;
-/// Neautentizované spojení zavřít po tomto čase.
+/// Neautentizované spojení zavřít po tomto čase od navázání — absolutně,
+/// ne „od posledního rámce": Pong rámce před AUTH by jinak držely spojení
+/// bez konce.
 const AUTH_DEADLINE: Duration = Duration::from_secs(10);
+/// Kolik AUTH pokusů smí jedno spojení udělat (každý = dotaz do DB).
+const MAX_AUTH_ATTEMPTS: u32 = 3;
 /// Rate limit rámců od klienta: max FRAME_WINDOW_MAX za FRAME_WINDOW.
+/// Počítají se jen rámce, které něco stojí (obálka, push registrace, TURN);
+/// ACK a Pong ne — klient po vylití velké fronty posílá ACK + doručenku na
+/// každou obálku a 429 by ho odpojilo uprostřed, fronta by se po osmi
+/// kolech smazala (ztráta zpráv bez útočníka).
 const FRAME_WINDOW: Duration = Duration::from_secs(10);
 const FRAME_WINDOW_MAX: u32 = 200;
+/// Push endpoint (URL distributora / FCM token) a VoIP token mají rozumný
+/// strop; APNs token je 64 hex, FCM do ~200 znaků, UnifiedPush URL < 1 KiB.
+const MAX_PUSH_ENDPOINT_BYTES: usize = 2048;
+const MAX_VOIP_TOKEN_BYTES: usize = 256;
+/// TURN údaje platí hodiny — nové vydat nejdřív po tomhle čase, jinak se
+/// na jednom spojení dají farmit stovky přihlášení (kvóta coturnu je na jméno).
+const TURN_REISSUE_AFTER: Duration = Duration::from_secs(600);
+/// Pod tímhle počtem one-time prekeys relay po AUTH pošle PrekeysLow.
+pub const PREKEYS_LOW_THRESHOLD: i64 = 20;
 /// Jak často server posílá WS Ping autentizovanému klientovi.
 ///
 /// Mobilní NAT zahazuje nečinné TCP tiše — bez keepalive se ani jedna strana
@@ -73,7 +86,7 @@ pub async fn ws_handler(
 
     let over_cap = {
         let mut entry = state.ws_conns.entry(ip).or_insert(0);
-        if *entry >= MAX_CONNS_PER_IP {
+        if *entry >= state.max_conns_per_ip {
             true
         } else {
             *entry += 1;
@@ -157,14 +170,18 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
     // routing poznal živé spojení od zatuchlého.
     let mut online_device: Option<Arc<crate::state::OnlineDevice>> = None;
 
-    // Anti-abuse okno: počítá VŠECHNY rámce od klienta (envelope/ack/pong)
+    // Anti-abuse okno: počítá rámce, které něco stojí (viz FRAME_WINDOW_MAX)
     let mut window_start = Instant::now();
     let mut window_frames: u32 = 0;
+    let auth_deadline = Instant::now() + AUTH_DEADLINE;
+    let mut auth_attempts: u32 = 0;
+    // Naposledy vydané TURN údaje — do TURN_REISSUE_AFTER se vrací tytéž.
+    let mut turn_issued: Option<(Instant, v1::TurnCredentials)> = None;
 
     loop {
-        // Před AUTH platí deadline — viset neautentizovaný nejde
+        // Před AUTH platí absolutní deadline — viset neautentizovaný nejde
         let next = if authed_address.is_none() {
-            match tokio::time::timeout(AUTH_DEADLINE, stream.next()).await {
+            match tokio::time::timeout_at(auth_deadline, stream.next()).await {
                 Ok(next) => next,
                 Err(_) => {
                     tracing::debug!("ws zavřeno: AUTH deadline");
@@ -195,17 +212,6 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
             dev.touch(state.now_ms());
         }
 
-        let now = Instant::now();
-        if now.duration_since(window_start) > FRAME_WINDOW {
-            window_start = now;
-            window_frames = 0;
-        }
-        window_frames += 1;
-        if window_frames > FRAME_WINDOW_MAX {
-            let _ = tx.send(error_frame(429, "příliš mnoho rámců")).await;
-            break;
-        }
-
         let data = match msg {
             WsMessage::Binary(b) => b,
             WsMessage::Close(_) => break,
@@ -216,8 +222,30 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
             break;
         };
 
+        let cheap = matches!(
+            frame.frame,
+            Some(v1::client_frame::Frame::Ack(_)) | Some(v1::client_frame::Frame::Pong(_))
+        );
+        if !cheap {
+            let now = Instant::now();
+            if now.duration_since(window_start) > FRAME_WINDOW {
+                window_start = now;
+                window_frames = 0;
+            }
+            window_frames += 1;
+            if window_frames > FRAME_WINDOW_MAX {
+                let _ = tx.send(error_frame(429, "příliš mnoho rámců")).await;
+                break;
+            }
+        }
+
         match frame.frame {
             Some(v1::client_frame::Frame::Auth(auth)) if authed_address.is_none() => {
+                auth_attempts += 1;
+                if auth_attempts > MAX_AUTH_ATTEMPTS {
+                    let _ = tx.send(error_frame(429, "příliš mnoho AUTH pokusů")).await;
+                    break;
+                }
                 if auth.device_uuid.len() != 16 || auth.nonce_client.len() != 16 {
                     let _ = tx.send(error_frame(400, "neplatný AUTH")).await;
                     break;
@@ -303,14 +331,33 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                     Err(e) => tracing::warn!("flush fronty selhal: {e}"),
                 }
 
+                // Docházející one-time prekeys: klient si je doplní přes
+                // POST /v1/keys. Bez tohohle hintu zůstal účet po vyčerpání
+                // natrvalo bez OTP.
+                if let Ok(remaining) = state.one_time_prekey_count(&pd.device_uuid).await {
+                    if remaining < PREKEYS_LOW_THRESHOLD {
+                        let _ = tx
+                            .send(server_frame(v1::server_frame::Frame::PrekeysLow(
+                                v1::PrekeysLow {
+                                    remaining: remaining.max(0) as u32,
+                                },
+                            )))
+                            .await;
+                    }
+                }
+
                 authed_device = Some(pd.device_uuid);
             }
 
             Some(v1::client_frame::Frame::RegisterPush(reg)) if authed_address.is_some() => {
                 if let Some(device) = &authed_device {
-                    let platform = reg.platform as i16;
+                    let platform = i16::try_from(reg.platform).unwrap_or(-1);
                     if platform < 0 || platform > crate::push::PLATFORM_MAX {
                         let _ = tx.send(error_frame(400, "neznámá push platforma")).await;
+                    } else if reg.endpoint.len() > MAX_PUSH_ENDPOINT_BYTES
+                        || reg.voip_token.len() > MAX_VOIP_TOKEN_BYTES
+                    {
+                        let _ = tx.send(error_frame(400, "push endpoint je příliš dlouhý")).await;
                     } else {
                         let endpoint =
                             (!reg.endpoint.is_empty()).then_some(reg.endpoint.as_slice());
@@ -357,9 +404,21 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
 
             Some(v1::client_frame::Frame::TurnRequest(_)) if authed_address.is_some() => {
                 let frame = match &state.turn {
-                    Some(turn) => server_frame(v1::server_frame::Frame::TurnCredentials(
-                        turn.credentials(chrono::Utc::now().timestamp()),
-                    )),
+                    Some(turn) => {
+                        let fresh = turn_issued
+                            .as_ref()
+                            .filter(|(at, _)| at.elapsed() < TURN_REISSUE_AFTER)
+                            .map(|(_, c)| c.clone());
+                        let creds = match fresh {
+                            Some(c) => c,
+                            None => {
+                                let c = turn.credentials(chrono::Utc::now().timestamp());
+                                turn_issued = Some((Instant::now(), c.clone()));
+                                c
+                            }
+                        };
+                        server_frame(v1::server_frame::Frame::TurnCredentials(creds))
+                    }
                     None => error_frame(503, "TURN není nakonfigurován"),
                 };
                 let _ = tx.send(frame).await;
