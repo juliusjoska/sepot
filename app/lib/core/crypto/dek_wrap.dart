@@ -53,16 +53,20 @@ class DekWrap {
     int memoryKiB = defaultMemoryKiB,
     int iterations = defaultIterations,
     int parallelism = defaultParallelism,
+    Uint8List? salt,
   }) async {
     if (dek.length != 32) {
       throw ArgumentError.value(dek.length, 'dek', 'DEK must be 32 bytes');
     }
     _enforceFloor(memoryKiB, iterations);
 
-    final salt = _randomBytes(16);
+    // Volitelná sdílená sůl: nátlakový blob se stejnou solí a parametry
+    // jako skutečný odemyká jedinou derivací (viz unwrapFirstMatching) —
+    // bez ní by decoy PIN trval 2× déle a šel poznat stopkami.
+    final useSalt = salt ?? _randomBytes(16);
     final unlockKey = await _deriveUnlockKey(
       pin: pin,
-      salt: salt,
+      salt: useSalt,
       memoryKiB: memoryKiB,
       iterations: iterations,
       parallelism: parallelism,
@@ -80,11 +84,70 @@ class DekWrap {
       '$memoryKiB',
       '$iterations',
       '$parallelism',
-      base64Encode(salt),
+      base64Encode(useSalt),
       base64Encode(box.nonce),
       base64Encode(box.cipherText),
       base64Encode(box.mac.bytes),
     ].join(':');
+  }
+
+  /// Sůl použitá v zabaleném blobu (pro sdílení s nátlakovým blobem).
+  static Uint8List saltOf(String wrapped) {
+    final parts = wrapped.split(':');
+    if (parts.length != 8 || parts[0] != _version) {
+      throw FormatException('Unknown wrapped DEK format', wrapped);
+    }
+    return Uint8List.fromList(base64Decode(parts[4]));
+  }
+
+  /// Zkusí PIN proti několika blobům (skutečný + nátlakový) a vrátí index
+  /// prvního, který sedí, s rozbaleným DEK. Argon2id se počítá jen jednou
+  /// pro každou odlišnou kombinaci parametrů a soli, takže u blobů se
+  /// sdílenou solí stojí odemčení stejně, ať sedí kterýkoli — čas
+  /// odemčení neprozradí, který PIN byl zadán. Nic nesedí →
+  /// [WrongPinException].
+  static Future<(int, Uint8List)> unwrapFirstMatching({
+    required List<String> wrapped,
+    required String pin,
+  }) async {
+    final parsed = <List<String>>[];
+    for (final w in wrapped) {
+      final parts = w.split(':');
+      if (parts.length != 8 || parts[0] != _version) {
+        throw FormatException('Unknown wrapped DEK format', w);
+      }
+      _enforceFloor(int.parse(parts[1]), int.parse(parts[2]));
+      parsed.add(parts);
+    }
+    final keys = <String, Uint8List>{};
+    for (final parts in parsed) {
+      final group = parts.sublist(1, 5).join(':');
+      keys[group] ??= await _deriveUnlockKey(
+        pin: pin,
+        salt: base64Decode(parts[4]),
+        memoryKiB: int.parse(parts[1]),
+        iterations: int.parse(parts[2]),
+        parallelism: int.parse(parts[3]),
+      );
+    }
+    final aes = AesGcm.with256bits();
+    for (var i = 0; i < parsed.length; i++) {
+      final parts = parsed[i];
+      try {
+        final dek = await aes.decrypt(
+          SecretBox(
+            base64Decode(parts[6]),
+            nonce: base64Decode(parts[5]),
+            mac: Mac(base64Decode(parts[7])),
+          ),
+          secretKey: SecretKey(keys[parts.sublist(1, 5).join(':')]!),
+        );
+        return (i, Uint8List.fromList(dek));
+      } on SecretBoxAuthenticationError {
+        continue;
+      }
+    }
+    throw const WrongPinException();
   }
 
   /// Rozbal DEK. Na špatném PINu (nebo poškozeném blobu) vyhodí

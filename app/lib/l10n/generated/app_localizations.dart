@@ -1994,6 +1994,12 @@ abstract class AppLocalizations {
   /// **'Chyba odemčení'**
   String get pinUnlockError;
 
+  /// Hláška na odemykací obrazovce po sérii špatných PINů; {seconds} = počet sekund do dalšího pokusu
+  ///
+  /// In cs, this message translates to:
+  /// **'Příliš mnoho pokusů. Zkus to za {seconds} s.'**
+  String pinLockedFor(int seconds);
+
   /// Titulek SimpleDialog výběru režimu pushů. Stejný text jako title ListTile v nastavení (ř. 184) → stejný klíč. | Title ListTile v nastavení — stejný text a klíč jako titulek dialogu (ř. 44)
   ///
   /// In cs, this message translates to:

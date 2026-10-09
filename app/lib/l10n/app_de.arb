@@ -315,6 +315,7 @@
   "pinUnlockWithBiometrics": "Mit Biometrie entsperren",
   "pinWrong2": "Falsche PIN",
   "pinUnlockError": "Fehler beim Entsperren",
+  "pinLockedFor": "Zu viele Versuche. Versuche es in {seconds} s erneut.",
   "pushTitle": "Push-Benachrichtigungen",
   "pushModeOffDesc": "Nachrichten werden erst beim Öffnen der App abgerufen.",
   "pushModeUp": "UnifiedPush (ohne Google)",

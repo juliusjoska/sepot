@@ -1481,6 +1481,15 @@
   "@pinUnlockError": {
     "description": "Červená chybová hláška na odemykací obrazovce při jiné chybě odemčení než špatný PIN"
   },
+  "pinLockedFor": "Příliš mnoho pokusů. Zkus to za {seconds} s.",
+  "@pinLockedFor": {
+    "description": "Hláška na odemykací obrazovce po sérii špatných PINů; {seconds} = počet sekund do dalšího pokusu",
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
   "pushTitle": "Push notifikace",
   "@pushTitle": {
     "description": "Titulek SimpleDialog výběru režimu pushů. Stejný text jako title ListTile v nastavení (ř. 184) → stejný klíč. | Title ListTile v nastavení — stejný text a klíč jako titulek dialogu (ř. 44)"

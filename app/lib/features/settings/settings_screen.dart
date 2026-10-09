@@ -38,6 +38,9 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final identityAsync = ref.watch(identityProvider);
     final l10n = context.l10n;
+    // Nátlaková relace: nic, co by prozradilo nebo poškodilo skutečný účet
+    // (fráze, biometrie, PIN, záloha, smazání) — appka vypadá jako čistá.
+    final decoy = ref.watch(storageProvider).isDecoyMode;
 
     return Scaffold(
       appBar: AppBar(
@@ -63,13 +66,15 @@ class SettingsScreen extends ConsumerWidget {
             const SizedBox(height: 8),
             // Sekce Zabezpečení
             _buildSectionHeader(l10n.settingsSectionSecurity),
-            _buildTile(
-              icon: Icons.pin_outlined,
-              title: l10n.settingsChangePinTitle,
-              subtitle: l10n.settingsChangePinSubtitle,
-              onTap: () => context.push('/change-pin'),
-            ),
-            const BiometricsTile(),
+            if (!decoy) ...[
+              _buildTile(
+                icon: Icons.pin_outlined,
+                title: l10n.settingsChangePinTitle,
+                subtitle: l10n.settingsChangePinSubtitle,
+                onTap: () => context.push('/change-pin'),
+              ),
+              const BiometricsTile(),
+            ],
             _buildTile(
               icon: Icons.timer_outlined,
               title: l10n.settingsAutoLockTitle,
@@ -80,24 +85,25 @@ class SettingsScreen extends ConsumerWidget {
               ),
               onTap: () => _nastavAutoLock(context, ref),
             ),
-            _buildTile(
-              icon: Icons.password_outlined,
-              title: l10n.settingsDecoyPinTitle,
-              subtitle: ref.watch(hasDecoyPinProvider).valueOrNull == true
-                  ? l10n.settingsDecoyPinSetSubtitle
-                  : l10n.settingsDecoyPinUnsetSubtitle,
-              trailing: ref.watch(hasDecoyPinProvider).valueOrNull == true
-                  ? TextButton(
-                      onPressed: () => _disableDecoyPin(context, ref),
-                      child: Text(l10n.commonCancel),
-                    )
-                  : null,
-              onTap: () {
-                if (ref.read(hasDecoyPinProvider).valueOrNull != true) {
-                  _setDecoyPin(context, ref);
-                }
-              },
-            ),
+            if (!decoy)
+              _buildTile(
+                icon: Icons.password_outlined,
+                title: l10n.settingsDecoyPinTitle,
+                subtitle: ref.watch(hasDecoyPinProvider).valueOrNull == true
+                    ? l10n.settingsDecoyPinSetSubtitle
+                    : l10n.settingsDecoyPinUnsetSubtitle,
+                trailing: ref.watch(hasDecoyPinProvider).valueOrNull == true
+                    ? TextButton(
+                        onPressed: () => _disableDecoyPin(context, ref),
+                        child: Text(l10n.commonCancel),
+                      )
+                    : null,
+                onTap: () {
+                  if (ref.read(hasDecoyPinProvider).valueOrNull != true) {
+                    _setDecoyPin(context, ref);
+                  }
+                },
+              ),
             const SizedBox(height: 8),
             // Sekce Notifikace
             _buildSectionHeader(l10n.settingsSectionNotifications),
@@ -153,25 +159,27 @@ class SettingsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 8),
             // Sekce Záloha
-            _buildSectionHeader(l10n.settingsSectionBackup),
-            _buildTile(
-              icon: Icons.key_outlined,
-              title: l10n.settingsSeedPhraseTitle,
-              subtitle: l10n.settingsSeedPhraseSubtitle,
-              onTap: () => _showSeedPhrase(context, ref),
-            ),
-            _buildTile(
-              icon: Icons.backup_outlined,
-              title: l10n.settingsBackupExportTitle,
-              subtitle: l10n.settingsBackupExportSubtitle,
-              onTap: () => _exportBackup(context, ref),
-            ),
-            _buildTile(
-              icon: Icons.restore_outlined,
-              title: l10n.settingsBackupImportTitle,
-              subtitle: l10n.settingsBackupImportSubtitle,
-              onTap: () => _importBackup(context, ref),
-            ),
+            if (!decoy) ...[
+              _buildSectionHeader(l10n.settingsSectionBackup),
+              _buildTile(
+                icon: Icons.key_outlined,
+                title: l10n.settingsSeedPhraseTitle,
+                subtitle: l10n.settingsSeedPhraseSubtitle,
+                onTap: () => _showSeedPhrase(context, ref),
+              ),
+              _buildTile(
+                icon: Icons.backup_outlined,
+                title: l10n.settingsBackupExportTitle,
+                subtitle: l10n.settingsBackupExportSubtitle,
+                onTap: () => _exportBackup(context, ref),
+              ),
+              _buildTile(
+                icon: Icons.restore_outlined,
+                title: l10n.settingsBackupImportTitle,
+                subtitle: l10n.settingsBackupImportSubtitle,
+                onTap: () => _importBackup(context, ref),
+              ),
+            ],
             // „Web klient" byl slib funkce, která neexistuje (multi-device je
             // vlna 3). Apple Guideline 2.1 takové dlaždice bere jako nedodělek.
             const SizedBox(height: 8),
@@ -230,17 +238,18 @@ class SettingsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 24),
             // Smazat účet
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: OutlinedButton(
-                onPressed: () => _confirmDeleteAccount(context, ref),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: SepotColors.error,
-                  side: const BorderSide(color: SepotColors.error),
+            if (!decoy)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: OutlinedButton(
+                  onPressed: () => _confirmDeleteAccount(context, ref),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: SepotColors.error,
+                    side: const BorderSide(color: SepotColors.error),
+                  ),
+                  child: Text(l10n.settingsDeleteAllDataButton),
                 ),
-                child: Text(l10n.settingsDeleteAllDataButton),
               ),
-            ),
             const SizedBox(height: 48),
           ],
         ),
@@ -514,10 +523,17 @@ class SettingsScreen extends ConsumerWidget {
       final dir = await getTemporaryDirectory();
       final path = '${dir.path}/sepot-zaloha.sepotbackup';
       await File(path).writeAsBytes(bytes);
-      await Share.shareXFiles(
-        [XFile(path, mimeType: 'application/octet-stream')],
-        subject: l10n.backupShareSubject,
-      );
+      try {
+        await Share.shareXFiles(
+          [XFile(path, mimeType: 'application/octet-stream')],
+          subject: l10n.backupShareSubject,
+        );
+      } finally {
+        // Šifrovaná, ale v cache nemá co pohledávat po skončení sdílení.
+        try {
+          await File(path).delete();
+        } catch (_) {}
+      }
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

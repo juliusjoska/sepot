@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:screen_protector/screen_protector.dart';
 import 'package:sepot/core/backup/backup_service.dart';
@@ -57,14 +58,21 @@ final typingIndicatorsProvider =
         TypingIndicatorsNotifier.new);
 
 /// Zabezpečení obrazovky: blok screenshotů (Android FLAG_SECURE) + skrytí
-/// obsahu v přepínači appek (iOS). Default VYPNUTO — blokuje i vlastní
-/// screenshoty, tak ať se uživatel rozhodne sám.
+/// obsahu v přepínači appek (iOS). Výchozí ZAPNUTO jako u Signalu — stejné
+/// jako nativní default v MainActivity, takže přepínač už neukazuje
+/// „vypnuto" u obrazovky, která chráněná je.
 class ScreenSecurityNotifier extends AsyncNotifier<bool> {
   static const key = 'screen_security_enabled';
+  // Debug build bez ochrany: QA na emulátoru potřebuje screenshoty.
+  static const vychozi = !kDebugMode;
 
   @override
   Future<bool> build() async {
-    final v = (await ref.read(storageProvider).getSetting<bool>(key)) ?? false;
+    final storage = ref.read(storageProvider);
+    // Před odemčením se nastavení přečíst nedá; nic neaplikovat (nativní
+    // default platí) a po unlocku se provider invaliduje.
+    if (!storage.isUnlocked) return vychozi;
+    final v = (await storage.getSetting<bool>(key)) ?? vychozi;
     await _apply(v);
     return v;
   }

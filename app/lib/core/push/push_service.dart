@@ -52,7 +52,15 @@ class PushService {
   /// Může budíček rovnou probudit WS? (Jinak jde generická notifikace.)
   bool get canWake => _messaging.isStarted;
 
-  void wake() => _messaging.onPushWake();
+  /// Budíček: běžící messaging připojí WS; po auto-locku (zamčená DB) aspoň
+  /// generická notifikace bez obsahu, ať se uživatel o zprávě dozví.
+  void wake() {
+    if (canWake) {
+      _messaging.onPushWake();
+    } else {
+      unawaited(PushNotifier.showWakeNotification());
+    }
+  }
 
   void handleNewEndpoint(String url) {
     _messaging.registerPush(_registration(

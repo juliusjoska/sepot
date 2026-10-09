@@ -315,6 +315,7 @@
   "pinUnlockWithBiometrics": "Sblocca con biometria",
   "pinWrong2": "PIN errato",
   "pinUnlockError": "Errore di sblocco",
+  "pinLockedFor": "Troppi tentativi. Riprova tra {seconds} s.",
   "pushTitle": "Notifiche push",
   "pushModeOffDesc": "I messaggi verranno scaricati solo all'apertura dell'app.",
   "pushModeUp": "UnifiedPush (senza Google)",

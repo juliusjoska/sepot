@@ -315,6 +315,7 @@
   "pinUnlockWithBiometrics": "Разблокировать биометрией",
   "pinWrong2": "Неверный PIN",
   "pinUnlockError": "Ошибка разблокировки",
+  "pinLockedFor": "Слишком много попыток. Повторите через {seconds} с.",
   "pushTitle": "Push-уведомления",
   "pushModeOffDesc": "Сообщения загрузятся только после открытия приложения.",
   "pushModeUp": "UnifiedPush (без Google)",

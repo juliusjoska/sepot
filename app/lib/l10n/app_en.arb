@@ -315,6 +315,7 @@
   "pinUnlockWithBiometrics": "Unlock with biometrics",
   "pinWrong2": "Wrong PIN",
   "pinUnlockError": "Unlock error",
+  "pinLockedFor": "Too many attempts. Try again in {seconds} s.",
   "pushTitle": "Push notifications",
   "pushModeOffDesc": "Messages arrive only after you open the app.",
   "pushModeUp": "UnifiedPush (no Google)",

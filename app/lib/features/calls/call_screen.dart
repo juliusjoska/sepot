@@ -89,9 +89,13 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                       RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                 ),
               ),
-            SafeArea(
-              child: Column(
-                children: [
+            // Positioned.fill: bez něj si Stack dá sloupci volné rozměry a ve
+            // fázi „ukončeno" (žádný ovládací řádek přes celou šířku) se sloupec
+            // smrskne na šířku jména a zarovná vlevo nahoru — avatar uskočí.
+            Positioned.fill(
+              child: SafeArea(
+                child: Column(
+                  children: [
                   const SizedBox(height: 48),
                   if (!showVideo) ...[
                     SepotAvatar(
@@ -136,6 +140,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                     _InCallControls(call: call, controller: controller),
                   const SizedBox(height: 32),
                 ],
+                ),
               ),
             ),
             if (showVideo && !call.cameraOff)

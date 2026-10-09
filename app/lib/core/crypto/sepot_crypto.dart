@@ -81,6 +81,32 @@ class SepotSealedMessage {
 }
 
 /// Jeden one-time prekey k publikaci na relay.
+/// Nový signed prekey k nahrání na relay (rotace).
+class SepotSignedPreKey {
+  SepotSignedPreKey({
+    required this.id,
+    required this.publicKey,
+    required this.signature,
+  });
+
+  final int id;
+  final Uint8List publicKey;
+  final Uint8List signature;
+}
+
+/// Nový last-resort Kyber prekey k nahrání na relay.
+class SepotKyberPreKey {
+  SepotKyberPreKey({
+    required this.id,
+    required this.publicKey,
+    required this.signature,
+  });
+
+  final int id;
+  final Uint8List publicKey;
+  final Uint8List signature;
+}
+
 class SepotOneTimePreKey {
   SepotOneTimePreKey({required this.id, required this.publicKey});
 
@@ -419,5 +445,65 @@ class SepotCrypto {
       );
     }
     return result;
+  }
+
+  /// Nový signed prekey (rotace). Starý zůstává ve store — relace založené
+  /// z bundle těsně před rotací ho ještě potřebují.
+  Future<SepotSignedPreKey> generateSignedPreKey({
+    required int id,
+    required int timestampMs,
+  }) async {
+    final identityPrivate = PrivateKey.deserialize(
+      bytes: _identity.privateKey.toList(),
+    );
+    final private = PrivateKey.generate();
+    final public = private.getPublicKey();
+    final signature = identityPrivate.sign(
+      message: public.serialize().toList(),
+    );
+    await _stores.signedPreKey.storeSignedPreKey(
+      id,
+      SignedPreKeyRecord(
+        id: id,
+        publicKey: public,
+        privateKey: private,
+        signature: signature.toList(),
+        timestamp: BigInt.from(timestampMs),
+      ),
+    );
+    return SepotSignedPreKey(
+      id: id,
+      publicKey: Uint8List.fromList(public.serialize().toList()),
+      signature: Uint8List.fromList(signature.toList()),
+    );
+  }
+
+  /// Nový last-resort Kyber prekey (rotace PQXDH kotvy).
+  Future<SepotKyberPreKey> generateKyberPreKey({
+    required int id,
+    required int timestampMs,
+  }) async {
+    final identityPrivate = PrivateKey.deserialize(
+      bytes: _identity.privateKey.toList(),
+    );
+    final keyPair = KyberKeyPair.generate();
+    final public = keyPair.getPublicKey();
+    final signature = identityPrivate.sign(
+      message: public.serialize().toList(),
+    );
+    await _stores.kyberPreKey.storeKyberPreKey(
+      id,
+      KyberPreKeyRecord.create(
+        id: id,
+        keyPair: keyPair,
+        signature: signature.toList(),
+        timestamp: BigInt.from(timestampMs),
+      ),
+    );
+    return SepotKyberPreKey(
+      id: id,
+      publicKey: Uint8List.fromList(public.serialize().toList()),
+      signature: Uint8List.fromList(signature.toList()),
+    );
   }
 }

@@ -1119,6 +1119,11 @@ class AppLocalizationsRu extends AppLocalizations {
   String get pinUnlockError => 'Ошибка разблокировки';
 
   @override
+  String pinLockedFor(int seconds) {
+    return 'Слишком много попыток. Повторите через $seconds с.';
+  }
+
+  @override
   String get pushTitle => 'Push-уведомления';
 
   @override

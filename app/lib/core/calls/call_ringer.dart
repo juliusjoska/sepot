@@ -22,6 +22,13 @@ class CallRinger {
   /// Jak dlouho zvoní — stejné jako expirace budíčku na relayi.
   static const ringMillis = 45000;
 
+  /// Zvonění z budíčku, ke kterému do té doby nedorazila nabídka, se
+  /// ukončí samo. Relay budíček hovoru nijak neověřuje (sealed sender),
+  /// takže kdokoli se znalostí adresy by jinak nechal telefon zvonit
+  /// 45 s na každou obálku s hintem CALL. Nabídka od
+  /// skutečného volajícího dorazí do pár sekund po připojení.
+  static const pushRingGrace = Duration(seconds: 12);
+
   static StreamSubscription<CallEvent?>? _sub;
 
   /// Id zvonění, která uživatel odmítl dřív, než dorazila nabídka.
@@ -65,12 +72,41 @@ class CallRinger {
           _params(id: callId, name: name, video: video));
 
   /// Zvonění z budíčku relaye — jméno ani typ hovoru ještě neznáme.
-  static Future<void> ringFromPush() => FlutterCallkitIncoming
-      .showCallkitIncoming(_params(
-          id: const Uuid().v4(),
-          name: _appName,
-          video: false,
-          extra: {pushMarker: true}));
+  /// Vrací až po [pushRingGrace]: pokud se zvonění do té doby nespárovalo
+  /// s nabídkou (přijetí nebo ukončení ho z aktivních hovorů odebere, nebo
+  /// ho [CallController] převezme), tiše se ukončí. Background isolate FCM
+  /// handleru tím zůstane naživu přesně tak dlouho, jak je potřeba.
+  static Future<void> ringFromPush() async {
+    final id = const Uuid().v4();
+    await FlutterCallkitIncoming.showCallkitIncoming(_params(
+        id: id, name: _appName, video: false, extra: {pushMarker: true}));
+    await Future<void>.delayed(pushRingGrace);
+    await endIfUnmatched(id);
+  }
+
+  /// iOS: zvonění z VoIP pushe zakládá nativní AppDelegate (CallKit musí
+  /// zazvonit hned), takže grace z [ringFromPush] tam neběží. Po startu
+  /// Dartu se proto každé nepřevzaté zvonění z budíčku ohlídá odsud.
+  static Future<void> expireStalePushRings() async {
+    final calls = await FlutterCallkitIncoming.activeCalls();
+    for (final call in calls) {
+      if (call.extra?[pushMarker] == true && !call.isAccepted) {
+        final id = call.id;
+        unawaited(Future<void>.delayed(pushRingGrace, () => endIfUnmatched(id)));
+      }
+    }
+  }
+
+  /// Ukončí zvonění z budíčku, které nikdo nepřevzal (bez záznamu
+  /// o zmeškaném hovoru — nebylo od koho).
+  static Future<void> endIfUnmatched(String id) async {
+    final calls = await FlutterCallkitIncoming.activeCalls();
+    for (final call in calls) {
+      if (call.id == id && call.extra?[pushMarker] == true && !call.isAccepted) {
+        await FlutterCallkitIncoming.endCall(id);
+      }
+    }
+  }
 
   /// Zvonění z budíčku, které čeká na nabídku (nejnovější), a jestli ho
   /// uživatel už přijal — typicky na zamčené obrazovce, než appka naběhla.
@@ -82,6 +118,14 @@ class CallRinger {
       }
     }
     return null;
+  }
+
+  static Future<bool> isAccepted(String id) async {
+    final calls = await FlutterCallkitIncoming.activeCalls();
+    for (final call in calls) {
+      if (call.id == id) return call.isAccepted;
+    }
+    return false;
   }
 
   static Future<void> connected(String id) =>

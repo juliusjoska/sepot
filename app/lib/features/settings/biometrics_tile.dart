@@ -55,7 +55,8 @@ class _BiometricsTileState extends ConsumerState<BiometricsTile> {
         }
         final ok = await auth.authenticate(
           localizedReason: l10n.biometricsEnrollPromptReason,
-          options: const AuthenticationOptions(stickyAuth: true),
+          options: const AuthenticationOptions(
+              stickyAuth: true, biometricOnly: true),
         );
         if (!ok) return;
         await storage.enableBiometrics();

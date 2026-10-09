@@ -236,9 +236,15 @@ class CallController extends Notifier<CallState> {
       _ringId = pushRing.id;
       if (pushRing.accepted) {
         await accept();
-      } else if (CallRinger.declinedEarly.remove(pushRing.id)) {
-        await reject();
+        return;
       }
+      if (CallRinger.declinedEarly.remove(pushRing.id)) {
+        await reject();
+        return;
+      }
+      // Spárováno s nabídkou: aby grace z `ringFromPush` zvonění neukončila,
+      // nahradí se jménem volajícího (bez značky push).
+      await _claimPushRing(pushRing.id, name, video);
       return;
     }
     final foreground =
@@ -247,6 +253,15 @@ class CallController extends Notifier<CallState> {
       _ringId = cid;
       await CallRinger.ringFor(callId: cid, name: name, video: video);
     }
+  }
+
+  /// Převezme zvonění z budíčku: jméno volajícího místo „Šepot" a bez
+  /// značky push (grace v [CallRinger.ringFromPush] ho pak nechá být).
+  Future<void> _claimPushRing(String pushId, String name, bool video) async {
+    if (await CallRinger.isAccepted(pushId)) return; // uživatel už zvedl
+    await CallRinger.end(pushId);
+    _ringId = state.callId;
+    await CallRinger.ringFor(callId: state.callId!, name: name, video: video);
   }
 
   void _onRingAccept(String id) {
@@ -389,11 +404,19 @@ class CallController extends Notifier<CallState> {
     return pc;
   }
 
+  /// STUN bez údajů: coturn na témž hostiteli odpovídá na STUN bez
+  /// přihlášení, takže i když relay TURN údaje nevydá (503, timeout),
+  /// jde aspoň přímé spojení přes NAT. Dřív byl seznam prázdný = jen host
+  /// kandidáti = hovor jen v jedné LAN.
+  static const _stunFallback = {
+    'urls': ['stun:turn.sepot.cz:3478'],
+  };
+
   /// STUN i TURN běží na stejném serveru; bez údajů z relaye aspoň STUN
   /// (přímé spojení, když obě strany nejsou za symetrickým NATem).
   Future<List<Map<String, dynamic>>> _iceServers() async {
     final turn = await ref.read(messagingServiceProvider).turnCredentials();
-    if (turn == null || turn.urls.isEmpty) return const [];
+    if (turn == null || turn.urls.isEmpty) return const [_stunFallback];
     return [
       {
         'urls': turn.urls,

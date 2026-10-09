@@ -107,6 +107,56 @@ class MessagingService {
   StreamSubscription<RelayConnectionState>? _stateSub;
   Timer? _registerRetryTimer;
   Timer? _purgeTimer;
+  StreamSubscription<int>? _prekeysLowSub;
+
+  /// Typy E2E obsahu, které tahle verze umí zpracovat. Cokoli jiného se
+  /// ACKne a zahodí (po upgradu už nejde dešifrovat znovu). Veřejná
+  /// konstanta kvůli testu: v 1.2.0 tu chyběl `call` a každá nabídka
+  /// hovoru se tiše zahodila — hovory vůbec nešly přijmout.
+  static const knownContentTypes = {
+    'txt', 'att', 'rx', 'edit', 'del', 'dlv', 'rr', 'typ', 'vote', 'call',
+    ..._groupControlTypes,
+  };
+
+  /// Prodleva dalšího pokusu o registraci; roste do [_registerRetryMax].
+  Duration _registerRetryDelay = const Duration(seconds: 30);
+  static const _registerRetryMax = Duration(minutes: 10);
+
+  /// Relay odmítl registraci jako konflikt identity (409) — typicky starší
+  /// relay bez převzetí identity po obnově ze 24 slov. UI může vysvětlit.
+  bool _registrationConflict = false;
+  bool get registrationConflict => _registrationConflict;
+
+  /// Rozpracované dodávky: `stop()` (auto-lock) na ně počká, jinak by DB
+  /// zmizela mezi dešifrováním (ratchet už postoupil) a zápisem a zpráva
+  /// by byla nenávratně pryč.
+  int _inFlight = 0;
+  Completer<void>? _drained;
+
+  /// Operace nad ratchet stavem jdou postupně. libsignal načte relaci,
+  /// šifruje a uloží ji zpět s `await` na Dart store uprostřed — dva
+  /// souběžné běhy nad touž relací by odvodily stejný message key a druhá
+  /// obálka by u příjemce propadla. Doručenky, „píše…“ i outbox běží
+  /// `unawaited` vedle uživatelského odeslání, takže zámek je nutný.
+  Future<void> _chain = Future.value();
+
+  Future<T> _serial<T>(Future<T> Function() op) {
+    final next = _chain.then((_) => op());
+    _chain = next.then((_) {}, onError: (_) {});
+    return next;
+  }
+
+  /// Nejvyšší počet znaků jména kontaktu/profilu z drátu nebo odkazu.
+  static const maxDisplayNameLength = 64;
+
+  static String clipName(String name) => name.length > maxDisplayNameLength
+      ? name.substring(0, maxDisplayNameLength)
+      : name;
+
+  /// Kolik one-time prekeys doplnit, když relay hlásí nedostatek.
+  static const _otpBatch = 50;
+  static const _spkRotation = Duration(days: 7);
+  static const _kyberRotation = Duration(days: 30);
 
   /// Běží právě dodatečné odeslání zaseklých zpráv? Reconnectů může přijít
   /// několik rychle za sebou a dva souběžné průchody by tutéž zprávu poslaly
@@ -266,11 +316,13 @@ class MessagingService {
     final relay = _buildRelay();
     _relay = relay;
     _deliverSub = relay.deliveries.listen(_onDeliver);
+    _prekeysLowSub = relay.prekeysLow.listen(_replenishPreKeys);
     // Po každém (re)connectu dorazit, co zůstalo viset ve frontě odchozích.
     _stateSub = relay.stateStream.listen((state) {
       if (state == RelayConnectionState.connected) {
         unawaited(_flushOutbox());
         unawaited(_refreshMyAvatarIfOld());
+        unawaited(_rotatePreKeysIfDue());
       }
     });
 
@@ -337,11 +389,13 @@ class MessagingService {
     final relay = _buildRelay();
     _relay = relay;
     _deliverSub = relay.deliveries.listen(_onDeliver);
+    _prekeysLowSub = relay.prekeysLow.listen(_replenishPreKeys);
     // Po každém (re)connectu dorazit, co zůstalo viset ve frontě odchozích.
     _stateSub = relay.stateStream.listen((state) {
       if (state == RelayConnectionState.connected) {
         unawaited(_flushOutbox());
         unawaited(_refreshMyAvatarIfOld());
+        unawaited(_rotatePreKeysIfDue());
       }
     });
 
@@ -376,14 +430,107 @@ class MessagingService {
   Future<void> _registerWithRetry() async {
     try {
       await _register();
+    } on RelayException catch (e) {
+      // 409 = identita na relayi existuje a relay neumí převzetí (starší
+      // verze). Opakovat má smysl (relay se aktualizuje), ale ne každých
+      // 30 s navždy — a UI má vědět proč.
+      _registrationConflict = e.statusCode == 409;
+      _scheduleRegisterRetry();
+      return;
     } catch (_) {
-      _registerRetryTimer?.cancel();
-      _registerRetryTimer =
-          Timer(const Duration(seconds: 30), _registerWithRetry);
+      _scheduleRegisterRetry();
       return;
     }
+    _registrationConflict = false;
+    _registerRetryDelay = const Duration(seconds: 30);
     _relay!.start();
     await _refreshSenderCert();
+  }
+
+  void _scheduleRegisterRetry() {
+    _registerRetryTimer?.cancel();
+    _registerRetryTimer = Timer(_registerRetryDelay, _registerWithRetry);
+    final doubled = _registerRetryDelay * 2;
+    _registerRetryDelay =
+        doubled > _registerRetryMax ? _registerRetryMax : doubled;
+    onUpdate?.call();
+  }
+
+  int? _kvInt(CryptoDb db, String key) {
+    final raw = db.kvGet(key);
+    return raw == null ? null : int.tryParse(utf8.decode(raw));
+  }
+
+  /// Relay po AUTH hlásí docházející one-time prekeys → vygenerovat dávku
+  /// a nahrát. Bez toho byl účet po vyčerpání zásoby natrvalo bez OTP
+  /// a každá nová relace k němu běžela bez jednorázového klíče.
+  Future<void> _replenishPreKeys(int remaining) async {
+    final db = _db;
+    final crypto = _crypto;
+    final relay = _relay;
+    if (db == null || crypto == null || relay == null || accountId == null) {
+      return;
+    }
+    try {
+      // Registrace nahrála id 1–100; další dávky navazují.
+      final next = _kvInt(db, 'otp_next_id') ?? 101;
+      final otps = await _serial(
+          () => crypto.generateOneTimePreKeys(startId: next, count: _otpBatch));
+      await relay.uploadKeys(oneTimePreKeys: otps);
+      db.kvPut('otp_next_id', utf8.encode('${next + _otpBatch}'));
+    } catch (_) {
+      // Síť / starší relay bez /v1/keys — relay to zopakuje po dalším AUTH.
+    }
+  }
+
+  /// Rotace signed prekey (týdně) a last-resort Kyber prekey (měsíčně),
+  /// Staré klíče zůstávají ve store — relace z bundle
+  /// staženého těsně před rotací je ještě potřebují.
+  Future<void> _rotatePreKeysIfDue() async {
+    final db = _db;
+    final crypto = _crypto;
+    final relay = _relay;
+    if (db == null || crypto == null || relay == null || accountId == null) {
+      return;
+    }
+    final now = DateTime.now();
+    bool due(String key, Duration period) {
+      final at = _kvInt(db, key);
+      return at == null ||
+          now.difference(DateTime.fromMillisecondsSinceEpoch(at)) > period;
+    }
+
+    final spkDue = due('spk_rotated_at', _spkRotation);
+    final kyberDue = due('kyber_rotated_at', _kyberRotation);
+    if (!spkDue && !kyberDue) return;
+    try {
+      SepotSignedPreKey? spk;
+      SepotKyberPreKey? kyber;
+      if (spkDue) {
+        final id = _kvInt(db, 'spk_next_id') ?? 2;
+        spk = await _serial(() => crypto.generateSignedPreKey(
+            id: id, timestampMs: now.millisecondsSinceEpoch));
+      }
+      if (kyberDue) {
+        final id = _kvInt(db, 'kyber_next_id') ?? 2;
+        kyber = await _serial(() => crypto.generateKyberPreKey(
+            id: id, timestampMs: now.millisecondsSinceEpoch));
+      }
+      await relay.uploadKeys(signedPreKey: spk, kyberPreKey: kyber);
+      final stamp = utf8.encode('${now.millisecondsSinceEpoch}');
+      db.transaction(() {
+        if (spk != null) {
+          db.kvPut('spk_next_id', utf8.encode('${spk.id + 1}'));
+          db.kvPut('spk_rotated_at', stamp);
+        }
+        if (kyber != null) {
+          db.kvPut('kyber_next_id', utf8.encode('${kyber.id + 1}'));
+          db.kvPut('kyber_rotated_at', stamp);
+        }
+      });
+    } catch (_) {
+      // Starší relay bez /v1/keys nebo offline — zkusí se po dalším connectu.
+    }
   }
 
   Future<void> _register() async {
@@ -410,10 +557,17 @@ class MessagingService {
       deliveryAddress: deliveryAddress,
     );
 
+    final stamp = utf8.encode('$nowMs');
     db.transaction(() {
       db.kvPut('account_id', utf8.encode(reg.accountId));
       db.kvPut('device_uuid', utf8.encode(reg.deviceUuid));
       db.kvPut('delivery_address', deliveryAddress);
+      // Id pro doplňování a rotace klíčů navazují na registraci.
+      db.kvPut('otp_next_id', utf8.encode('101'));
+      db.kvPut('spk_next_id', utf8.encode('2'));
+      db.kvPut('kyber_next_id', utf8.encode('2'));
+      db.kvPut('spk_rotated_at', stamp);
+      db.kvPut('kyber_rotated_at', stamp);
     });
     onUpdate?.call();
   }
@@ -2009,6 +2163,10 @@ class MessagingService {
         'txt': caption ?? '',
       're': ?message.replyToId,
       'ttl': ?message.disappearAfterSeconds,
+      // Anketa a zmínky patří k téže zprávě i při dodatečném odeslání —
+      // bez nich by po reconnectu dorazil jen holý záložní text.
+      'poll': ?message.poll?.toWire(),
+      if (message.mentions.isNotEmpty) 'mn': message.mentions,
       'p': _profile(),
     };
   }
@@ -2053,22 +2211,27 @@ class MessagingService {
     }
     final peerAddr = ProtocolAddress(name: peerAid, deviceId: 1);
 
-    // První zpráva: X3DH z bundle. Identity klíč v bundle MUSÍ sedět
-    // s klíčem z kontaktu (jinak by relay mohl podstrčit vlastní).
-    if (!await crypto.hasSession(peerAddr)) {
-      if (ephemeral) return null;
-      final bundle = await relay.fetchBundle(peerDa);
-      if (!_listEquals(bundle.identityKey, peer.identityKey)) {
-        throw const IdentityKeyMismatchError();
+    // Krypto část jde přes [_serial] (viz komentář u pole): relace se
+    // načte, zašifruje a uloží bez souběhu. Odeslání po síti už zámek
+    // nedrží — čekání na receipt by blokovalo všechny ostatní.
+    final sealed = await _serial<Uint8List?>(() async {
+      // První zpráva: X3DH z bundle. Identity klíč v bundle MUSÍ sedět
+      // s klíčem z kontaktu (jinak by relay mohl podstrčit vlastní).
+      if (!await crypto.hasSession(peerAddr)) {
+        if (ephemeral) return null;
+        final bundle = await relay.fetchBundle(peerDa);
+        if (!_listEquals(bundle.identityKey, peer.identityKey)) {
+          throw const IdentityKeyMismatchError();
+        }
+        await crypto.processRemoteBundle(peerAddr, bundle);
       }
-      await crypto.processRemoteBundle(peerAddr, bundle);
-    }
-
-    final sealed = await crypto.sealedEncrypt(
-      recipient: peerAddr,
-      plaintext: utf8.encode(jsonEncode(content)),
-      senderCertificate: await _senderCertificate(),
-    );
+      return crypto.sealedEncrypt(
+        recipient: peerAddr,
+        plaintext: utf8.encode(jsonEncode(content)),
+        senderCertificate: await _senderCertificate(),
+      );
+    });
+    if (sealed == null) return null;
 
     final receipt = await relay.sendEnvelope(
       dstAddress: peerDa,
@@ -2084,10 +2247,25 @@ class MessagingService {
 
   // ── Příjem ──────────────────────────────────────────────────────────
 
-  Future<void> _onDeliver(pb.Envelope envelope) async {
+  /// Dodávky se zpracovávají postupně (viz [_serial]) a evidují jako
+  /// rozpracované, aby na ně [stop] počkal.
+  void _onDeliver(pb.Envelope envelope) {
+    _inFlight++;
+    unawaited(_serial(() => _handleDelivery(envelope))
+        .then((_) {}, onError: (_) {})
+        .whenComplete(() {
+      _inFlight--;
+      if (_inFlight == 0) _drained?.complete();
+    }));
+  }
+
+  Future<void> _handleDelivery(pb.Envelope envelope) async {
     final crypto = _crypto;
     final trustRoot = _trustRoot;
-    if (crypto == null || trustRoot == null) return;
+    // Zamčené úložiště (auto-lock stihl zamknout dřív, než jsme se dostali
+    // na řadu): nedešifrovat — ratchet by postoupil a zápis by selhal.
+    // Relay obálku doručí znovu po odemčení.
+    if (crypto == null || trustRoot == null || !storage.isUnlocked) return;
 
     final SepotSealedMessage opened;
     try {
@@ -2110,10 +2288,7 @@ class MessagingService {
       final content =
           jsonDecode(utf8.decode(opened.plaintext)) as Map<String, dynamic>;
       final type = content['t'] as String?;
-      const known = {
-        'txt', 'att', 'rx', 'edit', 'del', 'dlv', 'rr', 'typ', 'vote',
-        ..._groupControlTypes,
-      };
+      const known = knownContentTypes;
       if (content['v'] != 1 || !known.contains(type)) {
         // Neznámý typ/verze: obsah je pro tuhle verzi navždy nečitelný
         // a po upgradu ho stejně nejde znovu dešifrovat — ACK a zahodit.
@@ -2228,13 +2403,18 @@ class MessagingService {
       final replyTo = content['re'] as String?;
       final Message message;
       if (type == 'txt') {
-        final text = content['txt'];
-        if (text is! String) {
+        final raw = content['txt'];
+        if (raw is! String) {
           // Trvale vadná obálka (chybí/netypové 'txt') — retry z fronty
           // nepomůže, ACKnout a zahodit stejně jako u vadných příloh.
           _relay!.ack(envelope.msgUuid);
           return;
         }
+        // Strop délky z drátu: obálka unese 256 KiB a konverzace je jeden
+        // JSON blob — čtvrtmegabajtová bublina by ji trvale zpomalila.
+        const maxWireText = AppConstants.maxMessageLength * 4;
+        final text =
+            raw.length > maxWireText ? raw.substring(0, maxWireText) : raw;
         message = Message(
           id: messageId,
           senderId: contact.publicIdentity.fingerprint.display,
@@ -2567,7 +2747,7 @@ class MessagingService {
     // Prázdné jméno = UI si doplní lokalizovaný fallback
     final name = (profile?['n'] as String?)?.trim();
     final identity = PublicIdentity(
-      displayName: (name == null || name.isEmpty) ? '' : name,
+      displayName: (name == null || name.isEmpty) ? '' : clipName(name),
       identityKey: opened.senderIdentityKey,
       createdAt: DateTime.now(),
       accountId: opened.senderName,
@@ -2603,7 +2783,7 @@ class MessagingService {
   /// Probuzení z push budíčku: ujisti se, že jsme připojení — fronta se
   /// vyleje po AUTH (relay pošle DELIVER stream). Idempotentní.
   void onPushWake() {
-    _relay?.start();
+    _relay?.kick();
   }
 
   /// Deregistrace účtu na relayi (GDPR čl. 17 / store „smazání účtu").
@@ -2631,7 +2811,17 @@ class MessagingService {
     _purgeTimer?.cancel();
     _purgeTimer = null;
     await _deliverSub?.cancel();
+    await _prekeysLowSub?.cancel();
     await _stateSub?.cancel();
+    // Rozpracované dodávky doběhnou (dešifrováno → zapsáno → ACK), teprve
+    // pak se úložiště smí zamknout. Strop, ať zaseklá dodávka nezablokuje
+    // zámek navždy.
+    if (_inFlight > 0) {
+      final drained = _drained ??= Completer<void>();
+      await drained.future
+          .timeout(const Duration(seconds: 8), onTimeout: () {});
+    }
+    _drained = null;
     await _relay?.dispose();
     // DB vlastní SecureStorageService (lock/deleteAll) — tady jen pustit
     _db = null;

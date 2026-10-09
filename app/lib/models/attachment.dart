@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:sepot/core/constants/app_constants.dart';
+
 /// Stav přenosu přílohy — čistě lokální (na drát nikdy nejde).
 enum AttachmentTransferState {
   /// Přijatá zpráva, blob se ještě nezačal stahovat.
@@ -94,14 +96,22 @@ class AttachmentMeta {
   /// (blob_id formát hlídá AttachmentStore, tady rozsahy a typy).
   factory AttachmentMeta.fromWire(Map<String, dynamic> wire) {
     final size = wire['s'] as int;
-    if (size <= 0 || size > 512 * 1024 * 1024) {
+    if (size <= 0 || size > AppConstants.maxAttachmentBytes) {
       throw const FormatException('implausible attachment size');
     }
-    // Krypto pole MUSÍ být validní base64 (jinak je meta k ničemu);
-    // vyhodí FormatException → zpráva se zahodí jako vadná.
-    base64Decode(wire['k'] as String);
-    base64Decode(wire['n'] as String);
-    base64Decode(wire['d'] as String);
+    // Krypto pole MUSÍ být validní base64 správné délky (AES-256-GCM klíč,
+    // 96bitová nonce, SHA-256 digest) — jinak by vadná meta prošla a
+    // selhala až při otevření přílohy, kdy je obálka dávno ACKnutá.
+    if (base64Decode(wire['k'] as String).length != 32 ||
+        base64Decode(wire['n'] as String).length != 12 ||
+        base64Decode(wire['d'] as String).length != 32) {
+      throw const FormatException('invalid attachment key material');
+    }
+    final name = wire['name'] as String?;
+    final mime = wire['mime'] as String;
+    if ((name != null && name.length > 255) || mime.length > 100) {
+      throw const FormatException('attachment name or mime too long');
+    }
     // Vadný náhled zprávu nezabíjí — UI ukáže placeholder a ostrá fotka
     // se stáhne z blobu. base64Decode v build() by shodil celou bublinu.
     var thumb = wire['th'] as String?;
@@ -118,8 +128,8 @@ class AttachmentMeta {
       nonceB64: wire['n'] as String,
       digestB64: wire['d'] as String,
       size: size,
-      mime: wire['mime'] as String,
-      name: wire['name'] as String?,
+      mime: mime,
+      name: name,
       width: wire['w'] as int?,
       height: wire['h'] as int?,
       thumbB64: thumb,

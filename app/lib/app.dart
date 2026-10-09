@@ -289,7 +289,9 @@ class _LoadingScreenState extends ConsumerState<_LoadingScreen> {
       final storage = ref.read(storageProvider);
       final legacyPin = await storage.hasLegacyPin();
       await storage.unlockWithoutPin();
-      if (mounted) context.go(legacyPin ? '/pin-setup' : '/chats');
+      if (!mounted) return;
+      ref.invalidate(screenSecurityProvider);
+      context.go(legacyPin ? '/pin-setup' : '/chats');
     }
   }
 

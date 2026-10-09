@@ -55,6 +55,9 @@ final messagingStartProvider = FutureProvider<void>((ref) async {
   // se provider invaliduje (viz unlock cesty) a spustí start znovu.
   final storage = ref.read(storageProvider);
   if (!storage.isUnlocked) return;
+  // Nátlaková relace: žádná síť. Messaging by se registroval skutečným
+  // identity klíčem (409 každých 30 s = důkaz pro pozorovatele sítě).
+  if (storage.isDecoyMode) return;
 
   final service = ref.read(messagingServiceProvider);
   if (service.isStarted) return;

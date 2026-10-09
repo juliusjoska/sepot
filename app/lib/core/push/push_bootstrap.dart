@@ -87,6 +87,8 @@ class PushBootstrap {
     if (Platform.isIOS) {
       ApnsBridge.onWake = _wake;
       ApnsBridge.ensureHandler();
+      // Zvonění z VoIP pushe bez nabídky nesmí zvonit celých 45 s.
+      unawaited(CallRinger.expireStalePushRings());
     } else {
       await UnifiedPush.initialize(
         onNewEndpoint: _onNewEndpoint,

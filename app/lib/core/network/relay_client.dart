@@ -64,8 +64,16 @@ class RelayClient {
   final _deliverController = StreamController<pb.Envelope>.broadcast();
   final _receiptController = StreamController<pb.Receipt>.broadcast();
   final _turnController = StreamController<pb.TurnCredentials>.broadcast();
+  final _prekeysLowController = StreamController<int>.broadcast();
 
   var _state = RelayConnectionState.disconnected;
+
+  /// Kdy naposled přišel aplikační rámec od relaye.
+  DateTime _lastFrameAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _staleAfter = Duration(seconds: 20);
+
+  /// Relay hlásí docházející one-time prekeys (zbývající počet).
+  Stream<int> get prekeysLow => _prekeysLowController.stream;
 
   RelayConnectionState get state => _state;
   Stream<RelayConnectionState> get stateStream => _stateController.stream;
@@ -100,9 +108,18 @@ class RelayClient {
     required List<SepotOneTimePreKey> oneTimePreKeys,
     required Uint8List deliveryAddress,
   }) async {
+    // Důkaz držení identity klíče: obnova ze 24 slov na novém telefonu
+    // narazí na relayi na už existující identitu (409) a bez tohohle
+    // podpisu by ji nikdy nepřevzala. Starší relay hlavičku
+    // ignoruje.
+    final proofTs = DateTime.now().millisecondsSinceEpoch;
+    final proof = _crypto.sign(utf8.encode('POST /v1/register\n$proofTs'));
     final resp = await _transport.httpClient().post(
       Uri.parse('$baseUrl/v1/register'),
-      headers: {'content-type': 'application/json'},
+      headers: {
+        'content-type': 'application/json',
+        'x-sepot-identity-proof': '$proofTs.${base64Encode(proof)}',
+      },
       body: jsonEncode({
         'identity_key': base64Encode(_crypto.identityPublicKey),
         'device_id': 1,
@@ -142,6 +159,49 @@ class RelayClient {
   void restoreSession({required String accountId, required String deviceUuid}) {
     _deviceUuid = deviceUuid;
     _crypto.bindAccount(accountId);
+  }
+
+  /// POST /v1/keys — doplnění one-time prekeys a rotace signed / Kyber
+  /// prekey. Vrací počet OTP na relayi po nahrání.
+  Future<int> uploadKeys({
+    SepotSignedPreKey? signedPreKey,
+    SepotKyberPreKey? kyberPreKey,
+    List<SepotOneTimePreKey> oneTimePreKeys = const [],
+  }) async {
+    final deviceUuid = _requireDevice();
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final signature = _crypto.sign(utf8.encode('POST /v1/keys\n$ts'));
+    final resp = await _transport.httpClient().post(
+      Uri.parse('$baseUrl/v1/keys'),
+      headers: {
+        'content-type': 'application/json',
+        'x-sepot-auth': '$deviceUuid.$ts.${base64Encode(signature)}',
+      },
+      body: jsonEncode({
+        if (signedPreKey != null)
+          'signed_prekey': {
+            'key_id': signedPreKey.id,
+            'public_key': base64Encode(signedPreKey.publicKey),
+            'signature': base64Encode(signedPreKey.signature),
+          },
+        if (kyberPreKey != null)
+          'kyber_prekey': {
+            'key_id': kyberPreKey.id,
+            'public_key': base64Encode(kyberPreKey.publicKey),
+            'signature': base64Encode(kyberPreKey.signature),
+            'is_last_resort': true,
+          },
+        'one_time_prekeys': [
+          for (final otp in oneTimePreKeys)
+            {'key_id': otp.id, 'public_key': base64Encode(otp.publicKey)},
+        ],
+      }),
+    );
+    if (resp.statusCode != 200) {
+      throw RelayException('prekey upload failed', resp.statusCode, resp.body);
+    }
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    return (body['one_time_prekeys'] as num?)?.toInt() ?? 0;
   }
 
   /// GET /v1/keys/{addr} — bundle protistrany (spotřebuje 1 OTP).
@@ -280,6 +340,20 @@ class RelayClient {
     _setState(RelayConnectionState.disconnected);
   }
 
+  /// Budíček od relaye znamená, že nás nevidí jako živé. Spojení, které
+  /// hlásí „připojeno", ale [_staleAfter] nic nepřijalo, je po změně sítě
+  /// nejspíš zombie — zavřít a navázat hned, ne až po ping timeoutu
+  /// (pojistka proti zombie spojení na straně appky). Jinak jen [start].
+  void kick() {
+    if (_state == RelayConnectionState.connected &&
+        DateTime.now().difference(_lastFrameAt) > _staleAfter) {
+      _reconnectDelayS = 1;
+      _onDisconnected();
+      return;
+    }
+    start();
+  }
+
   Future<void> _teardownChannel() async {
     await _wsSub?.cancel();
     _wsSub = null;
@@ -313,6 +387,7 @@ class RelayClient {
       _wsSub = channel.stream.listen(
         (data) {
           final frame = pb.ServerFrame.fromBuffer(data as List<int>);
+          _lastFrameAt = DateTime.now();
           if (!authenticated) {
             if (frame.hasChallenge()) {
               final signature = _crypto.sign([
@@ -344,6 +419,10 @@ class RelayClient {
           } else if (frame.hasTurnCredentials()) {
             if (!_turnController.isClosed) {
               _turnController.add(frame.turnCredentials);
+            }
+          } else if (frame.hasPrekeysLow()) {
+            if (!_prekeysLowController.isClosed) {
+              _prekeysLowController.add(frame.prekeysLow.remaining);
             }
           }
         },
@@ -389,14 +468,21 @@ class RelayClient {
     final receiptFuture = _receiptController.stream
         .firstWhere((r) => _bytesEqual(r.msgUuid, msgUuid))
         .timeout(timeout);
-    _send(pb.ClientFrame(
-      envelope: pb.Envelope(
-        dstAddress: dstAddress,
-        msgUuid: msgUuid,
-        contentHint: hint,
-        payload: payload,
-      ),
-    ));
+    try {
+      _send(pb.ClientFrame(
+        envelope: pb.Envelope(
+          dstAddress: dstAddress,
+          msgUuid: msgUuid,
+          contentHint: hint,
+          payload: payload,
+        ),
+      ));
+    } catch (_) {
+      // Odeslání selhalo (kanál zavřený) — čekající future by za 10 s
+      // hodil neodchycený TimeoutException do zvonku chyb.
+      receiptFuture.ignore();
+      rethrow;
+    }
     return receiptFuture;
   }
 
@@ -455,6 +541,7 @@ class RelayClient {
     _transport.close();
     await _stateController.close();
     await _turnController.close();
+    await _prekeysLowController.close();
     await _deliverController.close();
     await _receiptController.close();
   }

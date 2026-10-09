@@ -4,10 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:sepot/core/crypto/dek_wrap.dart';
+import 'package:sepot/core/storage/secure_storage.dart' show PinLockedException;
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/providers/push_provider.dart';
+import 'package:sepot/providers/settings_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 import 'package:sepot/widgets/sepot_logo.dart';
 
@@ -41,7 +43,10 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
     try {
       final ok = await LocalAuthentication().authenticate(
         localizedReason: unlockReason,
-        options: const AuthenticationOptions(stickyAuth: true),
+        // biometricOnly: zámek telefonu (PIN/vzor zařízení) nesmí Šepot
+        // odemknout — obešel by Argon2id ochranu DEK slabším faktorem.
+        options: const AuthenticationOptions(
+            stickyAuth: true, biometricOnly: true),
       );
       if (!ok) return; // uživatel zrušil → zůstává PIN
       await storage.unlockWithBiometrics();
@@ -222,6 +227,9 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
   void _restartMessagingAfterUnlock() {
     ref.invalidate(messagingStartProvider);
     ref.invalidate(pushInitProvider);
+    // Zabezpečení obrazovky se čte z DB — před odemčením provider nic
+    // neaplikoval, teď má skutečnou hodnotu.
+    ref.invalidate(screenSecurityProvider);
   }
 
   Future<void> _verifyPin() async {
@@ -234,12 +242,22 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
       _restartMessagingAfterUnlock();
       if (mounted) context.go('/chats');
     } on WrongPinException {
+      final locked = await ref.read(storageProvider).pinLockRemaining();
+      if (!mounted) return;
       setState(() {
-        _error = context.l10n.pinWrong2;
+        _error = locked == null
+            ? context.l10n.pinWrong2
+            : context.l10n.pinLockedFor(locked.inSeconds);
         _pin = '';
         _isVerifying = false;
       });
       HapticFeedback.heavyImpact();
+    } on PinLockedException catch (e) {
+      setState(() {
+        _error = context.l10n.pinLockedFor(e.remaining.inSeconds);
+        _pin = '';
+        _isVerifying = false;
+      });
     } on StateError {
       // Wrapped DEK neexistuje — nekonzistentní stav, zpět na onboarding
       if (mounted) context.go('/onboarding');

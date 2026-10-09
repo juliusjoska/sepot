@@ -1103,6 +1103,11 @@ class AppLocalizationsCs extends AppLocalizations {
   String get pinUnlockError => 'Chyba odemčení';
 
   @override
+  String pinLockedFor(int seconds) {
+    return 'Příliš mnoho pokusů. Zkus to za $seconds s.';
+  }
+
+  @override
   String get pushTitle => 'Push notifikace';
 
   @override

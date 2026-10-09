@@ -146,6 +146,9 @@ class LocalIdentity {
 /// kontaktu poslat první zpráva. Obě pole jsou náhodná — s identitou je
 /// spojuje jen sám uživatel tím, že je sdílí ve svém odkazu.
 class PublicIdentity {
+  /// Nejvyšší délka jména z odkazu/QR — delší odkaz je vadný vstup.
+  static const maxDisplayNameLength = 64;
+
   PublicIdentity({
     required this.displayName,
     required this.identityKey,
@@ -214,7 +217,14 @@ class PublicIdentity {
           as Map<String, dynamic>;
       if (map['v'] != 2) return null;
       final identityKey = base64Decode(map['ik'] as String);
-      if (identityKey.length != 33) return null;
+      // 33 B = typový bajt 0x05 + Curve25519; jiný prefix libsignal odmítne
+      // až při první zprávě, tady ho odmítneme hned.
+      if (identityKey.length != 33 || identityKey[0] != 0x05) return null;
+      final aid = map['aid'] as String?;
+      // Relay dává 32 hex znaků; starší testovací odkazy kratší — hex a strop stačí.
+      if (aid != null && !RegExp(r'^[0-9a-f]{8,64}$').hasMatch(aid)) return null;
+      final rawName = (map['n'] as String).trim();
+      if (rawName.length > maxDisplayNameLength) return null;
       final da = map['da'] as String?;
       Uint8List? deliveryAddress;
       if (da != null) {
@@ -224,10 +234,10 @@ class PublicIdentity {
         if (deliveryAddress.length != 32) return null;
       }
       return PublicIdentity(
-        displayName: map['n'] as String,
+        displayName: rawName,
         identityKey: identityKey,
         createdAt: DateTime.parse(map['ts'] as String),
-        accountId: map['aid'] as String?,
+        accountId: aid,
         deliveryAddress: deliveryAddress,
       );
     } catch (_) {

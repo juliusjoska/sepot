@@ -30,6 +30,16 @@ import 'package:sepot/models/message.dart';
 /// při onboardingu, který DB rovnou otevře).
 
 /// Nátlakový PIN je shodný se skutečným — nelze nastavit.
+/// Příliš mnoho špatných PINů za sebou — další pokus až za [remaining].
+class PinLockedException implements Exception {
+  const PinLockedException(this.remaining);
+
+  final Duration remaining;
+
+  @override
+  String toString() => 'PIN locked for ${remaining.inSeconds}s';
+}
+
 class DecoyPinConflict implements Exception {
   const DecoyPinConflict();
   @override
@@ -51,6 +61,13 @@ class SecureStorageService {
   static const _legacyPinHashKey = 'pin_hash';
 
   static const _decoyWrappedDekKey = 'wrapped_dek_decoy';
+  // Brzda hádání PINu: počet chyb za sebou a čas, do kdy je zámek uzamčený.
+  // V keystore (ne v DB) — DB je právě to, co se hádáním otevírá.
+  static const _pinFailCountKey = 'pin_fail_count';
+  static const _pinLockUntilKey = 'pin_lock_until';
+  static const _pinFreeAttempts = 5;
+  static const _pinLockBase = Duration(seconds: 30);
+  static const _pinLockMax = Duration(minutes: 15);
 
   final FlutterSecureStorage _secureStorage;
   final String? _dbPathOverride;
@@ -60,12 +77,24 @@ class SecureStorageService {
   bool _decoyMode = false;
 
   /// Odemčeno nátlakovým (decoy) PINem → běžíme nad prázdnou decoy DB.
+  /// V tomhle režimu úložiště nevydá skutečnou identitu ani frázi,
+  /// nestartuje síť a nic z keystore nemění (viz jednotlivé metody).
   bool get isDecoyMode => _decoyMode;
+
+  /// Identita ukazovaná v nátlakové relaci: náhodná, jen v paměti.
+  LocalIdentity? _decoyIdentity;
+
+  void _requireRealSession() {
+    if (_decoyMode) throw StateError('Not available in a duress session');
+  }
 
   SecureStorageService({String? dbPath})
       : _secureStorage = const FlutterSecureStorage(
           aOptions: AndroidOptions(encryptedSharedPreferences: true),
-          iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
+          // this_device: identita a klíče nesmí putovat v iCloud Keychain
+          // ani v záloze na jiný telefon — obnova jde přes 24 slov.
+          iOptions: IOSOptions(
+              accessibility: KeychainAccessibility.first_unlock_this_device),
         ),
         _dbPathOverride = dbPath;
 
@@ -98,21 +127,59 @@ class SecureStorageService {
     if (wrapped == null) {
       throw StateError('No PIN set — use unlockWithoutPin');
     }
+    final locked = await pinLockRemaining();
+    if (locked != null) throw PinLockedException(locked);
+
+    final decoy = await _secureStorage.read(key: _decoyWrappedDekKey);
     try {
-      final dek = await DekWrap.unwrap(wrapped: wrapped, pin: pin);
-      await _openDb(dek);
+      // Oba bloby jednou derivací (sdílená sůl) — čas odemčení neprozradí,
+      // který PIN padl.
+      final (index, dek) = await DekWrap.unwrapFirstMatching(
+        wrapped: [wrapped, ?decoy],
+        pin: pin,
+      );
+      await _openDb(dek, decoy: index == 1);
+      await _resetPinFailures();
     } on WrongPinException {
-      final decoy = await _secureStorage.read(key: _decoyWrappedDekKey);
-      if (decoy == null) rethrow;
-      // Když ani decoy nesedí, unwrap vyhodí WrongPinException dál.
-      final dek = await DekWrap.unwrap(wrapped: decoy, pin: pin);
-      await _openDb(dek, decoy: true);
+      await _notePinFailure();
+      rethrow;
     }
+  }
+
+  /// Zbývající zámek po sérii špatných PINů; null = volno.
+  Future<Duration?> pinLockRemaining() async {
+    final raw = await _secureStorage.read(key: _pinLockUntilKey);
+    final until = raw == null ? null : int.tryParse(raw);
+    if (until == null) return null;
+    final remaining = DateTime.fromMillisecondsSinceEpoch(until)
+        .difference(DateTime.now());
+    return remaining > Duration.zero ? remaining : null;
+  }
+
+  Future<void> _notePinFailure() async {
+    final raw = await _secureStorage.read(key: _pinFailCountKey);
+    final failures = (raw == null ? 0 : int.tryParse(raw) ?? 0) + 1;
+    await _secureStorage.write(key: _pinFailCountKey, value: '$failures');
+    if (failures < _pinFreeAttempts) return;
+    // 30 s po páté chybě, pak dvojnásobně až do 15 minut: šest číslic
+    // (10⁶) tak trvá roky, Argon2id sám by brzdil jen ~2 s na pokus.
+    var lock = _pinLockBase * (1 << (failures - _pinFreeAttempts));
+    if (lock > _pinLockMax) lock = _pinLockMax;
+    await _secureStorage.write(
+      key: _pinLockUntilKey,
+      value: '${DateTime.now().add(lock).millisecondsSinceEpoch}',
+    );
+  }
+
+  Future<void> _resetPinFailures() async {
+    await _secureStorage.delete(key: _pinFailCountKey);
+    await _secureStorage.delete(key: _pinLockUntilKey);
   }
 
   /// Zapne PIN: zabalí DEK za Argon2id(PIN) a raw kopii z keystore smaže.
   /// Pokud DB ještě není otevřená (onboarding), rovnou ji otevře.
   Future<void> enablePin(String pin) async {
+    _requireRealSession();
     final dek = _dek ?? await _getOrCreateRawDek();
     final wrapped = await DekWrap.wrap(dek: dek, pin: pin);
     await _secureStorage.write(key: _wrappedDekKey, value: wrapped);
@@ -124,6 +191,7 @@ class SecureStorageService {
 
   /// Vypne PIN: DEK se vrátí raw do OS keystore.
   Future<void> disablePin() async {
+    _requireRealSession();
     final dek = _dek ?? (throw StateError('Requires unlocked storage'));
     await _secureStorage.write(key: _rawDekKey, value: base64Encode(dek));
     await _secureStorage.delete(key: _wrappedDekKey);
@@ -151,6 +219,7 @@ class SecureStorageService {
     required String oldPin,
     required String newPin,
   }) async {
+    _requireRealSession();
     final wrapped = await _secureStorage.read(key: _wrappedDekKey);
     if (wrapped == null) throw StateError('No PIN set');
     final dek = await DekWrap.unwrap(wrapped: wrapped, pin: oldPin);
@@ -165,7 +234,11 @@ class SecureStorageService {
       }
     }
 
-    final rewrapped = await DekWrap.wrap(dek: dek, pin: newPin);
+    // Sůl zůstává: nátlakový blob ji sdílí (jedna derivace pro oba PINy)
+    // a bez jeho PINu by se přebalit nedal. Jedna sůl pro dva PINy téhož
+    // uživatele nic neoslabuje — sůl brání předpočítání napříč uživateli.
+    final rewrapped = await DekWrap.wrap(
+        dek: dek, pin: newPin, salt: DekWrap.saltOf(wrapped));
     await _secureStorage.write(key: _wrappedDekKey, value: rewrapped);
   }
 
@@ -176,6 +249,7 @@ class SecureStorageService {
   /// Nastaví nátlakový (decoy) PIN — jeho zadáním se otevře PRÁZDNÁ decoy
   /// DB. Vyžaduje nastavený běžný PIN a MUSÍ se od něj lišit.
   Future<void> enableDecoyPin(String decoyPin) async {
+    _requireRealSession();
     final realWrapped = await _secureStorage.read(key: _wrappedDekKey);
     if (realWrapped == null) {
       throw StateError('Set a regular PIN first');
@@ -193,7 +267,9 @@ class SecureStorageService {
     // Inicializuj prázdnou decoy DB (schéma) bez zásahu do aktuální DB
     final decoyPath = await _dbPath(decoy: true);
     CryptoDb.open(path: decoyPath, dek: decoyDek).close();
-    final wrapped = await DekWrap.wrap(dek: decoyDek, pin: decoyPin);
+    // Stejná sůl jako skutečný blob → jedna Argon2id derivace pro oba PINy.
+    final wrapped = await DekWrap.wrap(
+        dek: decoyDek, pin: decoyPin, salt: DekWrap.saltOf(realWrapped));
     await _secureStorage.write(key: _decoyWrappedDekKey, value: wrapped);
   }
 
@@ -203,11 +279,20 @@ class SecureStorageService {
 
   /// Zruší nátlakový PIN a smaže decoy DB.
   Future<void> disableDecoyPin() async {
+    _requireRealSession();
     await _secureStorage.delete(key: _decoyWrappedDekKey);
-    try {
-      final f = File(await _dbPath(decoy: true));
-      if (f.existsSync()) f.deleteSync();
-    } catch (_) {}
+    await _deleteDbFiles(await _dbPath(decoy: true));
+  }
+
+  Future<void> _deleteDbFiles(String path) async {
+    for (final suffix in ['', '-wal', '-shm']) {
+      try {
+        final f = File('$path$suffix');
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {
+        // best-effort úklid
+      }
+    }
   }
 
   /// Starší instalace měla PIN jako PBKDF2 hash — starý formát neumíme
@@ -222,6 +307,8 @@ class SecureStorageService {
     _db?.close();
     _db = null;
     _dek = null;
+    _decoyMode = false;
+    _decoyIdentity = null;
   }
 
   Future<void> _openDb(Uint8List dek, {bool decoy = false}) async {
@@ -293,6 +380,11 @@ class SecureStorageService {
 
   /// Načti lokální identitu
   Future<LocalIdentity?> loadIdentity() async {
+    if (_decoyMode) {
+      // Nátlaková relace ukazuje náhodnou identitu jen z paměti — skutečný
+      // klíč z keystore se do ní nikdy nedostane (nátlakový PIN musí být izolovaný).
+      return _decoyIdentity ??= await LocalIdentity.create('');
+    }
     final json = await _secureStorage.read(key: _identityKey);
     if (json == null) return null;
     try {
@@ -320,6 +412,7 @@ class SecureStorageService {
   }
 
   Future<List<String>?> loadSeedPhrase() async {
+    if (_decoyMode) return null;
     final json = await _secureStorage.read(key: _seedPhraseKey);
     if (json == null) return null;
     return (jsonDecode(json) as List).cast<String>();
@@ -331,6 +424,7 @@ class SecureStorageService {
   /// Vyžaduje odemčené úložiště (typicky hned po zadání PINu v settings).
   /// Samotné ověření otisku/obličeje řeší UI přes local_auth PŘED voláním.
   Future<void> enableBiometrics() async {
+    _requireRealSession();
     final dek = _dek ?? (throw StateError('Requires unlocked storage'));
     await _secureStorage.write(
       key: _biometricDekKey,
@@ -342,6 +436,7 @@ class SecureStorageService {
   /// Vypne biometrii a kopii DEK z keystore smaže (zpět na čistý
   /// PIN-only model: DEK existuje jen za Argon2id).
   Future<void> disableBiometrics() async {
+    _requireRealSession();
     await _secureStorage.delete(key: _biometricDekKey);
     await _secureStorage.write(key: _biometricsEnabledKey, value: 'false');
   }
@@ -475,24 +570,29 @@ class SecureStorageService {
     if (!isUnlocked) return false;
     var changed = false;
     final now = DateTime.now();
-    for (final conv in await loadConversations()) {
-      final expired = conv.messages
-          .where((m) =>
-              m.disappearAfterSeconds != null &&
-              m.timestamp
-                  .add(Duration(seconds: m.disappearAfterSeconds!))
-                  .isBefore(now))
-          .toList();
+    bool isExpired(Message m) =>
+        m.disappearAfterSeconds != null &&
+        m.timestamp
+            .add(Duration(seconds: m.disappearAfterSeconds!))
+            .isBefore(now);
+    for (final snapshot in await loadConversations()) {
+      if (!snapshot.messages.any(isExpired)) continue;
+      // Konverzace se před zápisem načte znovu: mezi snímkem a zápisem
+      // běží event loop (mazání blobů, příjem zpráv) a starý snímek by
+      // přepsal zprávu přijatou mezitím — už ACKnutou, tedy navždy pryč.
+      final conv = await loadConversation(snapshot.contactId);
+      if (conv == null) continue;
+      final expired = conv.messages.where(isExpired).toList();
       if (expired.isEmpty) continue;
       changed = true;
+      conv.messages.removeWhere(isExpired);
+      await saveConversation(conv);
       for (final m in expired) {
         final blobId = m.attachment?.blobId;
         if (blobId != null) {
           await AttachmentStore().delete(blobId);
         }
-        conv.messages.remove(m);
       }
-      await saveConversation(conv);
     }
     return changed;
   }
@@ -512,12 +612,19 @@ class SecureStorageService {
   /// Smaž všechna data (factory reset) — DB soubor, klíče, keystore
   /// i lokální bloby příloh.
   Future<void> deleteAll() async {
-    final path = await _dbPath();
-    lock();
-    for (final suffix in ['', '-wal', '-shm']) {
-      final f = File('$path$suffix');
-      if (f.existsSync()) f.deleteSync();
+    if (_decoyMode) {
+      // Nátlaková relace: „smazat" smí jen prázdnou decoy DB — skutečná
+      // data a keystore zůstávají (dřív to smazalo reálný účet).
+      final decoyPath = await _dbPath(decoy: true);
+      lock();
+      await _deleteDbFiles(decoyPath);
+      return;
     }
+    final path = await _dbPath();
+    final decoyPath = await _dbPath(decoy: true);
+    lock();
+    await _deleteDbFiles(path);
+    await _deleteDbFiles(decoyPath);
     await AttachmentStore().deleteAll();
     await _secureStorage.deleteAll();
   }

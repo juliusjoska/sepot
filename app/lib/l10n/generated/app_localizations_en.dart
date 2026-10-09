@@ -1102,6 +1102,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get pinUnlockError => 'Unlock error';
 
   @override
+  String pinLockedFor(int seconds) {
+    return 'Too many attempts. Try again in $seconds s.';
+  }
+
+  @override
   String get pushTitle => 'Push notifications';
 
   @override
