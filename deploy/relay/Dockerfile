@@ -27,7 +27,10 @@ ARG GIT_SHA=dev
 LABEL org.opencontainers.image.revision=$GIT_SHA \
       org.opencontainers.image.source="https://github.com/juliusjoska/sepot"
 ENV SEPOT_REVISION=$GIT_SHA
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# upgrade: základ bookworm-slim nese opravitelné CVE v perl-base a spol.;
+# bez něj by každý build vozil zranitelnosti, které Debian už opravil.
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
       ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -s /usr/sbin/nologin sepot \
