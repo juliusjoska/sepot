@@ -1,3 +1,5 @@
+// Needs the native libsignal library (FFI); skipped on builders without it (--exclude-tags ffi).
+@Tags(['ffi'])
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';

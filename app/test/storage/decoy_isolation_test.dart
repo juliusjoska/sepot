@@ -1,3 +1,5 @@
+// Needs the native libsignal library (FFI); skipped on builders without it (--exclude-tags ffi).
+@Tags(['ffi'])
 // Argon2id (64 MiB) ×6 pod zátěží celé sady: víc než výchozích 30 s.
 @Timeout(Duration(minutes: 3))
 library;
