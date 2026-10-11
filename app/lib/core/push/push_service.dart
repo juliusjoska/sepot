@@ -138,10 +138,14 @@ class PushService {
   }
 
   /// Seznam nainstalovaných distributorů (pro výběr v nastavení).
-  Future<List<String>> distributors() => UnifiedPush.getDistributors();
+  /// UnifiedPush existuje jen na Androidu; jinde by volání pluginu vyhodilo
+  /// UnimplementedError (iOS: dlaždice Push v Nastavení).
+  Future<List<String>> distributors() async =>
+      Platform.isAndroid ? UnifiedPush.getDistributors() : const [];
 
   /// Aktuálně uložený distributor (null = push vypnutý / nevybraný).
-  Future<String?> currentDistributor() => UnifiedPush.getDistributor();
+  Future<String?> currentDistributor() async =>
+      Platform.isAndroid ? UnifiedPush.getDistributor() : null;
 
   /// Vybere konkrétního distributora a zaregistruje se u něj.
   Future<void> useDistributor(String distributor) async {
@@ -158,7 +162,7 @@ class PushService {
   }
 
   Future<bool> get isEnabled async =>
-      (await UnifiedPush.getDistributor()) != null;
+      Platform.isAndroid && (await UnifiedPush.getDistributor()) != null;
 
   // ── Režimy (off / up / fcm) ─────────────────────────────────────────
 
@@ -167,6 +171,7 @@ class PushService {
   Future<String> currentMode() async {
     final mode = await PushBootstrap.readMode();
     if (mode != 'off') return mode;
+    if (!Platform.isAndroid) return mode;
     return (await UnifiedPush.getDistributor()) != null ? 'up' : 'off';
   }
 
