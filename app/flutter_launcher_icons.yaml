@@ -1,9 +1,9 @@
-# Launcher ikony — kandidát 1 „Š s tečkami" (nokturno-ikona-B2, ember paleta).
-# Zdroj: sepot-web/koncept/logo/nokturno-ikona-B2.png; regenerace:
+# Launcher icons: the "Š that fades into dots" mark (variant B, 2026-10).
+# Source: assets/icon/icon-1024.png (full) and maskable-fg-512.png (adaptive foreground); regenerate with:
 #   dart run flutter_launcher_icons
 flutter_launcher_icons:
   android: true
   ios: true
   image_path: assets/icon/icon-1024.png
-  adaptive_icon_background: "#0a0e17"
+  adaptive_icon_background: "#0B0C12"
   adaptive_icon_foreground: assets/icon/maskable-fg-512.png

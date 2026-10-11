@@ -6,6 +6,19 @@ verzování dle [ajtak standardu](#verzování).
 
 ## [Nevydáno]
 
+## [1.2.2] – 2026-10-11
+
+### Opraveno
+- **Přečtený chat se dál ukazoval jako nepřečtený.** Zpráva, která přišla do
+  otevřeného chatu, zůstala po návratu do seznamu tučně s odznakem; teď se
+  přečte hned, když je chat na obrazovce (a appka v popředí). Stažení přílohy
+  nebo dodatečné doručení už nevrátí přečtenou zprávu mezi nepřečtené.
+- Gesto „odpověď tahem“ při zavírání chatu v ladicím buildu padalo na
+  vytvoření animace nad zrušeným prvkem.
+
+### Změněno
+- **Nová ikona aplikace:** Š, které se ve spodní části rozpadá do teček.
+
 ## [1.2.1] – 2026-10-09
 
 ### Opraveno
