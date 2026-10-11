@@ -15,6 +15,8 @@ verzování dle [ajtak standardu](#verzování).
   nebo dodatečné doručení už nevrátí přečtenou zprávu mezi nepřečtené.
 - Gesto „odpověď tahem“ při zavírání chatu v ladicím buildu padalo na
   vytvoření animace nad zrušeným prvkem.
+- Na iPhonu hlásila dlaždice Push v Nastavení chybu (volala UnifiedPush,
+  který existuje jen na Androidu).
 
 ### Změněno
 - **Nová ikona aplikace:** Š, které se ve spodní části rozpadá do teček.
