@@ -55,9 +55,17 @@ class Conversation {
 
   /// Nahraď zprávu se stejným id (změna stavu přílohy, doručenka…).
   /// Neexistující id se tiše ignoruje (zpráva mohla být smazána).
+  ///
+  /// Přečtení je jednosměrné: aktualizace nesmí vrátit už přečtenou zprávu
+  /// mezi nepřečtené. Volající často drží kopii zprávy načtenou před
+  /// otevřením chatu (stahování přílohy, dodatečné odeslání) a bez téhle
+  /// pojistky by zápis po návratu ze stahování obnovil odznak nepřečtených.
   void updateMessage(Message message) {
     final index = messages.indexWhere((m) => m.id == message.id);
-    if (index >= 0) messages[index] = message;
+    if (index < 0) return;
+    messages[index] = messages[index].isRead && !message.isRead
+        ? message.copyWith(isRead: true)
+        : message;
   }
 
   /// Označ všechny zprávy jako přečtené

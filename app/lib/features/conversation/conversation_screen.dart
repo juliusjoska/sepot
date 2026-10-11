@@ -64,7 +64,8 @@ class ConversationScreen extends ConsumerStatefulWidget {
   ConsumerState<ConversationScreen> createState() => _ConversationScreenState();
 }
 
-class _ConversationScreenState extends ConsumerState<ConversationScreen> {
+class _ConversationScreenState extends ConsumerState<ConversationScreen>
+    with WidgetsBindingObserver {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   final _searchController = TextEditingController();
@@ -133,7 +134,41 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     _drafts = ref.read(draftsProvider.notifier);
     _restoreDraft();
     _messageController.addListener(_scheduleDraftSave);
+    _conversations = ref.read(conversationsProvider.notifier);
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _captureUnreadAndMark());
+  }
+
+  /// Notifier zachycený v initState: v dispose už `ref` použít nejde.
+  late final ConversationsNotifier _conversations;
+
+  /// Zpráva, která přijde do otevřeného chatu, je přečtená, jen když ji
+  /// uživatel opravdu vidí: appka v popředí a tahle obrazovka navrchu
+  /// (ne pod profilem kontaktu nebo náhledem fotky).
+  bool get _isSeenNow =>
+      WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
+      (_route?.isCurrent ?? false);
+
+  // Route uložená v didChangeDependencies: lifecycle callback může přijít
+  // i ve chvíli, kdy je element už deaktivovaný a hledat předka nesmí.
+  ModalRoute<Object?>? _route;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+  }
+
+  void _markIfSeen() {
+    if (!mounted || !_isSeenNow) return;
+    _conversations.markAsRead(widget.contactId);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Zprávy, které přišly se zhasnutým displejem nad otevřeným chatem,
+    // uživatel uvidí až po návratu do appky.
+    if (state == AppLifecycleState.resumed) _markIfSeen();
   }
 
   /// Zapamatuje si první nepřečtenou zprávu a teprve pak konverzaci označí
@@ -185,6 +220,10 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    // Odchod z chatu: všechno, co bylo na obrazovce, je přečtené – i zprávy
+    // dorazivší těsně před odchodem, které listener nestihl označit.
+    _conversations.markAsRead(widget.contactId);
     _draftTimer?.cancel();
     // Odchod z chatu uprostřed úpravy = koncept je ten odložený, ne text
     // upravované zprávy.
@@ -214,6 +253,17 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         .where((c) => c.publicIdentity.id == widget.contactId)
         .firstOrNull;
     final conversationAsync = ref.watch(conversationProvider(widget.contactId));
+    // Nová příchozí zpráva v otevřeném chatu se rovnou čte; jinak by po
+    // návratu do seznamu svítila jako nepřečtená.
+    // První načtení vynechá: to obslouží _captureUnreadAndMark, které si
+    // nejdřív zapamatuje řádek „N nových zpráv“.
+    ref.listen(conversationProvider(widget.contactId), (prev, next) {
+      if (prev?.valueOrNull == null) return;
+      final conv = next.valueOrNull;
+      final myId = ref.read(identityProvider).valueOrNull?.id;
+      if (conv == null || myId == null || conv.unreadCount(myId) == 0) return;
+      _markIfSeen();
+    });
     final identity = ref.watch(identityProvider).valueOrNull;
     // Skupinová konverzace: contactId == gid
     final group = ref.watch(groupProvider(widget.contactId)).valueOrNull;
@@ -2150,7 +2200,11 @@ class _SwipeToReplyState extends State<_SwipeToReply>
   static const _max = 84.0;
   static const _trigger = 58.0;
 
-  late final AnimationController _back = AnimationController(
+  // Kontroler vzniká až při prvním tahu. Dřív ho `late final` vytvořil
+  // teprve dispose() u bublin, které nikdo netáhl – nad deaktivovaným
+  // elementem, což v debug buildu padá na hledání TickerMode.
+  AnimationController? _backCtl;
+  AnimationController get _back => _backCtl ??= AnimationController(
       vsync: this, duration: const Duration(milliseconds: 180))
     ..addListener(() => setState(() => _dx = _from * (1 - _back.value)));
   double _dx = 0;
@@ -2159,7 +2213,7 @@ class _SwipeToReplyState extends State<_SwipeToReply>
 
   @override
   void dispose() {
-    _back.dispose();
+    _backCtl?.dispose();
     super.dispose();
   }
 
