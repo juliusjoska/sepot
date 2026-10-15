@@ -4,7 +4,7 @@
 
 The design goal is **metadata minimization with a public threat model** — never "zero metadata". The relay is deliberately dumb: it cannot read message content, does not learn who sent a message, and does not log IP addresses. What it *does* see is documented honestly below.
 
-> Status: 1.2.x. Android is on Google Play (production 1.1.2, 1.2.0 in internal testing); iOS builds run through TestFlight. See [`CHANGELOG.md`](CHANGELOG.md).
+> Status: 1.2.x. Android is on [Google Play](https://play.google.com/store/apps/details?id=cz.sepot.sepot); iOS is on the App Store outside the EU, with EU availability pending Apple's trader verification under the Digital Services Act. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Features
 
