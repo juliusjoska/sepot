@@ -1,7 +1,7 @@
 name: sepot
 description: "Šepot — Soukromý messenger s E2E šifrováním"
 publish_to: 'none'
-version: 1.2.3+26
+version: 1.2.3+27
 
 environment:
   sdk: ^3.10.8

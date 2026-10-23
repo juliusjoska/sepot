@@ -8,6 +8,12 @@ verzování dle [ajtak standardu](#verzování).
 
 ## [1.2.3] – 2026-10-23
 
+### Opraveno (iOS, build 27)
+- **Na iOS 27 appka hned po spuštění spadla.** Build 26 vznikl novým
+  Xcode (SDK iOS 27) a ten u appek bez scénového životního cyklu (UIScene)
+  start zastaví. Appka teď scény používá; Flutter běží od startu procesu,
+  takže příchozí hovor na pozadí dál zazvoní i bez otevřeného okna.
+
 ### Bezpečnost
 - **24 slov jen po čerstvém ověření.** Zálohovací fráze se z odemčené appky
   ukáže až po zadání PINu (nebo otisku/obličeje, je-li zapnutý). Totéž platí
