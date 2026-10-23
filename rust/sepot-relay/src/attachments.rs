@@ -111,23 +111,85 @@ pub async fn upload(
     headers: HeaderMap,
     body: Body,
 ) -> ApiResult<(StatusCode, Json<UploadOut>)> {
-    crate::rest::authenticate_device(&state, &headers, "POST /v1/attachments").await?;
+    let authed =
+        crate::rest::authenticate_device(&state, &headers, "POST /v1/attachments").await?;
 
     let cfg = &state.attachments;
 
     // Rychlé odmítnutí podle Content-Length, než tečou data
-    if let Some(len) = headers
+    let declared = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if declared.is_some_and(|len| len > cfg.max_bytes) {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "příloha je příliš velká".into(),
+        ));
+    }
+
+    // Místo na disku dřív než cokoli dalšího: přílohy a DB sdílí filesystém
+    // a plný disk by zastavil i zprávy (disk.rs).
+    if state
+        .disk
+        .below(state.limits.disk_min_free_pct_attachments)
     {
-        if len > cfg.max_bytes {
-            return Err((
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "příloha je příliš velká".into(),
-            ));
+        return Err((
+            StatusCode::INSUFFICIENT_STORAGE,
+            "úložiště příloh je plné, zkus to později".into(),
+        ));
+    }
+
+    // Kvóta účtu: rezervuje se ohlášená velikost (bez Content-Length strop
+    // jedné přílohy) a po zápisu se nespotřebovaný zbytek vrátí. Jen
+    // v paměti — vazba účet → blob se neukládá (viz hlavička modulu).
+    let reserved = declared.unwrap_or(cfg.max_bytes);
+    let account = authed.account_id;
+    if !state.attachment_budget.try_take(&account, reserved) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "denní limit příloh vyčerpán, zkus to později".into(),
+        ));
+    }
+    if !state.attachment_stored.try_reserve(&account, reserved) {
+        state.attachment_budget.refund(&account, reserved);
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "příliš mnoho uložených příloh, počkej, až je příjemci stáhnou".into(),
+        ));
+    }
+    let refund = |unused: u64| {
+        state.attachment_budget.refund(&account, unused);
+        state.attachment_stored.release(&account, unused);
+    };
+    let result = store_upload(&state, body).await;
+    match &result {
+        Ok(stored) => refund(reserved.saturating_sub(stored.size_bytes)),
+        Err(_) => refund(reserved),
+    }
+    result.map(|stored| (StatusCode::CREATED, Json(stored.into())))
+}
+
+/// Výsledek zápisu včetně skutečné velikosti (pro vyúčtování kvóty).
+struct Stored {
+    blob_id: String,
+    expires_at_ms: i64,
+    max_bytes: u64,
+    size_bytes: u64,
+}
+
+impl From<Stored> for UploadOut {
+    fn from(s: Stored) -> Self {
+        Self {
+            blob_id: s.blob_id,
+            expires_at_ms: s.expires_at_ms,
+            max_bytes: s.max_bytes,
         }
     }
+}
+
+async fn store_upload(state: &AppState, body: Body) -> ApiResult<Stored> {
+    let cfg = &state.attachments;
 
     // Globální strop: součet živých příloh + tahle nesmí přesáhnout
     // total_bytes. Jeden SELECT nad malou tabulkou; nic o zařízení se
@@ -192,14 +254,12 @@ pub async fn upload(
     // Log bez blob_id — jen velikost (kapacitní metrika)
     tracing::debug!(size = written, "příloha uložena");
 
-    Ok((
-        StatusCode::CREATED,
-        Json(UploadOut {
-            blob_id: blob_hex,
-            expires_at_ms: expires_at.timestamp_millis(),
-            max_bytes: cfg.max_bytes,
-        }),
-    ))
+    Ok(Stored {
+        blob_id: blob_hex,
+        expires_at_ms: expires_at.timestamp_millis(),
+        max_bytes: cfg.max_bytes,
+        size_bytes: written,
+    })
 }
 
 async fn write_stream(body: Body, path: &FsPath, max_bytes: u64) -> ApiResult<u64> {
@@ -343,6 +403,7 @@ mod db_tests {
                 total_bytes: 1 << 30,
             },
             trusted,
+            crate::limits::Limits::from_env(),
         )
     }
 

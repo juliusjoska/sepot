@@ -42,13 +42,15 @@ tokio-util = { version = "0.7", features = ["io"] }
 # při AUTH. Relay NIKDY nešifruje/nedešifruje zprávy (hloupý relay).
 libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.96.4" }
 libsignal-core = { git = "https://github.com/signalapp/libsignal", tag = "v0.96.4" }
-tower_governor = "0.8.0"
+# Rate limity (token bucket per IP / Tor / globálně, limits.rs)
+governor = "0.10"
 tower-http = { version = "0.7.0", features = ["timeout"] }
 
 # Push budíčky (UnifiedPush/WebPush = POST na endpoint). rustls, ať build
 # zůstane bez OpenSSL (stejně jako sqlx tls-rustls). Bez default featur —
-# nechceme native-tls ani zbytečné kodeky.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# nechceme native-tls ani zbytečné kodeky. http2: APNs jiný protokol
+# nepřijme (HTTP/1.1 spojení odmítne) — bez něj nedorazil žádný iOS budíček.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2"] }
 # FCM fast mode: RS256 JWT pro OAuth2 service account flow
 jsonwebtoken = "9"
 # setrlimit(RLIMIT_NOFILE) při startu — docker dává soft limit 1024

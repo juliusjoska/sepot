@@ -33,13 +33,20 @@ use crate::state::AppState;
 const AUTH_DEADLINE: Duration = Duration::from_secs(10);
 /// Kolik AUTH pokusů smí jedno spojení udělat (každý = dotaz do DB).
 const MAX_AUTH_ATTEMPTS: u32 = 3;
-/// Rate limit rámců od klienta: max FRAME_WINDOW_MAX za FRAME_WINDOW.
+/// Rate limit rámců od klienta: max `Limits::ws_frames_per_window` za FRAME_WINDOW.
 /// Počítají se jen rámce, které něco stojí (obálka, push registrace, TURN);
 /// ACK a Pong ne — klient po vylití velké fronty posílá ACK + doručenku na
 /// každou obálku a 429 by ho odpojilo uprostřed, fronta by se po osmi
 /// kolech smazala (ztráta zpráv bez útočníka).
 const FRAME_WINDOW: Duration = Duration::from_secs(10);
-const FRAME_WINDOW_MAX: u32 = 200;
+/// Buffery jednoho spojení. Výchozí v axum (tungstenite) jsou 128 KiB čtecí
+/// + 128 KiB zapisovací = ~137 KiB RAM na spojení; při 512 MiB stropu
+/// kontejneru OOM kolem 3,7–7 tisíc připojených (změřeno). 4 KiB čtecí buffer
+/// a zápis bez bufferu (každý rámec se hned flushne) = ~16,6 KiB na spojení,
+/// 8 990 spojení = 149 MiB. Velké obálky (256 KiB) tím netrpí: čtecí buffer
+/// je jen blok, zprávu skládá tungstenite zvlášť do `max_message_size`.
+const WS_READ_BUFFER: usize = 4096;
+const WS_WRITE_BUFFER: usize = 0;
 /// Push endpoint (URL distributora / FCM token) a VoIP token mají rozumný
 /// strop; APNs token je 64 hex, FCM do ~200 znaků, UnifiedPush URL < 1 KiB.
 const MAX_PUSH_ENDPOINT_BYTES: usize = 2048;
@@ -83,10 +90,16 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     let ip = state.trusted_proxies.client_ip(peer.ip(), &headers);
+    // Všichni onion klienti mají IP kontejneru Toru → vlastní, vyšší strop.
+    let cap = if state.trusted_proxies.is_tor(peer.ip()) {
+        state.limits.max_conns_tor
+    } else {
+        state.limits.max_conns_per_ip
+    };
 
     let over_cap = {
         let mut entry = state.ws_conns.entry(ip).or_insert(0);
-        if *entry >= state.max_conns_per_ip {
+        if *entry >= cap {
             true
         } else {
             *entry += 1;
@@ -103,7 +116,9 @@ pub async fn ws_handler(
         ip,
     };
 
-    ws.max_message_size(MAX_ENVELOPE_PAYLOAD + 4096)
+    ws.read_buffer_size(WS_READ_BUFFER)
+        .write_buffer_size(WS_WRITE_BUFFER)
+        .max_message_size(MAX_ENVELOPE_PAYLOAD + 4096)
         .max_frame_size(MAX_ENVELOPE_PAYLOAD + 4096)
         .on_upgrade(move |socket| async move {
             let _guard = guard;
@@ -119,6 +134,7 @@ struct Pending {
     delivery_address: Vec<u8>,
     identity_key: Vec<u8>,
     device_uuid: Vec<u8>,
+    account_id: Vec<u8>,
 }
 
 fn server_frame(frame: v1::server_frame::Frame) -> v1::ServerFrame {
@@ -166,6 +182,8 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
     let mut authed_address: Option<Vec<u8>> = None;
     // device_uuid ověřeného zařízení — klíč pro push registraci.
     let mut authed_device: Option<Vec<u8>> = None;
+    // Účet ověřeného zařízení — klíč kvóty odesílatele (jen v paměti).
+    let mut authed_account: Option<Vec<u8>> = None;
     // Záznam v `online` mapě — značkuje se každým rámcem od klienta, aby
     // routing poznal živé spojení od zatuchlého.
     let mut online_device: Option<Arc<crate::state::OnlineDevice>> = None;
@@ -233,7 +251,7 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                 window_frames = 0;
             }
             window_frames += 1;
-            if window_frames > FRAME_WINDOW_MAX {
+            if window_frames > state.limits.ws_frames_per_window {
                 let _ = tx.send(error_frame(429, "příliš mnoho rámců")).await;
                 break;
             }
@@ -250,8 +268,8 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                     let _ = tx.send(error_frame(400, "neplatný AUTH")).await;
                     break;
                 }
-                let row: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
-                    "SELECT d.delivery_address, i.identity_key
+                let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+                    "SELECT d.delivery_address, i.identity_key, d.account_id
                      FROM devices d JOIN identities i USING (account_id)
                      WHERE d.device_uuid = $1",
                 )
@@ -260,7 +278,7 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                 .await
                 .ok()
                 .flatten();
-                let Some((delivery_address, identity_key)) = row else {
+                let Some((delivery_address, identity_key, account_id)) = row else {
                     let _ = tx.send(error_frame(401, "neautorizováno")).await;
                     break;
                 };
@@ -279,6 +297,7 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                     delivery_address,
                     identity_key,
                     device_uuid: auth.device_uuid,
+                    account_id,
                 });
             }
 
@@ -347,6 +366,7 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                 }
 
                 authed_device = Some(pd.device_uuid);
+                authed_account = Some(pd.account_id);
             }
 
             Some(v1::client_frame::Frame::RegisterPush(reg)) if authed_address.is_some() => {
@@ -377,7 +397,8 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
 
             Some(v1::client_frame::Frame::Envelope(envelope)) if authed_address.is_some() => {
                 let msg_uuid = envelope.msg_uuid.clone();
-                match state.route_envelope(envelope).await {
+                let sender = authed_account.as_deref().unwrap_or_default();
+                match state.route_envelope(envelope, sender).await {
                     Ok(status) => {
                         let _ = tx
                             .send(server_frame(v1::server_frame::Frame::Receipt(
@@ -388,8 +409,12 @@ async fn handle(state: Arc<AppState>, socket: WebSocket) {
                             )))
                             .await;
                     }
-                    Err(_) => {
-                        let _ = tx.send(error_frame(400, "obálka odmítnuta")).await;
+                    Err(e) => {
+                        if let crate::state::RouteError::Internal(err) = &e {
+                            tracing::warn!("obálka neuložena: {err}");
+                        }
+                        let (code, message) = e.code_and_message();
+                        let _ = tx.send(error_frame(code, message)).await;
                     }
                 }
             }

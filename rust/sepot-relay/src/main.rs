@@ -8,9 +8,12 @@
 mod apns;
 mod attachments;
 mod certs;
+mod disk;
 mod fcm;
+mod limits;
 mod net;
 mod push;
+mod quota;
 mod rest;
 mod state;
 mod turn;
@@ -22,14 +25,14 @@ use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
+use axum::middleware::from_fn_with_state;
 use axum::routing::{delete, get, post};
 use axum::serve::ListenerExt;
 use axum::Router;
 use sqlx::postgres::PgPoolOptions;
-use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::GovernorLayer;
 
-use crate::net::{TrustedProxies, TrustedProxyIp};
+use crate::limits::{Limits, RateLimit};
+use crate::net::TrustedProxies;
 use tower_http::timeout::TimeoutLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -49,8 +52,9 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "postgres://sepot:sepot_dev@127.0.0.1/sepot_relay".into());
     let bind = std::env::var("SEPOT_BIND").unwrap_or_else(|_| "127.0.0.1:8470".into());
 
+    let limits = Limits::from_env();
     let pool = PgPoolOptions::new()
-        .max_connections(8)
+        .max_connections(limits.db_pool)
         .connect(&database_url)
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
@@ -66,60 +70,23 @@ async fn main() -> anyhow::Result<()> {
         certs,
         attachments_cfg,
         trusted.clone(),
+        limits.clone(),
     ));
     attachments::spawn_cleanup(state.clone());
+    state.disk.spawn(&state.attachments.dir);
+    tracing::info!(?limits, "limity");
 
-    // ── Rate limiting (minimální sada; plný PoW/Privacy Pass později) ──
+    // ── Rate limiting ──
     //
-    // Klíč = klientská IP přes TrustedProxyIp: X-Forwarded-For/X-Real-Ip se
-    // uzná JEN od trusted proxy (traefik), jinak peer adresa. Onion klienti
-    // přicházejí z tor kontejneru (mimo trusted sadu) → sdílí jeden bucket
-    // a nemohou si IP nastavit hlavičkou (SECURITY audit #1).
-    // In-memory token bucket — nikdy se nezapisuje na disk (privacy).
-
-    // registrace: zápis do DB bez auth → nejpřísnější (burst 10, +1/5 min)
-    let gov_register = Arc::new(
-        GovernorConfigBuilder::default()
-            .key_extractor(TrustedProxyIp(trusted.clone()))
-            .burst_size(10)
-            .period(Duration::from_secs(300))
-            .finish()
-            .expect("governor config"),
-    );
-    // čtecí API (bundle žere OTP klíče → drain ochrana): burst 60, +2/s
-    let gov_general = Arc::new(
-        GovernorConfigBuilder::default()
-            .key_extractor(TrustedProxyIp(trusted.clone()))
-            .burst_size(60)
-            .per_second(2)
-            .finish()
-            .expect("governor config"),
-    );
-
-    // přílohy: upload je autentizovaný, ale drahý (disk) → burst 30, +1/s
-    let gov_attachments = Arc::new(
-        GovernorConfigBuilder::default()
-            .key_extractor(TrustedProxyIp(trusted.clone()))
-            .burst_size(30)
-            .per_second(1)
-            .finish()
-            .expect("governor config"),
-    );
-
-    // Governor drží mapu IP→bucket v paměti — periodicky vyhazovat staré
-    for limiter in [
-        gov_register.limiter().clone(),
-        gov_general.limiter().clone(),
-        gov_attachments.limiter().clone(),
-    ] {
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(60));
-            loop {
-                tick.tick().await;
-                limiter.retain_recent();
-            }
-        });
-    }
+    // Klíč = klientská IP: X-Forwarded-For se uzná JEN od trusted proxy
+    // (traefik), jinak peer adresa. Onion klienti přicházejí z kontejneru Toru
+    // (SEPOT_TOR_PEERS) a mají vlastní společný bucket — hlavičkou si IP
+    // nastavit nemohou (SECURITY audit #1). Jen v paměti, nikdy na disk.
+    // Hodnoty a jejich zdůvodnění: limits.rs.
+    let rl_register = RateLimit::new(limits.register, limits.register_global, trusted.clone());
+    let rl_general = RateLimit::new(limits.general, None, trusted.clone());
+    let rl_attachments = RateLimit::new(limits.attachments, None, trusted.clone());
+    let rl_ws = RateLimit::new(limits.ws_upgrade, None, trusted.clone());
 
     // Úklid značek budíčků a OTP oken (jen paměť)
     {
@@ -135,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
 
     let register_routes = Router::new()
         .route("/v1/register", post(rest::register))
-        .layer(GovernorLayer::new(gov_register));
+        .layer(from_fn_with_state(rl_register, crate::limits::enforce));
 
     let general_routes = Router::new()
         .route("/v1/server-info", get(rest::server_info))
@@ -144,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/keys", post(rest::upload_keys))
         .route("/v1/certificate/delivery", get(rest::certificate_delivery))
         .route("/v1/identity", delete(rest::delete_identity))
-        .layer(GovernorLayer::new(gov_general));
+        .layer(from_fn_with_state(rl_general, crate::limits::enforce));
 
     let rest_routes = register_routes
         .merge(general_routes)
@@ -159,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
     let attachment_routes = Router::new()
         .route("/v1/attachments", post(attachments::upload))
         .route("/v1/attachments/{blob_id}", get(attachments::download))
-        .layer(GovernorLayer::new(gov_attachments))
+        .layer(from_fn_with_state(rl_attachments, crate::limits::enforce))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(120),
@@ -169,8 +136,12 @@ async fn main() -> anyhow::Result<()> {
         // health bez limitů — interní docker/uptime checky; ready ověří i DB
         .route("/v1/health", get(rest::health))
         .route("/v1/ready", get(rest::ready))
-        // WS má vlastní limity (conn cap per IP, auth deadline, frame rate)
-        .route("/v1/ws", get(ws::ws_handler))
+        // WS: tempo otevírání spojení + vlastní limity v ws.rs (strop
+        // souběžných spojení na IP, AUTH deadline, tempo rámců)
+        .route(
+            "/v1/ws",
+            get(ws::ws_handler).layer(from_fn_with_state(rl_ws, crate::limits::enforce)),
+        )
         .merge(rest_routes)
         .merge(attachment_routes)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))

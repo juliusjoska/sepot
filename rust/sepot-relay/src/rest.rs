@@ -132,6 +132,12 @@ pub async fn register(
     headers: HeaderMap,
     Json(body): Json<RegisterIn>,
 ) -> ApiResult<(StatusCode, Json<RegisterOut>)> {
+    if state.limits.registration_paused {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "registrace jsou dočasně pozastavené, zkus to za pár minut".into(),
+        ));
+    }
     if body.one_time_prekeys.len() > MAX_ONE_TIME_PREKEYS {
         return Err(bad("příliš mnoho one-time prekeys"));
     }
@@ -489,9 +495,6 @@ pub struct UploadKeysOut {
     pub one_time_prekeys: i64,
 }
 
-/// Strop zásoby OTP na zařízení — nad něj se další zahodí (klient posílá
-/// dávky po 50, relay zůstane u sta jako při registraci).
-const MAX_STORED_ONE_TIME_PREKEYS: i64 = 100;
 
 /// Po kolika dnech se starý signed prekey smaže (po rotaci ho relay ještě
 /// drží, protože bundle s ním mohl někdo stáhnout těsně před výměnou).
@@ -595,7 +598,9 @@ pub async fn upload_keys(
             .await
             .map_err(internal)?;
     for otp in &body.one_time_prekeys {
-        if stored >= MAX_STORED_ONE_TIME_PREKEYS {
+        // Strop zásoby OTP (`Limits::max_stored_otp`, výchozí 100) — nad něj se
+        // další zahodí (klient posílá dávky po 50, jako při registraci sto).
+        if stored >= state.limits.max_stored_otp {
             break;
         }
         let public = b64("one_time_prekeys.public_key", &otp.public_key, Some(33))?;

@@ -201,4 +201,26 @@ mod tests {
         assert!(limit <= 30 * 86_400, "APNs nedrží notifikace déle než 30 dní");
     }
     
+
+    /// APNs mluví jen HTTP/2. Bez featury `http2` v reqwestu relay spojení
+    /// vůbec nenaváže a iPhone žádný budíček nedostane. Bez platného JWT
+    /// vrátí Apple 403 (nebo 400) — to stačí: spojení i protokol sedí.
+    #[tokio::test]
+    #[ignore = "vyžaduje síť (api.push.apple.com)"]
+    async fn apns_spojeni_jde_pres_http2() {
+        let client = crate::push::build_client();
+        let res = client
+            .post(format!("{PROD_HOST}/3/device/00"))
+            .header("apns-topic", "cz.sepot.sepot")
+            .body("{}")
+            .send()
+            .await
+            .expect("spojení s APNs");
+        assert_eq!(res.version(), reqwest::Version::HTTP_2);
+        assert!(
+            matches!(res.status().as_u16(), 400 | 403),
+            "čekána odpověď APNs bez platného tokenu, přišlo {}",
+            res.status()
+        );
+    }
 }

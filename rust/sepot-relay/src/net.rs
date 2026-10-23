@@ -14,19 +14,34 @@
 //! proxy. Onion peer (tor kontejner) tam není → použije se jeho IP a všichni
 //! onion klienti sdílí jeden bucket (přesně jak počítal původní komentář).
 
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::net::IpAddr;
 
-use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, Request};
+use axum::http::HeaderMap;
 use ipnet::IpNet;
-use tower_governor::key_extractor::KeyExtractor;
-use tower_governor::GovernorError;
 
 /// Sada sítí, jejichž forwarded hlavičkám se věří (traefik/pangolin).
 /// Konfiguruje se přes `SEPOT_TRUSTED_PROXIES` (čárkou oddělené IP nebo CIDR).
 pub struct TrustedProxies {
     nets: Vec<IpNet>,
+    /// Adresy, ze kterých přichází Tor (kontejner `tor` v síti tornet,
+    /// `SEPOT_TOR_PEERS`). Takový peer nikdy není trusted proxy a dostává
+    /// vlastní, společné limity — všichni onion klienti mají jeho IP.
+    tor: Vec<IpNet>,
+}
+
+fn parse_nets(raw: &str) -> Vec<IpNet> {
+    raw.split(',')
+        .filter_map(|s| {
+            let s = s.trim();
+            if s.is_empty() {
+                return None;
+            }
+            // "10.0.0.0/24" i holé "10.0.0.5" (bereme jako /32, resp. /128)
+            s.parse::<IpNet>()
+                .ok()
+                .or_else(|| s.parse::<IpAddr>().ok().map(IpNet::from))
+        })
+        .collect()
 }
 
 impl TrustedProxies {
@@ -34,31 +49,37 @@ impl TrustedProxies {
     /// nikomu (vždy peer IP) — fail-safe: chybějící konfigurace nesmí otevřít
     /// spoofing, maximálně sloučí clearnet klienty do jednoho bucketu.
     pub fn from_env() -> Self {
-        let raw = std::env::var("SEPOT_TRUSTED_PROXIES").unwrap_or_default();
-        let nets: Vec<IpNet> = raw
-            .split(',')
-            .filter_map(|s| {
-                let s = s.trim();
-                if s.is_empty() {
-                    return None;
-                }
-                // "10.0.0.0/24" i holé "10.0.0.5" (bereme jako /32, resp. /128)
-                s.parse::<IpNet>()
-                    .ok()
-                    .or_else(|| s.parse::<IpAddr>().ok().map(IpNet::from))
-            })
-            .collect();
-        if nets.is_empty() {
+        let proxies = Self::parse(
+            &std::env::var("SEPOT_TRUSTED_PROXIES").unwrap_or_default(),
+            &std::env::var("SEPOT_TOR_PEERS").unwrap_or_default(),
+        );
+        if proxies.nets.is_empty() {
             tracing::warn!(
                 "SEPOT_TRUSTED_PROXIES prázdné — forwarded hlavičky se ignorují, \
                  anti-abuse klíč = peer IP. Za reverse proxy nastav CIDR proxy sítě."
             );
         }
-        Self { nets }
+        proxies
+    }
+
+    /// Prázdné/nenastavené proxy = nevěří se nikomu (vždy peer IP) — fail-safe:
+    /// chybějící konfigurace nesmí otevřít spoofing, maximálně sloučí clearnet
+    /// klienty do jednoho bucketu. Tor má přednost: síť, která je zároveň
+    /// v obou sadách, se jako proxy nebere (onion klient by si jinak IP
+    /// nastavil hlavičkou).
+    pub fn parse(proxies: &str, tor: &str) -> Self {
+        Self {
+            nets: parse_nets(proxies),
+            tor: parse_nets(tor),
+        }
+    }
+
+    pub fn is_tor(&self, peer: IpAddr) -> bool {
+        self.tor.iter().any(|n| n.contains(&peer))
     }
 
     fn trusts(&self, peer: IpAddr) -> bool {
-        self.nets.iter().any(|n| n.contains(&peer))
+        !self.is_tor(peer) && self.nets.iter().any(|n| n.contains(&peer))
     }
 
     /// Klientská IP pro anti-abuse. Forwarded hlavičku uznej jen od trusted
@@ -83,24 +104,6 @@ impl TrustedProxies {
     }
 }
 
-/// Governor key extractor s ověřením trusted proxy. Nahrazuje
-/// `SmartIpKeyExtractor`, který forwarded hlavičkám věří bezpodmínečně.
-#[derive(Clone)]
-pub struct TrustedProxyIp(pub Arc<TrustedProxies>);
-
-impl KeyExtractor for TrustedProxyIp {
-    type Key = IpAddr;
-
-    fn extract<T>(&self, req: &Request<T>) -> Result<Self::Key, GovernorError> {
-        let peer = req
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .map(|ci| ci.0.ip())
-            .ok_or(GovernorError::UnableToExtractKey)?;
-        Ok(self.0.client_ip(peer, req.headers()))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,15 +111,7 @@ mod tests {
     use axum::http::HeaderMap;
 
     fn proxies(cfg: &[&str]) -> TrustedProxies {
-        let nets = cfg
-            .iter()
-            .filter_map(|s| {
-                s.parse::<IpNet>()
-                    .ok()
-                    .or_else(|| s.parse::<IpAddr>().ok().map(IpNet::from))
-            })
-            .collect();
-        TrustedProxies { nets }
+        TrustedProxies::parse(&cfg.join(","), "")
     }
 
     fn ip(s: &str) -> IpAddr {
@@ -190,5 +185,14 @@ mod tests {
         let peer = ip("fd00::1234");
         let h = headers(&[("x-forwarded-for", "2001:db8::1")]);
         assert_eq!(tp.client_ip(peer, &h), ip("2001:db8::1"));
+    }
+
+    /// Síť Toru v sadě proxy omylem: onion peer si IP hlavičkou nastavit nesmí.
+    #[test]
+    fn tor_peer_neni_proxy_ani_pri_prekryvu() {
+        let tp = TrustedProxies::parse("172.20.0.0/16", "172.20.1.0/24");
+        let tor = ip("172.20.1.3");
+        assert!(tp.is_tor(tor));
+        assert_eq!(tp.client_ip(tor, &headers(&[("x-forwarded-for", "1.2.3.4")])), tor);
     }
 }
