@@ -1,16 +1,20 @@
 //! REST endpointy — registrace, prekey bundle, sender cert.
 //! Chybové odpovědi nikdy neleakují interní detail; logy bez identifikátorů.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use base64::prelude::*;
 use libsignal_protocol::PublicKey;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
+use crate::limits::RegisterLimits;
+use crate::pow::{Mode as PowMode, Verdict};
 use crate::state::AppState;
 
 type ApiResult<T> = Result<T, (StatusCode, String)>;
@@ -57,13 +61,48 @@ pub async fn ready(State(state): State<Arc<AppState>>) -> ApiResult<Json<serde_j
 /// Veřejné informace o relayi. `source` + `revision` plní AGPL §13 — kdo
 /// s relayem mluví, má vědět, který zdroj právě běží.
 pub async fn server_info(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let mut capabilities = vec!["pqxdh", "sealed-sender", "prekey-upload", "identity-reclaim"];
+    if state.pow.mode() != PowMode::Off {
+        capabilities.push("register-pow");
+    }
     Json(serde_json::json!({
         "frame_version": 1,
         "trust_root": BASE64_STANDARD.encode(&state.certs.trust_root_public),
-        "capabilities": ["pqxdh", "sealed-sender", "prekey-upload", "identity-reclaim"],
+        "capabilities": capabilities,
+        "register_pow": state.pow.mode().as_str(),
         "source": state.source_url,
         "revision": state.revision,
     }))
+}
+
+fn unix_now() -> u64 {
+    chrono::Utc::now().timestamp().max(0) as u64
+}
+
+// ── GET /v1/register/challenge ─────────────────────────────────────────
+
+/// Výzva proof-of-work pro registraci (pow.rs). `no-store`: každá výzva je
+/// jednorázová, sdílená cache by ji rozdala víc klientům.
+pub async fn register_challenge(State(state): State<Arc<AppState>>) -> Response {
+    if state.pow.mode() == PowMode::Off {
+        return (StatusCode::NOT_FOUND, "proof-of-work je vypnutý").into_response();
+    }
+    let now = unix_now();
+    let challenge = state.pow.issue(now);
+    let mut response = Json(serde_json::json!({
+        "algorithm": "sha256-v1",
+        "challenge": BASE64_URL_SAFE_NO_PAD.encode(challenge.token),
+        "bits": challenge.bits,
+        "expires_at": challenge.expires_at,
+        // relativně: hodiny telefonu bývají mimo, platnost si klient měří sám
+        "expires_in": challenge.expires_at - now,
+        "mode": state.pow.mode().as_str(),
+    }))
+    .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Ověří hlavičku `X-Sepot-Identity-Proof: <ts_ms>.<sig_b64>` — podpis
@@ -127,17 +166,71 @@ pub struct RegisterOut {
 /// Strop OTP klíčů v jedné registraci (klient posílá 100).
 const MAX_ONE_TIME_PREKEYS: usize = 100;
 
+/// Limit registrací se vybírá až v handleru: bucket per IP závisí na tom,
+/// jestli klient přinesl platný proof-of-work, a ten je vázaný na identity
+/// klíč z těla. Ověření PoW je jedna HMAC a jedna SHA-256, takže pořadí
+/// „parsovat → ověřit → limit → podpisy a DB“ nic drahého nepouští dřív.
 pub async fn register(
     State(state): State<Arc<AppState>>,
+    Extension(limits): Extension<Arc<RegisterLimits>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<RegisterIn>,
-) -> ApiResult<(StatusCode, Json<RegisterOut>)> {
+) -> Response {
     if state.limits.registration_paused {
-        return Err((
+        return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "registrace jsou dočasně pozastavené, zkus to za pár minut".into(),
-        ));
+            [(header::RETRY_AFTER, "300")],
+            "registrace jsou dočasně pozastavené, zkus to za pár minut",
+        )
+            .into_response();
     }
+    let identity_key = match b64("identity_key", &body.identity_key, Some(33)) {
+        Ok(key) => key,
+        Err(e) => return e.into_response(),
+    };
+    let with_pow = match (state.pow.mode(), state.pow.verify(&headers, &identity_key, unix_now())) {
+        (PowMode::Off, _) => false,
+        (_, Verdict::Valid) => true,
+        (PowMode::Optional, Verdict::Missing) => false,
+        (PowMode::Optional, Verdict::Invalid(why)) => {
+            // Prošlá nebo poškozená výzva v režimu optional = registrace jako
+            // bez PoW (běžný limit), ne chyba: starší výzva po restartu relaye
+            // nesmí člověka zablokovat.
+            tracing::debug!(why, "neplatný proof-of-work, běžný limit");
+            false
+        }
+        (PowMode::Required, verdict) => {
+            if let Verdict::Invalid(why) = verdict {
+                tracing::debug!(why, "neplatný proof-of-work");
+            }
+            return (
+                StatusCode::PRECONDITION_REQUIRED,
+                "registrace vyžaduje proof-of-work (GET /v1/register/challenge)",
+            )
+                .into_response();
+        }
+    };
+    let limiter = if with_pow { &limits.pow } else { &limits.base };
+    if let Err(wait) = limiter.check(peer.ip(), &headers) {
+        return crate::limits::too_many(wait);
+    }
+    match register_device(&state, &headers, identity_key, body).await {
+        Ok(created) => {
+            state.pow.note_registration();
+            tracing::info!(pow = with_pow, "nová registrace zařízení");
+            created.into_response()
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn register_device(
+    state: &AppState,
+    headers: &HeaderMap,
+    identity_key: Vec<u8>,
+    body: RegisterIn,
+) -> ApiResult<(StatusCode, Json<RegisterOut>)> {
     if body.one_time_prekeys.len() > MAX_ONE_TIME_PREKEYS {
         return Err(bad("příliš mnoho one-time prekeys"));
     }
@@ -146,7 +239,6 @@ pub async fn register(
     if !(1..=127).contains(&body.device_id) || !(1..=16_383).contains(&body.registration_id) {
         return Err(bad("device_id nebo registration_id mimo rozsah"));
     }
-    let identity_key = b64("identity_key", &body.identity_key, Some(33))?;
     let delivery_address = b64("delivery_address", &body.delivery_address, Some(32))?;
     let spk_pub = b64("signed_prekey.public_key", &body.signed_prekey.public_key, Some(33))?;
     let spk_sig = b64(
@@ -197,7 +289,7 @@ pub async fn register(
     // prekeys, push tokeny i nedoručená fronta pryč (nové zařízení staré
     // ratchet relace stejně nemá), account_id zůstává — kontakty ho znají.
     let account_id = if inserted.rows_affected() == 0 {
-        if !identity_proof_valid(&headers, &identity, "POST /v1/register") {
+        if !identity_proof_valid(headers, &identity, "POST /v1/register") {
             return Err((StatusCode::CONFLICT, "identita už existuje".into()));
         }
         let (existing,): (Vec<u8>,) =
@@ -277,7 +369,6 @@ pub async fn register(
     }
 
     tx.commit().await.map_err(internal)?;
-    tracing::info!("nová registrace zařízení");
 
     Ok((
         StatusCode::CREATED,

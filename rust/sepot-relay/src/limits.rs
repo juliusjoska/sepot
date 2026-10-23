@@ -93,6 +93,13 @@ pub struct Limits {
     /// Dřív 10 + 1/5 min: za CGNAT mobilního operátora čekal jedenáctý
     /// člověk na účet minuty.
     pub register: RatePair,
+    /// `SEPOT_RL_REGISTER_POW_*` na IP pro registrace s platným proof-of-work
+    /// (pow.rs): 200 naráz, pak 1 za 2 s (1 800/h). Výpočet zdražuje každou
+    /// registraci, takže velký CGNAT může dostat víc bez rizika levné záplavy
+    /// z jedné adresy. Globální strop platí společně s registracemi bez PoW.
+    pub register_pow: RatePair,
+    /// `SEPOT_RL_POW_CHALLENGE_*`: vydávání výzev (jen HMAC, nic do DB).
+    pub pow_challenge: RatePair,
     /// `SEPOT_RL_REGISTER_GLOBAL_*`: všechny registrace dohromady, 600 naráz,
     /// pak 40/s. Chrání DB (změřeno 117–147 registrací/s na 2 jádrech), když
     /// registruje mnoho adres naráz; BURST 0 = vypnuto.
@@ -159,6 +166,16 @@ impl Limits {
                 Rate::new(50, 10_000),
                 Rate::new(100, 3_000),
             ),
+            register_pow: pair(
+                "SEPOT_RL_REGISTER_POW",
+                Rate::new(200, 2_000),
+                Rate::new(300, 1_000),
+            ),
+            pow_challenge: pair(
+                "SEPOT_RL_POW_CHALLENGE",
+                Rate::new(120, 100),
+                Rate::new(600, 20),
+            ),
             register_global: (!global_off).then_some(global),
             registration_paused: matches!(
                 std::env::var("SEPOT_REGISTRATION_PAUSED").as_deref(),
@@ -201,16 +218,45 @@ impl Limits {
 pub struct RateLimit {
     clearnet: DefaultKeyedRateLimiter<IpAddr>,
     tor: DefaultDirectRateLimiter,
-    global: Option<DefaultDirectRateLimiter>,
+    global: Option<Arc<DefaultDirectRateLimiter>>,
     trusted: Arc<TrustedProxies>,
+}
+
+/// Registrace bez a s proof-of-work: vlastní buckety per IP, společný
+/// globální strop (chrání DB bez ohledu na to, kdo PoW přinesl).
+pub struct RegisterLimits {
+    pub base: Arc<RateLimit>,
+    pub pow: Arc<RateLimit>,
+}
+
+impl RegisterLimits {
+    pub fn new(limits: &Limits, trusted: Arc<TrustedProxies>) -> Arc<Self> {
+        let base = RateLimit::new(limits.register, limits.register_global, trusted);
+        let pow = base.sibling(limits.register_pow);
+        Arc::new(Self { base, pow })
+    }
 }
 
 impl RateLimit {
     pub fn new(rates: RatePair, global: Option<Rate>, trusted: Arc<TrustedProxies>) -> Arc<Self> {
+        let global = global.map(|g| Arc::new(DefaultDirectRateLimiter::direct(g.quota())));
+        Self::build(rates, global, trusted)
+    }
+
+    /// Limiter s vlastními buckety per IP a stejným globálním stropem.
+    pub fn sibling(&self, rates: RatePair) -> Arc<Self> {
+        Self::build(rates, self.global.clone(), self.trusted.clone())
+    }
+
+    fn build(
+        rates: RatePair,
+        global: Option<Arc<DefaultDirectRateLimiter>>,
+        trusted: Arc<TrustedProxies>,
+    ) -> Arc<Self> {
         let limiter = Arc::new(Self {
             clearnet: DefaultKeyedRateLimiter::keyed(rates.clearnet.quota()),
             tor: DefaultDirectRateLimiter::direct(rates.tor.quota()),
-            global: global.map(|g| DefaultDirectRateLimiter::direct(g.quota())),
+            global,
             trusted,
         });
         // Zapomenout nečinné buckety, ať mapa neroste s každou kdy viděnou IP.
@@ -256,7 +302,7 @@ pub async fn enforce(
     }
 }
 
-fn too_many(wait: Duration) -> Response {
+pub fn too_many(wait: Duration) -> Response {
     let secs = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
     let mut response = (StatusCode::TOO_MANY_REQUESTS, "příliš mnoho požadavků").into_response();
     if let Ok(value) = HeaderValue::from_str(&secs.max(1).to_string()) {
@@ -324,6 +370,26 @@ mod tests {
         assert!(rl.check(proxy, &xff("198.51.100.1")).is_ok());
         assert!(rl.check(proxy, &xff("198.51.100.2")).is_ok());
         assert!(rl.check(proxy, &xff("198.51.100.3")).is_err());
+    }
+
+    #[tokio::test]
+    async fn sourozenec_sdili_globalni_strop_ne_ip_bucket() {
+        let base_rates = RatePair {
+            clearnet: Rate::new(1, 3_600_000),
+            tor: Rate::new(1, 3_600_000),
+        };
+        let pow_rates = RatePair {
+            clearnet: Rate::new(5, 3_600_000),
+            tor: Rate::new(5, 3_600_000),
+        };
+        let base = RateLimit::new(base_rates, Some(Rate::new(3, 3_600_000)), trusted("10.0.0.1", ""));
+        let pow = base.sibling(pow_rates);
+        let proxy: IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(base.check(proxy, &xff("198.51.100.1")).is_ok());
+        assert!(base.check(proxy, &xff("198.51.100.1")).is_err(), "IP bucket bez PoW vyčerpán");
+        assert!(pow.check(proxy, &xff("198.51.100.1")).is_ok(), "s PoW vlastní bucket");
+        assert!(pow.check(proxy, &xff("198.51.100.1")).is_ok());
+        assert!(pow.check(proxy, &xff("198.51.100.1")).is_err(), "globální strop 3 společný");
     }
 
     #[test]

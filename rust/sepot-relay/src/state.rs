@@ -199,6 +199,8 @@ pub struct AppState {
     pub wake_marks: DashMap<Vec<u8>, WakeMarks>,
     /// delivery_address → (začátek okna, vydaných OTP) — drain ochrana.
     pub otp_issued: DashMap<Vec<u8>, (Instant, u32)>,
+    /// Proof-of-work registrace: klíč výzev, spotřebované výzvy, zátěž (paměť).
+    pub pow: crate::pow::RegisterPow,
     /// Odkaz na zdroj a revize běžící binárky (AGPL §13, /v1/server-info).
     pub source_url: String,
     pub revision: String,
@@ -242,6 +244,7 @@ impl AppState {
             limits,
             wake_marks: DashMap::new(),
             otp_issued: DashMap::new(),
+            pow: crate::pow::RegisterPow::new(crate::pow::Config::from_env()),
             source_url: std::env::var("SEPOT_SOURCE_URL")
                 .unwrap_or_else(|_| "https://github.com/juliusjoska/sepot".into()),
             revision: std::env::var("SEPOT_REVISION").unwrap_or_else(|_| "dev".into()),
@@ -264,6 +267,8 @@ impl AppState {
         self.send_budget.prune();
         self.attachment_budget.prune();
         self.attachment_stored.prune();
+        self.pow
+            .prune(chrono::Utc::now().timestamp().max(0) as u64);
     }
 
     /// Smí se vydat další OTP pro tuhle adresu? Počítá v hodinovém okně.

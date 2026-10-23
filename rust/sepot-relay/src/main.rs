@@ -12,6 +12,7 @@ mod disk;
 mod fcm;
 mod limits;
 mod net;
+mod pow;
 mod push;
 mod quota;
 mod rest;
@@ -31,7 +32,7 @@ use axum::serve::ListenerExt;
 use axum::Router;
 use sqlx::postgres::PgPoolOptions;
 
-use crate::limits::{Limits, RateLimit};
+use crate::limits::{Limits, RateLimit, RegisterLimits};
 use crate::net::TrustedProxies;
 use tower_http::timeout::TimeoutLayer;
 use tracing_subscriber::EnvFilter;
@@ -75,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
     attachments::spawn_cleanup(state.clone());
     state.disk.spawn(&state.attachments.dir);
     tracing::info!(?limits, "limity");
+    tracing::info!(pow = ?state.pow.cfg, "proof-of-work registrace");
 
     // ── Rate limiting ──
     //
@@ -83,7 +85,10 @@ async fn main() -> anyhow::Result<()> {
     // (SEPOT_TOR_PEERS) a mají vlastní společný bucket — hlavičkou si IP
     // nastavit nemohou (SECURITY audit #1). Jen v paměti, nikdy na disk.
     // Hodnoty a jejich zdůvodnění: limits.rs.
-    let rl_register = RateLimit::new(limits.register, limits.register_global, trusted.clone());
+    // Registrace: bucket per IP volí handler podle proof-of-work (rest.rs),
+    // proto limiter jako Extension, ne middleware.
+    let rl_register = RegisterLimits::new(&limits, trusted.clone());
+    let rl_challenge = RateLimit::new(limits.pow_challenge, None, trusted.clone());
     let rl_general = RateLimit::new(limits.general, None, trusted.clone());
     let rl_attachments = RateLimit::new(limits.attachments, None, trusted.clone());
     let rl_ws = RateLimit::new(limits.ws_upgrade, None, trusted.clone());
@@ -102,7 +107,12 @@ async fn main() -> anyhow::Result<()> {
 
     let register_routes = Router::new()
         .route("/v1/register", post(rest::register))
-        .layer(from_fn_with_state(rl_register, crate::limits::enforce));
+        .layer(axum::Extension(rl_register))
+        .merge(
+            Router::new()
+                .route("/v1/register/challenge", get(rest::register_challenge))
+                .layer(from_fn_with_state(rl_challenge, crate::limits::enforce)),
+        );
 
     let general_routes = Router::new()
         .route("/v1/server-info", get(rest::server_info))
