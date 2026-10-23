@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/models/attachment.dart';
@@ -103,9 +104,9 @@ class _ImageViewerScreenState extends ConsumerState<ImageViewerScreen> {
     final contact = (ref.read(contactsProvider).valueOrNull ?? const [])
         .where((c) => c.publicIdentity.id == m.senderId)
         .firstOrNull;
-    return contact?.displayName.isNotEmpty == true
-        ? contact!.displayName
-        : context.l10n.commonUnknownContact;
+    return contact == null
+        ? context.l10n.commonUnknownContact
+        : contactName(context.l10n, contact);
   }
 
   @override

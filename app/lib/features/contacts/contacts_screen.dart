@@ -95,7 +95,9 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
           Expanded(
             child: contactsAsync.when(
               data: (contacts) {
+                // Žádosti o zprávu kontakty nejsou — žijí jen v seznamu chatů.
                 final filtered = contacts.where((c) {
+                  if (!c.accepted) return false;
                   if (_searchQuery.isEmpty) return true;
                   return c.displayName.toLowerCase().contains(_searchQuery) ||
                       c.sepotId.toLowerCase().contains(_searchQuery);

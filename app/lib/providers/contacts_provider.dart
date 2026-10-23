@@ -26,9 +26,19 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       throw const ContactLinkIncompleteError();
     }
 
-    // Kontrola duplicity
-    if (contacts.any((c) => c.publicIdentity.id == identity.id)) {
-      throw const ContactAlreadyExistsError();
+    // Kontrola duplicity. Výjimka: žádost o zprávu od téhož klíče — ruční
+    // přidání (QR, odkaz) je právě to přijetí, na které čekala.
+    final existing =
+        contacts.where((c) => c.publicIdentity.id == identity.id).firstOrNull;
+    if (existing != null) {
+      if (existing.accepted) throw const ContactAlreadyExistsError();
+      await accept(existing.id,
+          name: identity.displayName.isEmpty
+              ? existing.displayName
+              : identity.displayName);
+      if (verified) existing.verified = true;
+      await storage.saveContact(existing);
+      return existing;
     }
 
     final contact = Contact.fromPublicIdentity(identity, verified: verified);
@@ -36,6 +46,20 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
 
     state = AsyncData([...contacts, contact]);
     return contact;
+  }
+
+  /// Přijme žádost o zprávu pod jménem, které jí dal uživatel (jméno
+  /// zvolené odesílatelem se tím nepřebírá automaticky).
+  Future<void> accept(String contactId, {required String name}) async {
+    final storage = ref.read(storageProvider);
+    final contacts = await future;
+    final contact = contacts.where((c) => c.id == contactId).firstOrNull;
+    if (contact == null) return;
+    contact
+      ..displayName = name.trim()
+      ..accepted = true;
+    await storage.saveContact(contact);
+    state = AsyncData([...contacts]);
   }
 
   /// Smaž kontakt

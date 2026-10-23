@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
@@ -37,8 +38,8 @@ Future<void> forwardMessage(
     for (final g in groups)
       if (!g.left && g.id != fromId) _Target(g.id, g.name, isGroup: true),
     for (final c in contacts)
-      if (!c.blocked && c.id != fromId)
-        _Target(c.id, c.displayName, verified: c.verified),
+      if (!c.blocked && c.accepted && c.id != fromId)
+        _Target(c.id, contactName(context.l10n, c), verified: c.verified),
   ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
   // Poznámky nahoře: přeposlat si něco „na později“ je nejčastější případ.
   if (!ConversationsNotifier.isNotes(fromId)) {

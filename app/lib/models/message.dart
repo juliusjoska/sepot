@@ -4,6 +4,18 @@ import 'package:sepot/models/group.dart';
 import 'package:sepot/models/poll.dart';
 import 'package:uuid/uuid.dart';
 
+/// Bezpečnostní upozornění, které appka sama vloží do konverzace.
+/// Nikdy nejde po drátě — protistrana ho podvrhnout nemůže.
+enum MessageNotice {
+  /// Pod adresou tohohle kontaktu se ozval jiný identity klíč (relay
+  /// hlásí jiný klíč, nebo relace patří cizímu klíči). Ověření se ruší.
+  identityChanged,
+
+  /// Neznámý odesílatel si zvolil jméno, které se plete s tímhle
+  /// kontaktem. [Message.content] nese jméno, které si zvolil.
+  lookalikeRequest,
+}
+
 /// Typy zpráv — odpovídá Rust: MessageType
 enum MessageType {
   text,
@@ -62,6 +74,9 @@ class Message {
   /// Lokální záznam hovoru — taková zpráva nemá text ani přílohu.
   final CallLog? callLog;
 
+  /// Bezpečnostní upozornění appky (není to zpráva od nikoho).
+  final MessageNotice? notice;
+
   const Message({
     required this.id,
     required this.senderId,
@@ -85,7 +100,29 @@ class Message {
     this.poll,
     this.mentions = const [],
     this.callLog,
+    this.notice,
   });
+
+  /// Upozornění appky v konverzaci [contactId]. Odesílatel = kontakt, aby
+  /// se konverzace v seznamu ukázala jako nepřečtená a upozornění si
+  /// uživatel nepřehlédl.
+  factory Message.notice({
+    required String contactId,
+    required String myId,
+    required MessageNotice notice,
+    String? content,
+  }) {
+    return Message(
+      id: const Uuid().v4(),
+      senderId: contactId,
+      recipientId: myId,
+      type: MessageType.text,
+      content: content,
+      timestamp: DateTime.now(),
+      isDelivered: true,
+      notice: notice,
+    );
+  }
 
   /// Vytvoř textovou zprávu
   factory Message.text({
@@ -191,6 +228,7 @@ class Message {
       poll: poll ?? this.poll,
       mentions: mentions,
       callLog: callLog,
+      notice: notice,
     );
   }
 
@@ -231,6 +269,7 @@ class Message {
         'poll': poll?.toJson(),
         if (mentions.isNotEmpty) 'mentions': mentions,
         if (callLog != null) 'call': callLog!.toJson(),
+        if (notice != null) 'notice': notice!.name,
       };
 
   static Map<String, int> _timesToJson(Map<String, DateTime> times) =>
@@ -282,6 +321,7 @@ class Message {
       poll: Poll.fromJson(json['poll']),
       mentions: mentionsFromWire(json['mentions']),
       callLog: CallLog.fromJson(json['call']),
+      notice: MessageNotice.values.asNameMap()[json['notice']],
     );
   }
 }

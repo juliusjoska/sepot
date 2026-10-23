@@ -5,6 +5,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
@@ -17,9 +18,7 @@ import 'package:sepot/providers/groups_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 
 String contactLabel(BuildContext context, Contact contact) =>
-    contact.displayName.isEmpty
-        ? context.l10n.commonUnknownContact
-        : contact.displayName;
+    contactName(context.l10n, contact);
 
 void _snack(BuildContext context, String text) {
   if (!context.mounted) return;

@@ -75,6 +75,19 @@ class PushNotifier {
     );
   }
 
+  /// Zpráva od neznámého odesílatele (žádost o zprávu): bez jména, které
+  /// si zvolil sám.
+  static Future<void> showMessageRequestNotification() async {
+    await _ensureInit();
+    final l10n = l10nFor(await LocaleNotifier.readStored());
+    await _plugin.show(
+      _notificationId,
+      l10n.commonAppName,
+      l10n.pushMessageRequest,
+      _details(l10n),
+    );
+  }
+
   /// Generická notifikace bez obsahu. Klepnutí otevře appku (unlock →
   /// WS připojení → fronta se vyleje normální cestou).
   static Future<void> showWakeNotification() async {

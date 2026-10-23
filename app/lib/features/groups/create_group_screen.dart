@@ -81,7 +81,9 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
         : null;
     final contactsAsync = ref.watch(contactsProvider);
     final contacts = (contactsAsync.valueOrNull ?? [])
-        .where((c) => !c.blocked)
+        // Do skupiny jen lidi, které jsem přijal — žádost o zprávu by
+        // jinak dostala roster všech členů pod jménem, které si vymyslela.
+        .where((c) => !c.blocked && c.accepted)
         .where((c) => existing == null || !existing.memberIds.contains(c.id))
         .toList();
     // Já jsem v memberIds existující skupiny; nová skupina mě přidá sama.

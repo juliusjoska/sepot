@@ -18,6 +18,13 @@ class Contact {
   /// Profilová fotka, kterou kontakt sdílí (null = iniciály).
   AvatarRef? avatar;
 
+  /// Přijatý kontakt. False = žádost o zprávu: napsal mi někdo, koho jsem
+  /// si sám nepřidal (nebo jsem ho potkal jen ve skupině), takže jméno
+  /// i fotku si zvolil on. Dokud ho nepřijmu, appka ho značí jako
+  /// neznámého, neukazuje jeho fotku, nezvoní jeho hovory a nedává mu
+  /// vědět, že čtu nebo píšu.
+  bool accepted;
+
   Contact({
     required this.displayName,
     required this.publicIdentity,
@@ -26,6 +33,7 @@ class Contact {
     this.notes,
     this.blocked = false,
     this.avatar,
+    this.accepted = true,
   });
 
   /// ID kontaktu = fingerprint identity klíče (identita = klíč).
@@ -41,12 +49,14 @@ class Contact {
   factory Contact.fromPublicIdentity(
     PublicIdentity identity, {
     bool verified = false,
+    bool accepted = true,
   }) {
     return Contact(
       displayName: identity.displayName,
       publicIdentity: identity,
       addedAt: DateTime.now(),
       verified: verified,
+      accepted: accepted,
     );
   }
 
@@ -64,6 +74,7 @@ class Contact {
         'notes': notes,
         'blocked': blocked,
         'avatar': avatar?.toJson(),
+        'accepted': accepted,
       };
 
   factory Contact.fromJson(Map<String, dynamic> json) {
@@ -77,6 +88,9 @@ class Contact {
       notes: json['notes'] as String?,
       blocked: json['blocked'] as bool? ?? false,
       avatar: AvatarRef.fromJson(json['avatar']),
+      // Kontakty z doby před žádostmi o zprávu uživatel už léta používá —
+      // zpětně je vydávat za neznámé by jen naučilo varování odklikávat.
+      accepted: json['accepted'] as bool? ?? true,
     );
   }
 }

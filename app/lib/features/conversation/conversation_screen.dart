@@ -12,6 +12,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mime/mime.dart';
 import 'package:intl/intl.dart';
+import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/calls/call_controller.dart';
 import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
@@ -21,6 +22,8 @@ import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/core/utils/text_fold.dart';
 import 'package:sepot/features/calls/call_log_text.dart';
 import 'package:sepot/features/conversation/chat_actions.dart';
+import 'package:sepot/features/conversation/message_request_panel.dart';
+import 'package:sepot/features/conversation/widgets/safety_notice_row.dart';
 import 'package:sepot/features/conversation/forward_sheet.dart';
 import 'package:sepot/features/conversation/widgets/attachment_content.dart';
 import 'package:sepot/features/conversation/widgets/create_poll_sheet.dart';
@@ -272,14 +275,13 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
     // v kontaktech (roster je zakládá až s první zprávou), zkrátíme na id.
     String autorJmeno(String fingerprint) {
       if (fingerprint == identity?.id) return context.l10n.groupsYou;
-      final jmeno = contacts
+      final autor = contacts
           .where((c) => c.publicIdentity.id == fingerprint)
-          .firstOrNull
-          ?.displayName;
-      if (jmeno == null) {
+          .firstOrNull;
+      if (autor == null) {
         return 'SEP-${fingerprint.substring(0, fingerprint.length.clamp(0, 10))}';
       }
-      return jmeno.isEmpty ? context.l10n.commonUnknownContact : jmeno;
+      return contactName(context.l10n, autor);
     }
 
     final Widget bottom;
@@ -293,6 +295,8 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
           child: Text(context.l10n.chatUnblock),
         ),
       );
+    } else if (group == null && contact != null && !contact.accepted) {
+      bottom = MessageRequestPanel(contact: contact);
     } else {
       bottom = _buildComposer();
     }
@@ -472,9 +476,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
   }
 
   Widget _buildContactHeader(Contact? contact, {bool typing = false}) {
-    final name = (contact == null || contact.displayName.isEmpty)
+    final name = contact == null
         ? context.l10n.commonUnknownContact
-        : contact.displayName;
+        : contactName(context.l10n, contact);
     final verified = contact?.verified ?? false;
     return _buildHeaderFrame(children: [
       _backButton(),
@@ -485,19 +489,27 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
         // Stav ověření místo syrového ID (UX-FLOWS §3.1)
         subtitle: typing
             ? _typingLabel(context.l10n.chatTyping)
-            : Text(
-                verified
-                    ? context.l10n.verifyVerified
-                    : context.l10n.verifyUnverified,
-                style: TextStyle(
-                  fontSize: 12,
-                  color:
-                      verified ? SepotColors.sage : SepotColors.textSecondary,
-                ),
-              ),
+            : contact != null && !contact.accepted
+                ? Text(
+                    context.l10n.requestTitle,
+                    style: const TextStyle(
+                        fontSize: 12, color: SepotColors.warning),
+                  )
+                : Text(
+                    verified
+                        ? context.l10n.verifyVerified
+                        : context.l10n.verifyUnverified,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: verified
+                          ? SepotColors.sage
+                          : SepotColors.textSecondary,
+                    ),
+                  ),
         onTap: () => _openProfile('/contact/${widget.contactId}'),
       ),
-      if (contact != null && !contact.blocked) ...[
+      // Žádosti o zprávu se nevolá — hovor by prozradil, že jsem u telefonu.
+      if (contact != null && !contact.blocked && contact.accepted) ...[
         IconButton(
           tooltip: context.l10n.callVoice,
           icon: const Icon(Icons.call_outlined,
@@ -822,6 +834,27 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
         final repliedTo = msg.replyToId == null
             ? null
             : messages.where((m) => m.id == msg.replyToId).firstOrNull;
+
+        final notice = msg.notice;
+        if (notice != null) {
+          return KeyedSubtree(
+            key: _keys.putIfAbsent(msg.id, GlobalKey.new),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (showDate) _buildDateDivider(msg.timestamp),
+                SafetyNoticeRow(
+                  notice: notice,
+                  contactName: autorJmeno(widget.contactId),
+                  claimedName: msg.content,
+                  onVerify: group == null
+                      ? () => context.push('/verify/${widget.contactId}')
+                      : null,
+                ),
+              ],
+            ),
+          );
+        }
 
         final callLog = msg.callLog;
         if (callLog != null) {
@@ -1745,9 +1778,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
     String jmeno(String f) {
       final c = contacts.where((c) => c.id == f).firstOrNull;
       if (c == null) return 'SEP-${f.substring(0, f.length.clamp(0, 10))}';
-      return c.displayName.isEmpty
-          ? context.l10n.commonUnknownContact
-          : c.displayName;
+      return contactName(context.l10n, c);
     }
 
     Widget radek(IconData icon, String label, DateTime? t, {Color? color}) {

@@ -18,6 +18,10 @@ class ChatListTile extends StatelessWidget {
   final bool isGroup;
   final bool verified;
 
+  /// Žádost o zprávu (neznámý odesílatel): náhled místo textu hlásí, o co
+  /// jde — první věta útočníka nemá dostat prostor v seznamu chatů.
+  final bool isRequest;
+
   /// Jméno autora poslední zprávy ve skupině (null = 1:1 nebo neznámý).
   final String? lastAuthor;
 
@@ -40,6 +44,7 @@ class ChatListTile extends StatelessWidget {
     required this.myId,
     this.isGroup = false,
     this.verified = false,
+    this.isRequest = false,
     this.lastAuthor,
     this.highlight,
     this.typingLabel,
@@ -54,7 +59,9 @@ class ChatListTile extends StatelessWidget {
     final unread = conversation.unreadCount(myId);
     final muted = conversation.isMuted;
     final mine = lastMsg != null && lastMsg.isMine(myId);
-    final preview = previewOf(context.l10n, lastMsg);
+    final preview = isRequest
+        ? (icon: Icons.person_search_rounded, text: context.l10n.requestTitle)
+        : previewOf(context.l10n, lastMsg);
 
     return InkWell(
       onTap: onTap,
@@ -244,6 +251,9 @@ class ChatListTile extends StatelessWidget {
     if (call != null) {
       final label = callLogLabel(l10n, call);
       return (icon: label.icon, text: label.text);
+    }
+    if (msg.notice != null) {
+      return (icon: Icons.gpp_maybe_rounded, text: l10n.noticePreview);
     }
     return switch (msg.type) {
       MessageType.text => (icon: null, text: msg.content ?? ''),

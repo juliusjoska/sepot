@@ -341,8 +341,10 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
 
     // Příchozí zprávy, které jsem právě přečetl → pošlu za ně potvrzení
     // přečtení (sendReadReceipts sám zkontroluje, jestli je funkce zapnutá).
+    // Upozornění appky (notice) nikdo neposlal — potvrzovat ho nelze.
     final justRead = conv.messages
-        .where((m) => !m.isMine(identity.id) && !m.isRead)
+        .where((m) =>
+            !m.isMine(identity.id) && !m.isRead && m.notice == null)
         .toList();
 
     conv.markAllRead(identity.id);

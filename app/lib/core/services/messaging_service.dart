@@ -36,6 +36,7 @@ import 'package:sepot/core/errors.dart';
 import 'package:sepot/core/crypto/sepot_crypto.dart';
 import 'package:sepot/core/network/relay_client.dart';
 import 'package:sepot/core/network/relay_transport.dart';
+import 'package:sepot/core/safety/lookalike_names.dart';
 import 'package:sepot/core/services/group_admin_policy.dart';
 import 'package:sepot/core/services/image_processor.dart';
 import 'package:sepot/core/services/typing_tracker.dart';
@@ -218,7 +219,7 @@ class MessagingService {
     final targets = contacts.where((c) =>
         !c.blocked &&
         (group == null
-            ? c.id == convId
+            ? c.id == convId && c.accepted
             : group.memberIds.contains(c.id) && c.id != _identity?.id));
     for (final c in targets) {
       final until = _typingBackoffUntil[c.id];
@@ -993,6 +994,8 @@ class MessagingService {
   Future<void> sendReadReceipts(Contact contact, List<String> messageIds,
       {String? gid}) async {
     if (messageIds.isEmpty) return;
+    // Neznámý odesílatel se nedozví, že jsem jeho zprávu otevřel.
+    if (gid == null && !contact.accepted) return;
     final enabled =
         (await storage.getSetting<bool>('read_receipts_enabled')) ?? false;
     if (!enabled) return;
@@ -1948,19 +1951,26 @@ class MessagingService {
             verified: known.verified,
             notes: known.notes,
             blocked: known.blocked,
+            avatar: known.avatar,
+            accepted: known.accepted,
           ));
         }
         continue;
       }
       final name = (e['n'] as String?)?.trim();
-      await storage.saveContact(Contact.fromPublicIdentity(PublicIdentity(
-        // Prázdné jméno = UI si doplní lokalizovaný fallback
-        displayName: (name == null || name.isEmpty) ? '' : name,
-        identityKey: base64Decode(e['ik'] as String),
-        createdAt: DateTime.now(),
-        accountId: aid,
-        deliveryAddress: daB64 == null ? null : base64Decode(daB64),
-      )));
+      // Člena skupiny jsem si nepřidal já: jméno mu dal on sám (nebo ten,
+      // kdo roster poslal). Jako u příchozí zprávy je to žádost.
+      await storage.saveContact(Contact.fromPublicIdentity(
+        PublicIdentity(
+          // Prázdné jméno = UI si doplní lokalizovaný fallback
+          displayName: (name == null || name.isEmpty) ? '' : clipName(name),
+          identityKey: base64Decode(e['ik'] as String),
+          createdAt: DateTime.now(),
+          accountId: aid,
+          deliveryAddress: daB64 == null ? null : base64Decode(daB64),
+        ),
+        accepted: false,
+      ));
     }
   }
 
@@ -2215,12 +2225,14 @@ class MessagingService {
     // načte, zašifruje a uloží bez souběhu. Odeslání po síti už zámek
     // nedrží — čekání na receipt by blokovalo všechny ostatní.
     final sealed = await _serial<Uint8List?>(() async {
+      await _dropForeignSession(crypto, peerAddr, contact);
       // První zpráva: X3DH z bundle. Identity klíč v bundle MUSÍ sedět
       // s klíčem z kontaktu (jinak by relay mohl podstrčit vlastní).
       if (!await crypto.hasSession(peerAddr)) {
         if (ephemeral) return null;
         final bundle = await relay.fetchBundle(peerDa);
         if (!_listEquals(bundle.identityKey, peer.identityKey)) {
+          await _noteIdentityChanged(contact);
           throw const IdentityKeyMismatchError();
         }
         await crypto.processRemoteBundle(peerAddr, bundle);
@@ -2244,6 +2256,29 @@ class MessagingService {
     );
     return receipt.status;
   }
+
+  /// libsignal 5.0.9 nad prázdným paměťovým storem identit důvěřuje
+  /// čemukoli (TOFU bez paměti): příchozí PreKey zpráva s cizím klíčem pod
+  /// stejnou adresou relaci tiše přepíše a další odpověď by šla jemu.
+  /// Klíč relace proto porovnáváme s klíčem kontaktu sami; nesedí-li,
+  /// relace se zahodí (nová vznikne z bundle, který se ověřuje výše)
+  /// a kontakt dostane varování.
+  Future<void> _dropForeignSession(
+      SepotCrypto crypto, ProtocolAddress peerAddr, Contact contact) async {
+    if (!await crypto.hasSession(peerAddr)) return;
+    final bound = await crypto.sessionIdentity(peerAddr);
+    if (bound == null ||
+        _listEquals(bound, contact.publicIdentity.identityKey)) {
+      return;
+    }
+    await crypto.dropSession(peerAddr);
+    await _noteIdentityChanged(contact);
+  }
+
+  @visibleForTesting
+  Future<void> debugDropForeignSession(
+          SepotCrypto crypto, ProtocolAddress peerAddr, Contact contact) =>
+      _dropForeignSession(crypto, peerAddr, contact);
 
   // ── Příjem ──────────────────────────────────────────────────────────
 
@@ -2279,7 +2314,17 @@ class MessagingService {
       // (může jít o dočasný stav — např. cert refresh).
       return;
     }
+    await _processOpened(opened, envelope.msgUuid);
+  }
 
+  @visibleForTesting
+  Future<void> debugProcessOpened(
+          SepotSealedMessage opened, List<int> msgUuid) =>
+      _processOpened(opened, msgUuid);
+
+  /// Zpracuje už dešifrovanou obálku: kontakt, typ obsahu, uložení, ACK.
+  Future<void> _processOpened(
+      SepotSealedMessage opened, List<int> msgUuid) async {
     // Od tohohle bodu ratchet postoupil — obálku na relayi už NIKDY znovu
     // nedešifrujeme (duplicitní decrypt libsignal odmítne). Vadný OBSAH se
     // proto ACKuje a zahazuje: redelivery nemůže nic spravit, jen by
@@ -2292,7 +2337,7 @@ class MessagingService {
       if (content['v'] != 1 || !known.contains(type)) {
         // Neznámý typ/verze: obsah je pro tuhle verzi navždy nečitelný
         // a po upgradu ho stejně nejde znovu dešifrovat — ACK a zahodit.
-        _relay?.ack(envelope.msgUuid);
+        _relay?.ack(msgUuid);
         return;
       }
 
@@ -2302,15 +2347,19 @@ class MessagingService {
       // Blokovaný kontakt: zahoď cokoliv od něj (ACK, ať se nefrontuje),
       // nic neukládej ani nezobrazuj a neposílej doručenku.
       if (contact.blocked) {
-        _relay!.ack(envelope.msgUuid);
+        _relay?.ack(msgUuid);
         return;
       }
 
       // Hovory jen 1:1; skupinový gid tu nemá co dělat.
       // Nic se neukládá — záznam „Hovor · 3:12“ si zapíše obsluha hovoru.
+      // Žádost o zprávu nezvoní: cizí klíč by jinak rozezvonil telefon
+      // s vlastním zvoleným jménem („Máma volá“).
       if (type == 'call') {
-        if (content['gid'] == null) onCallSignal?.call(contact, content);
-        _relay!.ack(envelope.msgUuid);
+        if (content['gid'] == null && contact.accepted) {
+          onCallSignal?.call(contact, content);
+        }
+        _relay?.ack(msgUuid);
         return;
       }
 
@@ -2320,7 +2369,7 @@ class MessagingService {
       // nepomůže).
       if (_groupControlTypes.contains(type)) {
         await _handleGroupControl(senderFp, type, content);
-        _relay!.ack(envelope.msgUuid);
+        _relay?.ack(msgUuid);
         return;
       }
 
@@ -2330,7 +2379,7 @@ class MessagingService {
       final group =
           gid == null ? null : await _groupForIncoming(gid, senderFp);
       if (gid != null && group == null) {
-        _relay!.ack(envelope.msgUuid);
+        _relay?.ack(msgUuid);
         return;
       }
       if (group != null && _noteCapability(group, senderFp, content)) {
@@ -2345,7 +2394,7 @@ class MessagingService {
         final fresh = DateTime.now().difference(wireSentAt(content['ts'])) <
             TypingTracker.showFor;
         if (fresh && await _typingEnabled()) typing.mark(convId, senderFp);
-        _relay!.ack(envelope.msgUuid);
+        _relay?.ack(msgUuid);
         return;
       }
 
@@ -2380,7 +2429,7 @@ class MessagingService {
             );
           }
         }
-        _relay!.ack(envelope.msgUuid);
+        _relay?.ack(msgUuid);
         onUpdate?.call();
         return;
       }
@@ -2389,7 +2438,7 @@ class MessagingService {
       // novou bublinu. Aplikujeme a ACKneme (retry z fronty nepomůže).
       if (type == 'rx' || type == 'edit' || type == 'del' || type == 'vote') {
         await _applyIncomingControl(convId, type!, content, opened);
-        _relay!.ack(envelope.msgUuid);
+        _relay?.ack(msgUuid);
         onUpdate?.call();
         return;
       }
@@ -2407,7 +2456,7 @@ class MessagingService {
         if (raw is! String) {
           // Trvale vadná obálka (chybí/netypové 'txt') — retry z fronty
           // nepomůže, ACKnout a zahodit stejně jako u vadných příloh.
-          _relay!.ack(envelope.msgUuid);
+          _relay?.ack(msgUuid);
           return;
         }
         // Strop délky z drátu: obálka unese 256 KiB a konverzace je jeden
@@ -2441,7 +2490,7 @@ class MessagingService {
           }
         } on Object {
           // Trvale vadná metadata — retry z fronty nepomůže, ACKnout
-          _relay!.ack(envelope.msgUuid);
+          _relay?.ack(msgUuid);
           return;
         }
         message = Message(
@@ -2466,7 +2515,7 @@ class MessagingService {
       // Uloženo na disku → teprve teď smí relay obálku zahodit.
       // (Blob přílohy do fronty nepatří — stahuje se na pozadí a při
       // neúspěchu má UI retry, ACK na něj nečeká.)
-      _relay!.ack(envelope.msgUuid);
+      _relay?.ack(msgUuid);
 
       // Zprávu už známe (odesílatel ji poslal znovu po výpadku spojení).
       // Druhá bublina ani další stahování téhož blobu nemá vzniknout, ale
@@ -2499,11 +2548,11 @@ class MessagingService {
     } on FormatException {
       // Malformovaný obsah (ne-UTF-8/ne-JSON plaintext, vadná base64
       // v profilu či rosteru) — trvale vadné, ACK a zahodit.
-      _relay?.ack(envelope.msgUuid);
+      _relay?.ack(msgUuid);
     } on TypeError {
       // Pole se špatným typem (txt/ttl/id/re/p jako číslo apod.) —
       // trvale vadné, ACK a zahodit.
-      _relay?.ack(envelope.msgUuid);
+      _relay?.ack(msgUuid);
     } catch (_) {
       // Přechodné selhání zpracování (storage apod.): NEACKovat — další
       // pokus po reconnectu za nic nedá, i když duplicitní decrypt
@@ -2733,6 +2782,7 @@ class MessagingService {
         // Bez tohohle se zablokovaný kontakt při změně adresy odblokoval.
         blocked: c.blocked,
         avatar: avatarChanged ? avatar : c.avatar,
+        accepted: c.accepted,
       );
       await storage.saveContact(updated);
       if (avatarChanged) {
@@ -2743,7 +2793,9 @@ class MessagingService {
       return updated;
     }
 
-    // Neznámý odesílatel → nový (neověřený) kontakt
+    // Neznámý klíč = nový kontakt, NIKDY splynutí s existujícím. Identita
+    // je klíč: jméno ani fotka, které si odesílatel zvolil, neříkají nic
+    // o tom, kdo to je. Proto žádost o zprávu, ne kontakt.
     // Prázdné jméno = UI si doplní lokalizovaný fallback
     final name = (profile?['n'] as String?)?.trim();
     final identity = PublicIdentity(
@@ -2753,10 +2805,60 @@ class MessagingService {
       accountId: opened.senderName,
       deliveryAddress: profileDa == null ? null : base64Decode(profileDa),
     );
-    final contact = Contact.fromPublicIdentity(identity)..avatar = avatar;
+    final contact = Contact.fromPublicIdentity(identity, accepted: false)
+      ..avatar = avatar;
     await storage.saveContact(contact);
     if (avatar != null) unawaited(_downloadAvatar(avatar));
+
+    // Účet na relayi patří jednomu klíči navždy (identities.identity_key je
+    // unikátní). Stejný účet s jiným klíčem = relay lže nebo byl převzat:
+    // dosavadní kontakt ztrácí ověření a dostane varování.
+    final previous = contacts
+        .where((c) => c.publicIdentity.accountId == opened.senderName)
+        .firstOrNull;
+    if (previous != null) await _noteIdentityChanged(previous);
+
+    final lookalike =
+        lookalikeContact(identity.displayName, contacts, exceptId: contact.id);
+    if (lookalike != null && lookalike.id != previous?.id) {
+      await _noteLookalike(lookalike, identity.displayName);
+    }
     return contact;
+  }
+
+  /// Bezpečnostní kód kontaktu se změnil: zrušit ověření a dát to najevo
+  /// v jeho konverzaci. Opakovaný výskyt za sebou nepřidává další řádky.
+  Future<void> _noteIdentityChanged(Contact contact) async {
+    if (contact.verified) {
+      contact.verified = false;
+      await storage.saveContact(contact);
+    }
+    await _addNotice(contact, MessageNotice.identityChanged);
+  }
+
+  /// Někdo cizí se jmenuje skoro stejně jako [contact]. Připomínka do jeho
+  /// konverzace (jen když existuje — nezakládat chat kvůli útočníkovi).
+  Future<void> _noteLookalike(Contact contact, String claimedName) async {
+    if (await storage.loadConversation(contact.id) == null) return;
+    await _addNotice(contact, MessageNotice.lookalikeRequest,
+        content: claimedName);
+  }
+
+  Future<void> _addNotice(Contact contact, MessageNotice notice,
+      {String? content}) async {
+    final me = _identity;
+    if (me == null) return;
+    final last = (await storage.loadConversation(contact.id))?.lastMessage;
+    if (last?.notice == notice && last?.content == content) return;
+    await storage.addMessage(
+      contact.id,
+      Message.notice(
+          contactId: contact.id,
+          myId: me.id,
+          notice: notice,
+          content: content),
+    );
+    onUpdate?.call();
   }
 
   // ── Sdílení vlastního kontaktu ──────────────────────────────────────

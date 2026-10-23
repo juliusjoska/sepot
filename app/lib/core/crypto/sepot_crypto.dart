@@ -331,6 +331,18 @@ class SepotCrypto {
   Future<bool> hasSession(ProtocolAddress remote) =>
       _stores.session.containsSession(remote);
 
+  /// Identity klíč, pod kterým naposledy vznikla relace s [remote]
+  /// (zapisuje ho libsignal při X3DH i při příjmu PreKey zprávy).
+  /// Null = zatím žádný.
+  Future<Uint8List?> sessionIdentity(ProtocolAddress remote) async {
+    final key = await _stores.identity.getIdentity(remote);
+    return key == null ? null : Uint8List.fromList(key.serialize().toList());
+  }
+
+  /// Zahodí relaci s [remote]; další zpráva založí novou z bundle.
+  Future<void> dropSession(ProtocolAddress remote) =>
+      _stores.session.deleteSession(remote);
+
   /// X3DH/PQXDH: zpracuje bundle protistrany a založí session.
   Future<void> processRemoteBundle(
     ProtocolAddress remote,

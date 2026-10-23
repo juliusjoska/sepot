@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
@@ -45,13 +46,15 @@ class ArchivedChatsScreen extends ConsumerWidget {
                   ?.where((c) => c.publicIdentity.id == conv.contactId)
                   .firstOrNull;
               final name = group?.name ??
-                  contact?.displayName ??
-                  context.l10n.commonUnknownContact;
+                  (contact == null
+                      ? context.l10n.commonUnknownContact
+                      : contactName(context.l10n, contact));
               return ChatListTile(
                 conversation: conv,
                 contactName: name,
                 myId: myId,
                 isGroup: group != null,
+                isRequest: group == null && contact?.accepted == false,
                 onTap: () => context.push('/conversation/${conv.contactId}'),
                 onLongPress: () => _actions(context, ref, conv),
               );

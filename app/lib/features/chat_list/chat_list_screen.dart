@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
@@ -206,7 +207,7 @@ class _ChatsTabState extends ConsumerState<_ChatsTab> {
     String nameOf(Conversation c) => ConversationsNotifier.isNotes(c.contactId)
         ? l10n.notesTitle
         : groupOf(c.contactId)?.name ??
-        contactOf(c.contactId)?.displayName ??
+        _nameOrNull(l10n, contactOf(c.contactId)) ??
         l10n.commonUnknownContact;
 
     return SafeArea(
@@ -265,7 +266,8 @@ class _ChatsTabState extends ConsumerState<_ChatsTab> {
                     ? l10n.chatTyping
                     : writers.length == 1
                         ? l10n.chatTypingNamed(
-                            (contactOf(writers.first)?.displayName ?? '?')
+                            (_nameOrNull(l10n, contactOf(writers.first)) ??
+                                    '?')
                                 .split(' ')
                                 .first)
                         : l10n.chatTypingSeveral;
@@ -275,8 +277,10 @@ class _ChatsTabState extends ConsumerState<_ChatsTab> {
               myId: myId,
               isGroup: group != null,
               verified: contactOf(c.contactId)?.verified ?? false,
+              isRequest: group == null &&
+                  contactOf(c.contactId)?.accepted == false,
               lastAuthor: group != null && last != null
-                  ? contactOf(last.senderId)?.displayName
+                  ? _nameOrNull(l10n, contactOf(last.senderId))
                   : null,
               highlight: hits[c],
               typingLabel: typingLabel,
@@ -685,3 +689,6 @@ class _EmptyState extends StatelessWidget {
     );
   }
 }
+
+String? _nameOrNull(AppLocalizations l10n, Contact? c) =>
+    c == null ? null : contactName(l10n, c);

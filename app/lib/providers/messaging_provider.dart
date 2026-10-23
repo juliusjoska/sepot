@@ -35,9 +35,14 @@ final avatarProvider =
   final me = ref.watch(identityProvider).valueOrNull;
   final contacts = ref.watch(contactsProvider).valueOrNull ?? const [];
   if (!service.isStarted) return null;
+  final contact = contacts.where((c) => c.id == fingerprint).firstOrNull;
+  // Fotka neznámého odesílatele může být fotka mámy z Facebooku — do
+  // přijetí jen iniciály na tónu z klíče, ne jeho obrázek.
   final avatar = fingerprint == me?.id
       ? service.myAvatar
-      : contacts.where((c) => c.id == fingerprint).firstOrNull?.avatar;
+      : contact != null && contact.accepted
+          ? contact.avatar
+          : null;
   return avatar == null ? null : service.loadAvatar(avatar);
 });
 
@@ -83,7 +88,15 @@ final messagingStartProvider = FutureProvider<void>((ref) async {
     final conv = await ref.read(storageProvider).loadConversation(convId);
     final mentionedMe = message.mentions.contains(identity.id);
     if (conv?.isMuted == true && !mentionedMe) return;
-    PushNotifier.showMessageNotification(contact.displayName);
+    // Jméno, které si neznámý zvolil sám, nepatří do notifikace —
+    // „Nová zpráva od Máma“ by byl phishing ještě před otevřením appky.
+    if (contact.accepted) {
+      PushNotifier.showMessageNotification(contact.displayName);
+    } else if (convId != contact.id) {
+      PushNotifier.showWakeNotification();
+    } else {
+      PushNotifier.showMessageRequestNotification();
+    }
   };
 
   service.onCallSignal = (contact, signal) =>
