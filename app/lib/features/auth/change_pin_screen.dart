@@ -71,7 +71,14 @@ class _ChangePinScreenState extends ConsumerState<ChangePinScreen> {
     switch (_krok) {
       case _Krok.stary:
         setState(() => _pracuje = true);
-        final ok = await storage.verifyPin(_pin);
+        final bool ok;
+        try {
+          ok = await storage.verifyPin(_pin);
+        } on PinLockedException catch (e) {
+          if (!mounted) return;
+          _reset(context.l10n.pinLockedFor(e.remaining.inSeconds));
+          return;
+        }
         if (!mounted) return;
         if (!ok) {
           _reset(context.l10n.pinWrong);

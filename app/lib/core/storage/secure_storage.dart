@@ -197,15 +197,28 @@ class SecureStorageService {
     await _secureStorage.delete(key: _wrappedDekKey);
   }
 
-  /// Ověří PIN, aniž by cokoli změnil (unwrap a zahození DEK).
-  /// Stojí jednu Argon2id derivaci (~2 s) — to je zároveň rate limit.
+  /// Ověří skutečný PIN, aniž by cokoli změnil (unwrap a zahození DEK).
+  /// Tímhle se potvrzují citlivé akce v odemčené appce (fráze, záloha,
+  /// smazání účtu, změna PINu).
+  ///
+  /// Sdílí brzdu se zámkovou obrazovkou: kdo dostane do ruky odemčený
+  /// telefon, nesmí tu hádat PIN rychleji než na zámku. Zamčeno =
+  /// [PinLockedException].
+  ///
+  /// V nátlakové relaci vždy false: i kdyby někdo znal skutečný PIN, k frázi
+  /// skutečné identity se odtud dostat nesmí (otevře si appku normálně).
   Future<bool> verifyPin(String pin) async {
+    if (_decoyMode) return false;
     final wrapped = await _secureStorage.read(key: _wrappedDekKey);
     if (wrapped == null) return false;
+    final locked = await pinLockRemaining();
+    if (locked != null) throw PinLockedException(locked);
     try {
       await DekWrap.unwrap(wrapped: wrapped, pin: pin);
+      await _resetPinFailures();
       return true;
     } on WrongPinException {
+      await _notePinFailure();
       return false;
     }
   }

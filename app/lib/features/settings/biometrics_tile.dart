@@ -12,6 +12,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
+import 'package:sepot/features/auth/reauth.dart';
 import 'package:sepot/providers/storage_provider.dart';
 
 class BiometricsTile extends ConsumerStatefulWidget {
@@ -46,6 +47,14 @@ class _BiometricsTileState extends ConsumerState<BiometricsTile> {
         }
         if (!storage.isUnlocked) {
           _snack(l10n.biometricsStorageLocked);
+          return;
+        }
+        // Biometrie dostane kopii DEK — zapnout ji smí jen ten, kdo zná PIN.
+        // Otisk sám nestačí: v telefonu může být zapsaný i cizí prst.
+        if (!mounted ||
+            !await confirmSensitiveAction(context, ref,
+                reason: l10n.reauthReasonBiometrics,
+                allowBiometrics: false)) {
           return;
         }
         final auth = LocalAuthentication();

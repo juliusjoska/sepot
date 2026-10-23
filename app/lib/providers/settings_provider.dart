@@ -83,6 +83,20 @@ class ScreenSecurityNotifier extends AsyncNotifier<bool> {
     state = AsyncData(value);
   }
 
+  /// Po dobu [body] drží ochranu zapnutou bez ohledu na nastavení a pak
+  /// vrátí uložený stav. Pro 24 slov: vypnutý přepínač nesmí pustit frázi
+  /// do screenshotu ani do náhledu v přepínači aplikací. Ladicí build
+  /// výjimku má stejně jako MainActivity — QA potřebuje snímky z emulátoru.
+  Future<T> enforceWhile<T>(Future<T> Function() body) async {
+    if (kDebugMode) return body();
+    await _apply(true);
+    try {
+      return await body();
+    } finally {
+      await _apply(state.valueOrNull ?? vychozi);
+    }
+  }
+
   Future<void> _apply(bool on) async {
     try {
       if (on) {

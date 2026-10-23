@@ -1726,4 +1726,95 @@ class AppLocalizationsCs extends AppLocalizations {
   String profilePhotoFailed(String error) {
     return 'Fotku se nepodařilo nastavit: $error';
   }
+
+  @override
+  String get reauthTitle => 'Potvrď, že jsi to ty';
+
+  @override
+  String get reauthPinRequired =>
+      'Tahle akce potřebuje PIN. Nejdřív si ho nastav.';
+
+  @override
+  String get reauthSetPin => 'Nastavit PIN';
+
+  @override
+  String get reauthReasonSeed => 'Zobrazení 24 slov pro obnovu účtu';
+
+  @override
+  String get reauthReasonBackupExport => 'Export zálohy';
+
+  @override
+  String get reauthReasonBackupImport => 'Obnova ze zálohy';
+
+  @override
+  String get reauthReasonDecoyPin => 'Změna nátlakového PINu';
+
+  @override
+  String get reauthReasonAutoLock => 'Prodloužení automatického zámku';
+
+  @override
+  String get reauthReasonScreenSecurity => 'Vypnutí ochrany obrazovky';
+
+  @override
+  String get reauthReasonDeleteAccount => 'Smazání účtu a všech dat';
+
+  @override
+  String get reauthReasonBiometrics => 'Zapnutí biometrie';
+
+  @override
+  String contactRequestName(String name) {
+    return '$name (neznámý)';
+  }
+
+  @override
+  String get pushMessageRequest => 'Žádost o zprávu od neznámého odesílatele';
+
+  @override
+  String get requestTitle => 'Žádost o zprávu';
+
+  @override
+  String requestBody(String name) {
+    return '„$name“ není ve tvých kontaktech. Jméno i fotku si zvolil sám, takže nemusí jít o toho, za koho se vydává. Dokud ho nepřijmeš, neuvidí, že jsi zprávu četl, a nemůže ti volat.';
+  }
+
+  @override
+  String requestLookalikeWarning(String name) {
+    return 'Pozor: stejně se jmenuje tvůj kontakt $name. Tohle je jiný klíč, tedy jiný telefon nebo jiný člověk. Než odpovíš, ověř si to jinou cestou (zavolej, potkejte se).';
+  }
+
+  @override
+  String get requestAccept => 'Přijmout';
+
+  @override
+  String get requestAcceptTitle => 'Přijmout jako kontakt';
+
+  @override
+  String get requestAcceptBody =>
+      'Pojmenuj kontakt sám. Jméno, které si odesílatel zvolil, se nepřebírá automaticky.';
+
+  @override
+  String get requestAcceptNameLabel => 'Jméno kontaktu';
+
+  @override
+  String get requestNameEmpty => 'Zadej jméno.';
+
+  @override
+  String get requestNameTaken =>
+      'Tak (nebo skoro tak) se už jmenuje jiný kontakt. Zvol jméno, které je nezamění.';
+
+  @override
+  String noticeIdentityChanged(String name) {
+    return 'Bezpečnostní kód kontaktu $name se změnil. Pod jeho adresou se ozval jiný klíč: nový telefon, přeinstalace, nebo podvrh. Ověření je zrušené. Než pošleš něco citlivého, porovnejte kód znovu.';
+  }
+
+  @override
+  String noticeLookalikeRequest(String claimed, String name) {
+    return 'Neznámý odesílatel si dal jméno „$claimed“, které se plete s kontaktem $name. Tento kontakt to není, zpráva přišla z jiného klíče. Najdeš ji v chatech jako žádost o zprávu.';
+  }
+
+  @override
+  String get noticeVerifyAction => 'Ověřit kód';
+
+  @override
+  String get noticePreview => 'Bezpečnostní upozornění';
 }

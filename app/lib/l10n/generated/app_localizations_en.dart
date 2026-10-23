@@ -1720,4 +1720,94 @@ class AppLocalizationsEn extends AppLocalizations {
   String profilePhotoFailed(String error) {
     return 'Could not set photo: $error';
   }
+
+  @override
+  String get reauthTitle => 'Confirm it\'s you';
+
+  @override
+  String get reauthPinRequired => 'This action needs a PIN. Set one first.';
+
+  @override
+  String get reauthSetPin => 'Set PIN';
+
+  @override
+  String get reauthReasonSeed => 'Show the 24 recovery words';
+
+  @override
+  String get reauthReasonBackupExport => 'Export backup';
+
+  @override
+  String get reauthReasonBackupImport => 'Restore from backup';
+
+  @override
+  String get reauthReasonDecoyPin => 'Change the duress PIN';
+
+  @override
+  String get reauthReasonAutoLock => 'Extend the auto-lock';
+
+  @override
+  String get reauthReasonScreenSecurity => 'Turn off screen security';
+
+  @override
+  String get reauthReasonDeleteAccount => 'Delete the account and all data';
+
+  @override
+  String get reauthReasonBiometrics => 'Turn on biometrics';
+
+  @override
+  String contactRequestName(String name) {
+    return '$name (unknown)';
+  }
+
+  @override
+  String get pushMessageRequest => 'Message request from an unknown sender';
+
+  @override
+  String get requestTitle => 'Message request';
+
+  @override
+  String requestBody(String name) {
+    return '“$name” is not in your contacts. They chose the name and photo themselves, so they may not be who they claim to be. Until you accept, they can\'t see that you read the message and can\'t call you.';
+  }
+
+  @override
+  String requestLookalikeWarning(String name) {
+    return 'Careful: your contact $name has the same name. This is a different key, so a different phone or a different person. Check another way before you reply (call, meet in person).';
+  }
+
+  @override
+  String get requestAccept => 'Accept';
+
+  @override
+  String get requestAcceptTitle => 'Accept as contact';
+
+  @override
+  String get requestAcceptBody =>
+      'Name the contact yourself. The name the sender chose is not taken over automatically.';
+
+  @override
+  String get requestAcceptNameLabel => 'Contact name';
+
+  @override
+  String get requestNameEmpty => 'Enter a name.';
+
+  @override
+  String get requestNameTaken =>
+      'Another contact already has this (or a very similar) name. Choose one that can\'t be confused.';
+
+  @override
+  String noticeIdentityChanged(String name) {
+    return 'The safety code of $name has changed. A different key showed up at their address: a new phone, a reinstall, or an impostor. Verification has been removed. Compare the code again before you send anything sensitive.';
+  }
+
+  @override
+  String noticeLookalikeRequest(String claimed, String name) {
+    return 'An unknown sender named themselves “$claimed”, which looks like your contact $name. It is not this contact, the message came from a different key. You\'ll find it in your chats as a message request.';
+  }
+
+  @override
+  String get noticeVerifyAction => 'Verify code';
+
+  @override
+  String get noticePreview => 'Security notice';
 }

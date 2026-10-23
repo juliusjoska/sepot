@@ -2339,5 +2339,137 @@
         "type": "String"
       }
     }
+  },
+  "reauthTitle": "Potvrď, že jsi to ty",
+  "@reauthTitle": {
+    "description": "Nadpis výzvy k PINu před citlivou akcí v odemčené appce"
+  },
+  "reauthPinRequired": "Tahle akce potřebuje PIN. Nejdřív si ho nastav.",
+  "@reauthPinRequired": {
+    "description": "Snackbar: citlivá akce bez nastaveného PINu"
+  },
+  "reauthSetPin": "Nastavit PIN",
+  "@reauthSetPin": {
+    "description": "Akce snackbaru: nastavit PIN"
+  },
+  "reauthReasonSeed": "Zobrazení 24 slov pro obnovu účtu",
+  "@reauthReasonSeed": {
+    "description": "Důvod ve výzvě k PINu/biometrii: zobrazení obnovovací fráze"
+  },
+  "reauthReasonBackupExport": "Export zálohy",
+  "@reauthReasonBackupExport": {
+    "description": "Důvod: export zálohy"
+  },
+  "reauthReasonBackupImport": "Obnova ze zálohy",
+  "@reauthReasonBackupImport": {
+    "description": "Důvod: obnova ze zálohy"
+  },
+  "reauthReasonDecoyPin": "Změna nátlakového PINu",
+  "@reauthReasonDecoyPin": {
+    "description": "Důvod: nastavení nebo zrušení nátlakového PINu"
+  },
+  "reauthReasonAutoLock": "Prodloužení automatického zámku",
+  "@reauthReasonAutoLock": {
+    "description": "Důvod: prodloužení nebo vypnutí automatického zámku"
+  },
+  "reauthReasonScreenSecurity": "Vypnutí ochrany obrazovky",
+  "@reauthReasonScreenSecurity": {
+    "description": "Důvod: vypnutí ochrany obrazovky"
+  },
+  "reauthReasonDeleteAccount": "Smazání účtu a všech dat",
+  "@reauthReasonDeleteAccount": {
+    "description": "Důvod: smazání účtu"
+  },
+  "reauthReasonBiometrics": "Zapnutí biometrie",
+  "@reauthReasonBiometrics": {
+    "description": "Důvod: zapnutí biometrického odemčení"
+  },
+  "contactRequestName": "{name} (neznámý)",
+  "@contactRequestName": {
+    "description": "Jméno neznámého odesílatele (žádost o zprávu) všude v UI; {name} si zvolil sám",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "pushMessageRequest": "Žádost o zprávu od neznámého odesílatele",
+  "@pushMessageRequest": {
+    "description": "Text notifikace pro zprávu od neznámého odesílatele — bez jména, které si zvolil"
+  },
+  "requestTitle": "Žádost o zprávu",
+  "@requestTitle": {
+    "description": "Nadpis panelu / štítek žádosti o zprávu"
+  },
+  "requestBody": "„{name}“ není ve tvých kontaktech. Jméno i fotku si zvolil sám, takže nemusí jít o toho, za koho se vydává. Dokud ho nepřijmeš, neuvidí, že jsi zprávu četl, a nemůže ti volat.",
+  "@requestBody": {
+    "description": "Panel žádosti o zprávu; {name} = jméno, které si odesílatel zvolil",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "requestLookalikeWarning": "Pozor: stejně se jmenuje tvůj kontakt {name}. Tohle je jiný klíč, tedy jiný telefon nebo jiný člověk. Než odpovíš, ověř si to jinou cestou (zavolej, potkejte se).",
+  "@requestLookalikeWarning": {
+    "description": "Varování v panelu žádosti: jméno se plete s existujícím kontaktem {name}",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "requestAccept": "Přijmout",
+  "@requestAccept": {
+    "description": "Tlačítko: přijmout žádost o zprávu"
+  },
+  "requestAcceptTitle": "Přijmout jako kontakt",
+  "@requestAcceptTitle": {
+    "description": "Nadpis dialogu přijetí žádosti"
+  },
+  "requestAcceptBody": "Pojmenuj kontakt sám. Jméno, které si odesílatel zvolil, se nepřebírá automaticky.",
+  "@requestAcceptBody": {
+    "description": "Text dialogu přijetí: kontakt pojmenuje uživatel sám"
+  },
+  "requestAcceptNameLabel": "Jméno kontaktu",
+  "@requestAcceptNameLabel": {
+    "description": "Popisek pole se jménem kontaktu"
+  },
+  "requestNameEmpty": "Zadej jméno.",
+  "@requestNameEmpty": {
+    "description": "Chyba: prázdné jméno"
+  },
+  "requestNameTaken": "Tak (nebo skoro tak) se už jmenuje jiný kontakt. Zvol jméno, které je nezamění.",
+  "@requestNameTaken": {
+    "description": "Chyba: jméno se plete s jiným kontaktem"
+  },
+  "noticeIdentityChanged": "Bezpečnostní kód kontaktu {name} se změnil. Pod jeho adresou se ozval jiný klíč: nový telefon, přeinstalace, nebo podvrh. Ověření je zrušené. Než pošleš něco citlivého, porovnejte kód znovu.",
+  "@noticeIdentityChanged": {
+    "description": "Upozornění v konverzaci: kontaktu {name} se změnil identity klíč",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "noticeLookalikeRequest": "Neznámý odesílatel si dal jméno „{claimed}“, které se plete s kontaktem {name}. Tento kontakt to není, zpráva přišla z jiného klíče. Najdeš ji v chatech jako žádost o zprávu.",
+  "@noticeLookalikeRequest": {
+    "description": "Upozornění v konverzaci existujícího kontaktu {name}: neznámý si zvolil podobné jméno {claimed}",
+    "placeholders": {
+      "claimed": {
+        "type": "String"
+      },
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "noticeVerifyAction": "Ověřit kód",
+  "@noticeVerifyAction": {
+    "description": "Tlačítko u upozornění na změnu kódu"
+  },
+  "noticePreview": "Bezpečnostní upozornění",
+  "@noticePreview": {
+    "description": "Náhled v seznamu chatů, když je poslední položkou bezpečnostní upozornění"
   }
 }

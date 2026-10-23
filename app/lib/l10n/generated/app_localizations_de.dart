@@ -1748,4 +1748,96 @@ class AppLocalizationsDe extends AppLocalizations {
   String profilePhotoFailed(String error) {
     return 'Foto konnte nicht gesetzt werden: $error';
   }
+
+  @override
+  String get reauthTitle => 'Bestätige, dass du es bist';
+
+  @override
+  String get reauthPinRequired =>
+      'Diese Aktion erfordert eine PIN. Lege zuerst eine fest.';
+
+  @override
+  String get reauthSetPin => 'PIN festlegen';
+
+  @override
+  String get reauthReasonSeed => '24 Wiederherstellungswörter anzeigen';
+
+  @override
+  String get reauthReasonBackupExport => 'Backup exportieren';
+
+  @override
+  String get reauthReasonBackupImport => 'Aus Backup wiederherstellen';
+
+  @override
+  String get reauthReasonDecoyPin => 'Notfall-PIN ändern';
+
+  @override
+  String get reauthReasonAutoLock => 'Automatische Sperre verlängern';
+
+  @override
+  String get reauthReasonScreenSecurity => 'Bildschirmschutz ausschalten';
+
+  @override
+  String get reauthReasonDeleteAccount => 'Konto und alle Daten löschen';
+
+  @override
+  String get reauthReasonBiometrics => 'Biometrie einschalten';
+
+  @override
+  String contactRequestName(String name) {
+    return '$name (unbekannt)';
+  }
+
+  @override
+  String get pushMessageRequest =>
+      'Nachrichtenanfrage von unbekanntem Absender';
+
+  @override
+  String get requestTitle => 'Nachrichtenanfrage';
+
+  @override
+  String requestBody(String name) {
+    return '„$name“ ist nicht in deinen Kontakten. Name und Foto hat die Person selbst gewählt, sie ist also vielleicht nicht, wer sie vorgibt zu sein. Bis du annimmst, sieht sie nicht, dass du die Nachricht gelesen hast, und kann dich nicht anrufen.';
+  }
+
+  @override
+  String requestLookalikeWarning(String name) {
+    return 'Achtung: Dein Kontakt $name heißt genauso. Das ist ein anderer Schlüssel, also ein anderes Telefon oder eine andere Person. Prüfe das auf anderem Weg, bevor du antwortest (anrufen, persönlich treffen).';
+  }
+
+  @override
+  String get requestAccept => 'Annehmen';
+
+  @override
+  String get requestAcceptTitle => 'Als Kontakt annehmen';
+
+  @override
+  String get requestAcceptBody =>
+      'Benenne den Kontakt selbst. Der vom Absender gewählte Name wird nicht automatisch übernommen.';
+
+  @override
+  String get requestAcceptNameLabel => 'Kontaktname';
+
+  @override
+  String get requestNameEmpty => 'Gib einen Namen ein.';
+
+  @override
+  String get requestNameTaken =>
+      'Ein anderer Kontakt heißt schon so (oder fast so). Wähle einen Namen, der nicht verwechselt werden kann.';
+
+  @override
+  String noticeIdentityChanged(String name) {
+    return 'Der Sicherheitscode von $name hat sich geändert. Unter dieser Adresse meldet sich ein anderer Schlüssel: neues Telefon, Neuinstallation oder Fälschung. Die Verifizierung wurde aufgehoben. Vergleicht den Code erneut, bevor du etwas Sensibles sendest.';
+  }
+
+  @override
+  String noticeLookalikeRequest(String claimed, String name) {
+    return 'Ein unbekannter Absender nennt sich „$claimed“, was nach deinem Kontakt $name aussieht. Es ist nicht dieser Kontakt, die Nachricht kam von einem anderen Schlüssel. Du findest sie in den Chats als Nachrichtenanfrage.';
+  }
+
+  @override
+  String get noticeVerifyAction => 'Code prüfen';
+
+  @override
+  String get noticePreview => 'Sicherheitshinweis';
 }

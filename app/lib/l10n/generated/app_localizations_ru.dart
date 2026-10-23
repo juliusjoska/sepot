@@ -1761,4 +1761,96 @@ class AppLocalizationsRu extends AppLocalizations {
   String profilePhotoFailed(String error) {
     return 'Не удалось установить фото: $error';
   }
+
+  @override
+  String get reauthTitle => 'Подтвердите, что это вы';
+
+  @override
+  String get reauthPinRequired =>
+      'Для этого действия нужен PIN-код. Сначала задайте его.';
+
+  @override
+  String get reauthSetPin => 'Задать PIN';
+
+  @override
+  String get reauthReasonSeed => 'Показать 24 слова для восстановления';
+
+  @override
+  String get reauthReasonBackupExport => 'Экспорт резервной копии';
+
+  @override
+  String get reauthReasonBackupImport => 'Восстановление из резервной копии';
+
+  @override
+  String get reauthReasonDecoyPin => 'Изменение PIN-кода под принуждением';
+
+  @override
+  String get reauthReasonAutoLock => 'Увеличение времени автоблокировки';
+
+  @override
+  String get reauthReasonScreenSecurity => 'Отключение защиты экрана';
+
+  @override
+  String get reauthReasonDeleteAccount => 'Удаление аккаунта и всех данных';
+
+  @override
+  String get reauthReasonBiometrics => 'Включение биометрии';
+
+  @override
+  String contactRequestName(String name) {
+    return '$name (неизвестный)';
+  }
+
+  @override
+  String get pushMessageRequest =>
+      'Запрос на переписку от неизвестного отправителя';
+
+  @override
+  String get requestTitle => 'Запрос на переписку';
+
+  @override
+  String requestBody(String name) {
+    return '«$name» нет в ваших контактах. Имя и фото отправитель выбрал сам, поэтому это может быть не тот, за кого он себя выдаёт. Пока вы не примете запрос, он не увидит, что вы прочитали сообщение, и не сможет вам позвонить.';
+  }
+
+  @override
+  String requestLookalikeWarning(String name) {
+    return 'Осторожно: так же зовут ваш контакт $name. Это другой ключ, то есть другой телефон или другой человек. Прежде чем отвечать, проверьте это другим способом (позвоните, встретьтесь).';
+  }
+
+  @override
+  String get requestAccept => 'Принять';
+
+  @override
+  String get requestAcceptTitle => 'Принять как контакт';
+
+  @override
+  String get requestAcceptBody =>
+      'Назовите контакт сами. Имя, выбранное отправителем, автоматически не используется.';
+
+  @override
+  String get requestAcceptNameLabel => 'Имя контакта';
+
+  @override
+  String get requestNameEmpty => 'Введите имя.';
+
+  @override
+  String get requestNameTaken =>
+      'Так (или почти так) уже называется другой контакт. Выберите имя, которое нельзя перепутать.';
+
+  @override
+  String noticeIdentityChanged(String name) {
+    return 'Код безопасности контакта $name изменился. По его адресу появился другой ключ: новый телефон, переустановка или подделка. Подтверждение отменено. Прежде чем отправлять что-то важное, сверьте код заново.';
+  }
+
+  @override
+  String noticeLookalikeRequest(String claimed, String name) {
+    return 'Неизвестный отправитель назвался «$claimed», что похоже на ваш контакт $name. Это не он: сообщение пришло с другого ключа. Оно в чатах как запрос на переписку.';
+  }
+
+  @override
+  String get noticeVerifyAction => 'Проверить код';
+
+  @override
+  String get noticePreview => 'Предупреждение безопасности';
 }

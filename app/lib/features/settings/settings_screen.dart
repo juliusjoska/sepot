@@ -24,6 +24,7 @@ import 'package:sepot/providers/identity_provider.dart';
 import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 import 'package:sepot/providers/settings_provider.dart';
+import 'package:sepot/features/auth/reauth.dart';
 import 'package:sepot/features/settings/biometrics_tile.dart';
 import 'package:sepot/features/settings/language_settings_tile.dart';
 import 'package:sepot/features/settings/push_settings_tile.dart';
@@ -151,8 +152,7 @@ class SettingsScreen extends ConsumerWidget {
               subtitle: l10n.settingsScreenSecuritySubtitle,
               trailing: Switch(
                 value: ref.watch(screenSecurityProvider).valueOrNull ?? false,
-                onChanged: (v) =>
-                    ref.read(screenSecurityProvider.notifier).set(v),
+                onChanged: (v) => _setScreenSecurity(context, ref, v),
                 activeTrackColor: SepotColors.ember,
               ),
               onTap: () {},
@@ -319,9 +319,15 @@ class SettingsScreen extends ConsumerWidget {
         ],
       ),
     );
-    if (vybrano != null && vybrano != ted) {
-      await ref.read(autoLockProvider.notifier).set(vybrano);
+    if (vybrano == null || vybrano == ted || !context.mounted) return;
+    // Delší interval nebo „nikdy“ = slabší zámek. Kratší projde bez ptaní.
+    final weakens = vybrano == 0 || (ted != 0 && vybrano > ted);
+    if (weakens &&
+        !await confirmSensitiveAction(context, ref,
+            reason: context.l10n.reauthReasonAutoLock)) {
+      return;
     }
+    await ref.read(autoLockProvider.notifier).set(vybrano);
   }
 
   /// Moje profilová fotka: vybrat z galerie (oříznutí a zmenšení běží
@@ -518,6 +524,10 @@ class SettingsScreen extends ConsumerWidget {
     final l10n = context.l10n;
     final identity = ref.read(identityProvider).valueOrNull;
     if (identity == null) return;
+    if (!await confirmSensitiveAction(context, ref,
+        reason: l10n.reauthReasonBackupExport)) {
+      return;
+    }
     try {
       final bytes = await ref.read(backupServiceProvider).export(identity);
       final dir = await getTemporaryDirectory();
@@ -547,6 +557,10 @@ class SettingsScreen extends ConsumerWidget {
     final l10n = context.l10n;
     final identity = ref.read(identityProvider).valueOrNull;
     if (identity == null) return;
+    if (!await confirmSensitiveAction(context, ref,
+        reason: l10n.reauthReasonBackupImport)) {
+      return;
+    }
     try {
       final res = await FilePicker.pickFiles(withData: true);
       final data = res?.files.firstOrNull?.bytes;
@@ -570,6 +584,11 @@ class SettingsScreen extends ConsumerWidget {
 
   Future<void> _setDecoyPin(BuildContext context, WidgetRef ref) async {
     final l10n = context.l10n;
+    if (!await confirmSensitiveAction(context, ref,
+        reason: l10n.reauthReasonDecoyPin)) {
+      return;
+    }
+    if (!context.mounted) return;
     final pinCtrl = TextEditingController();
     final confirmCtrl = TextEditingController();
     const numberField = TextInputType.number;
@@ -645,6 +664,10 @@ class SettingsScreen extends ConsumerWidget {
 
   Future<void> _disableDecoyPin(BuildContext context, WidgetRef ref) async {
     final l10n = context.l10n;
+    if (!await confirmSensitiveAction(context, ref,
+        reason: l10n.reauthReasonDecoyPin)) {
+      return;
+    }
     await ref.read(storageProvider).disableDecoyPin();
     ref.invalidate(hasDecoyPinProvider);
     if (context.mounted) {
@@ -654,8 +677,15 @@ class SettingsScreen extends ConsumerWidget {
     }
   }
 
-  void _showSeedPhrase(BuildContext context, WidgetRef ref) async {
+  /// Fráze = celý účet navždy. Načte se z keystore až po čerstvém ověření
+  /// a kopírovat ji nejde záměrně: schránku čtou klávesnice a synchronizace
+  /// do cloudu, takže by 24 slov opustilo telefon mimo kontrolu uživatele.
+  Future<void> _showSeedPhrase(BuildContext context, WidgetRef ref) async {
     final l10n = context.l10n;
+    if (!await confirmSensitiveAction(context, ref,
+        reason: l10n.reauthReasonSeed)) {
+      return;
+    }
     final storage = ref.read(storageProvider);
     final seed = await storage.loadSeedPhrase();
 
@@ -670,45 +700,62 @@ class SettingsScreen extends ConsumerWidget {
 
     if (!context.mounted) return;
 
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(ctx.l10n.settingsSeedPhraseTitle),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              ctx.l10n.settingsSeedPhraseWarning,
-              style: const TextStyle(
-                fontSize: 13,
-                color: SepotColors.warning,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: List.generate(seed.length, (i) {
-                return Chip(
-                  label: Text(
-                    ctx.l10n.settingsSeedWordChip(i + 1, seed[i]),
-                    style: SepotTheme.cryptoText,
+    await ref.read(screenSecurityProvider.notifier).enforceWhile(
+      () => showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(ctx.l10n.settingsSeedPhraseTitle),
+          // 24 čipů se na malý displej nevejde — posouvat, ne přetéct.
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  ctx.l10n.settingsSeedPhraseWarning,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: SepotColors.warning,
                   ),
-                  backgroundColor: SepotColors.surfaceVariant,
-                  side: const BorderSide(color: SepotColors.border),
-                );
-              }),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: List.generate(seed.length, (i) {
+                    return Chip(
+                      label: Text(
+                        ctx.l10n.settingsSeedWordChip(i + 1, seed[i]),
+                        style: SepotTheme.cryptoText,
+                      ),
+                      backgroundColor: SepotColors.surfaceVariant,
+                      side: const BorderSide(color: SepotColors.border),
+                    );
+                  }),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: Text(ctx.l10n.commonClose),
             ),
           ],
         ),
-        actions: [
-          ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text(ctx.l10n.commonClose),
-          ),
-        ],
       ),
     );
+  }
+
+  /// Vypnutí ochrany obrazovky pouští obsah (i frázi) do snímků a náhledu
+  /// v přepínači aplikací — stejné oslabení jako delší auto-zámek.
+  Future<void> _setScreenSecurity(
+      BuildContext context, WidgetRef ref, bool enabled) async {
+    if (!enabled &&
+        !await confirmSensitiveAction(context, ref,
+            reason: context.l10n.reauthReasonScreenSecurity)) {
+      return;
+    }
+    await ref.read(screenSecurityProvider.notifier).set(enabled);
   }
 
   void _showAbout(BuildContext context) {
@@ -767,6 +814,10 @@ class SettingsScreen extends ConsumerWidget {
           ),
           ElevatedButton(
             onPressed: () async {
+              if (!await confirmSensitiveAction(ctx, ref,
+                  reason: ctx.l10n.reauthReasonDeleteAccount)) {
+                return;
+              }
               final messaging = ref.read(messagingServiceProvider);
               // Serverová deregistrace PŘED lokálním wipe — podpis
               // požadavku potřebuje identity klíč, který wipe zahodí.

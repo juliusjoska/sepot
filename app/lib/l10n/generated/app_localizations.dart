@@ -3025,6 +3025,162 @@ abstract class AppLocalizations {
   /// In cs, this message translates to:
   /// **'Fotku se nepodařilo nastavit: {error}'**
   String profilePhotoFailed(String error);
+
+  /// Nadpis výzvy k PINu před citlivou akcí v odemčené appce
+  ///
+  /// In cs, this message translates to:
+  /// **'Potvrď, že jsi to ty'**
+  String get reauthTitle;
+
+  /// Snackbar: citlivá akce bez nastaveného PINu
+  ///
+  /// In cs, this message translates to:
+  /// **'Tahle akce potřebuje PIN. Nejdřív si ho nastav.'**
+  String get reauthPinRequired;
+
+  /// Akce snackbaru: nastavit PIN
+  ///
+  /// In cs, this message translates to:
+  /// **'Nastavit PIN'**
+  String get reauthSetPin;
+
+  /// Důvod ve výzvě k PINu/biometrii: zobrazení obnovovací fráze
+  ///
+  /// In cs, this message translates to:
+  /// **'Zobrazení 24 slov pro obnovu účtu'**
+  String get reauthReasonSeed;
+
+  /// Důvod: export zálohy
+  ///
+  /// In cs, this message translates to:
+  /// **'Export zálohy'**
+  String get reauthReasonBackupExport;
+
+  /// Důvod: obnova ze zálohy
+  ///
+  /// In cs, this message translates to:
+  /// **'Obnova ze zálohy'**
+  String get reauthReasonBackupImport;
+
+  /// Důvod: nastavení nebo zrušení nátlakového PINu
+  ///
+  /// In cs, this message translates to:
+  /// **'Změna nátlakového PINu'**
+  String get reauthReasonDecoyPin;
+
+  /// Důvod: prodloužení nebo vypnutí automatického zámku
+  ///
+  /// In cs, this message translates to:
+  /// **'Prodloužení automatického zámku'**
+  String get reauthReasonAutoLock;
+
+  /// Důvod: vypnutí ochrany obrazovky
+  ///
+  /// In cs, this message translates to:
+  /// **'Vypnutí ochrany obrazovky'**
+  String get reauthReasonScreenSecurity;
+
+  /// Důvod: smazání účtu
+  ///
+  /// In cs, this message translates to:
+  /// **'Smazání účtu a všech dat'**
+  String get reauthReasonDeleteAccount;
+
+  /// Důvod: zapnutí biometrického odemčení
+  ///
+  /// In cs, this message translates to:
+  /// **'Zapnutí biometrie'**
+  String get reauthReasonBiometrics;
+
+  /// Jméno neznámého odesílatele (žádost o zprávu) všude v UI; {name} si zvolil sám
+  ///
+  /// In cs, this message translates to:
+  /// **'{name} (neznámý)'**
+  String contactRequestName(String name);
+
+  /// Text notifikace pro zprávu od neznámého odesílatele — bez jména, které si zvolil
+  ///
+  /// In cs, this message translates to:
+  /// **'Žádost o zprávu od neznámého odesílatele'**
+  String get pushMessageRequest;
+
+  /// Nadpis panelu / štítek žádosti o zprávu
+  ///
+  /// In cs, this message translates to:
+  /// **'Žádost o zprávu'**
+  String get requestTitle;
+
+  /// Panel žádosti o zprávu; {name} = jméno, které si odesílatel zvolil
+  ///
+  /// In cs, this message translates to:
+  /// **'„{name}“ není ve tvých kontaktech. Jméno i fotku si zvolil sám, takže nemusí jít o toho, za koho se vydává. Dokud ho nepřijmeš, neuvidí, že jsi zprávu četl, a nemůže ti volat.'**
+  String requestBody(String name);
+
+  /// Varování v panelu žádosti: jméno se plete s existujícím kontaktem {name}
+  ///
+  /// In cs, this message translates to:
+  /// **'Pozor: stejně se jmenuje tvůj kontakt {name}. Tohle je jiný klíč, tedy jiný telefon nebo jiný člověk. Než odpovíš, ověř si to jinou cestou (zavolej, potkejte se).'**
+  String requestLookalikeWarning(String name);
+
+  /// Tlačítko: přijmout žádost o zprávu
+  ///
+  /// In cs, this message translates to:
+  /// **'Přijmout'**
+  String get requestAccept;
+
+  /// Nadpis dialogu přijetí žádosti
+  ///
+  /// In cs, this message translates to:
+  /// **'Přijmout jako kontakt'**
+  String get requestAcceptTitle;
+
+  /// Text dialogu přijetí: kontakt pojmenuje uživatel sám
+  ///
+  /// In cs, this message translates to:
+  /// **'Pojmenuj kontakt sám. Jméno, které si odesílatel zvolil, se nepřebírá automaticky.'**
+  String get requestAcceptBody;
+
+  /// Popisek pole se jménem kontaktu
+  ///
+  /// In cs, this message translates to:
+  /// **'Jméno kontaktu'**
+  String get requestAcceptNameLabel;
+
+  /// Chyba: prázdné jméno
+  ///
+  /// In cs, this message translates to:
+  /// **'Zadej jméno.'**
+  String get requestNameEmpty;
+
+  /// Chyba: jméno se plete s jiným kontaktem
+  ///
+  /// In cs, this message translates to:
+  /// **'Tak (nebo skoro tak) se už jmenuje jiný kontakt. Zvol jméno, které je nezamění.'**
+  String get requestNameTaken;
+
+  /// Upozornění v konverzaci: kontaktu {name} se změnil identity klíč
+  ///
+  /// In cs, this message translates to:
+  /// **'Bezpečnostní kód kontaktu {name} se změnil. Pod jeho adresou se ozval jiný klíč: nový telefon, přeinstalace, nebo podvrh. Ověření je zrušené. Než pošleš něco citlivého, porovnejte kód znovu.'**
+  String noticeIdentityChanged(String name);
+
+  /// Upozornění v konverzaci existujícího kontaktu {name}: neznámý si zvolil podobné jméno {claimed}
+  ///
+  /// In cs, this message translates to:
+  /// **'Neznámý odesílatel si dal jméno „{claimed}“, které se plete s kontaktem {name}. Tento kontakt to není, zpráva přišla z jiného klíče. Najdeš ji v chatech jako žádost o zprávu.'**
+  String noticeLookalikeRequest(String claimed, String name);
+
+  /// Tlačítko u upozornění na změnu kódu
+  ///
+  /// In cs, this message translates to:
+  /// **'Ověřit kód'**
+  String get noticeVerifyAction;
+
+  /// Náhled v seznamu chatů, když je poslední položkou bezpečnostní upozornění
+  ///
+  /// In cs, this message translates to:
+  /// **'Bezpečnostní upozornění'**
+  String get noticePreview;
 }
 
 class _AppLocalizationsDelegate
