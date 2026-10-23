@@ -99,12 +99,20 @@ class SepotAvatar extends ConsumerWidget {
     );
   }
 
+  static final _leadingPunct = RegExp(r'^\p{P}', unicode: true);
+
   /// Iniciály pro avatar — veřejné, ať je sdílí i kolečka hlasujících apod.
   static String initialsOf(String name) {
     // Prázdné díly odfiltrovat — dvojitá mezera ve jméně nesmí shodit render.
     // Grafémy (characters), ne code units — jméno začínající emoji by se
     // jinak rozpůlilo na rozbitý surrogate.
-    final parts = name.trim().split(' ').where((p) => p.isNotEmpty).toList();
+    // Slova začínající interpunkcí přeskočit: přívlastek „(neznámý)“ u žádosti
+    // o zprávu by jinak dal iniciály „M(“.
+    final parts = name
+        .trim()
+        .split(' ')
+        .where((p) => p.isNotEmpty && !_leadingPunct.hasMatch(p))
+        .toList();
     if (parts.length >= 2) {
       return '${parts[0].characters.first}${parts[1].characters.first}'
           .toUpperCase();

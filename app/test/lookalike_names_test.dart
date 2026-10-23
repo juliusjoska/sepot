@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sepot/core/safety/lookalike_names.dart';
 import 'package:sepot/models/contact.dart';
 import 'package:sepot/models/identity.dart';
+import 'package:sepot/widgets/avatar.dart';
 
 /// Jméno zvolené odesílatelem se nesmí dát „obejít“ diakritikou, velikostí
 /// písmen, cizí abecedou ani neviditelnými znaky.
@@ -54,5 +55,11 @@ void main() {
     expect(lookalikeContact('mama', [mama], exceptId: mama.id), isNull);
     expect(lookalikeContact('', [kontakt('')]), isNull,
         reason: 'prázdné jméno nic nenese');
+  });
+
+  test('přívlastek žádosti v závorce nekazí iniciály avataru', () {
+    expect(SepotAvatar.initialsOf('Máma (neznámý)'), 'MÁ');
+    expect(SepotAvatar.initialsOf('Jan Novák (unknown)'), 'JN');
+    expect(SepotAvatar.initialsOf('(neznámý)'), '?');
   });
 }
