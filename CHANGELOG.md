@@ -6,6 +6,36 @@ verzování dle [ajtak standardu](#verzování).
 
 ## [Nevydáno]
 
+## [1.2.3] – 2026-10-23
+
+### Bezpečnost
+- **24 slov jen po čerstvém ověření.** Zálohovací fráze se z odemčené appky
+  ukáže až po zadání PINu (nebo otisku/obličeje, je-li zapnutý). Totéž platí
+  pro export a obnovu zálohy, nastavení nátlakového PINu, prodloužení
+  automatického zámku, vypnutí ochrany obrazovky, zapnutí biometrie
+  a smazání účtu. Kdo vezme odemčený telefon, k frázi se nedostane.
+  V nátlakové relaci se fráze nezobrazí nikdy. Ověření PINu podléhá stejnému
+  zpomalení po chybách jako odemykání.
+- **Cizí klíč se jménem kontaktu už nesplyne s kontaktem.** Zpráva od
+  neznámého klíče je „žádost o zprávu“ se jménem, které si odesílatel zvolil
+  sám, a s označením „(neznámý)“. Dokud ji nepřijmete, nejde odpovědět,
+  nechodí od vás potvrzení přečtení ani psaní, nezvoní hovory a notifikace
+  neukazuje jméno. Když se jméno plete s existujícím kontaktem (i přes
+  cyrilici, diakritiku nebo neviditelné znaky), ukáže se varování i v chatu
+  skutečného kontaktu.
+- **Změna bezpečnostního kódu.** Když se pod účtem známého kontaktu objeví
+  jiný klíč, chat ukáže „Bezpečnostní kód kontaktu … se změnil“, ověření
+  kontaktu se zruší a odpověď neodejde na nový klíč. Nový klíč přijde jako
+  samostatná žádost o zprávu.
+
+### Opraveno
+- **Na iPhonu nechodily budíčky ani hovory na pozadí.** Appka relayi vůbec
+  neposlala token pro zprávy (APNs) ani pro hovory (VoIP): nastavení
+  notifikací na iOS skončilo chybou, ta zastavila celou registraci a appka
+  ji tiše spolkla. Registrace u Apple teď proběhne i bez povolených
+  notifikací, token pro hovory jde zvlášť a případné selhání ukáže seznam
+  chatů.
+
 ## [1.2.2] – 2026-10-11
 
 ### Opraveno
