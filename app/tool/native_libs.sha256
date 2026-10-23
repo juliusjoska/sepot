@@ -1,0 +1,25 @@
+# Pinned native crypto library (libsignal_frb) shipped in the Android app.
+#
+# The Dart package `libsignal` downloads a prebuilt `libsignal_frb` from the
+# GitHub releases of djx-y-z/libsignal_dart during the build. Its own check
+# only compares against a checksum file from the same release, so a replaced
+# release would go unnoticed. These pins live in our repository instead and
+# tool/verify_native_libs.sh fails the release build on any mismatch.
+#
+# package  = version of the `libsignal` Dart package in pubspec.lock
+# archive  = SHA-256 of the upstream release archive
+#            https://github.com/djx-y-z/libsignal_dart/releases/tag/libsignal_frb-4.0.9
+# shipped  = SHA-256 of liblibsignal_frb.so inside our AAB/APK. The Android
+#            Gradle plugin strips the library while packaging; the value equals
+#            `llvm-strip --strip-unneeded` (NDK 28) applied to the file from the
+#            archive. `verify_native_libs.sh --from-upstream` re-derives it.
+#
+# Updating libsignal = update every line here in the same commit.
+
+package libsignal 5.0.9
+archive android-arm64-v8a   b03c1f47b07ded392a9a44b217b3d24470f0dce69901c67061c1f1295f96065f
+archive android-armeabi-v7a 0dc16fbbfe2bf5b3e7758fd2b297c831fee296c55ac19b4f94a9e0086d26b9b0
+archive android-x86_64      cdb1623a855fa508dd84c025b267eaac846f882637450f00a74199bdf2d85264
+shipped arm64-v8a           39612f422ed1dc2c7576165c5c169d7911f64de093eeea4ee8d3047b884c1c0a
+shipped armeabi-v7a         b442795a864fe0ae15a1e04a151863244fedda3b8854b2d22ec9b23e59227e78
+shipped x86_64              59e5925c2d6f5e9496cbe86d1a7d19965dc4060efe94cd452d58ba651fe7a122
