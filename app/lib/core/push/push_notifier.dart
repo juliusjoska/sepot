@@ -27,6 +27,14 @@ class PushNotifier {
     await _plugin.initialize(
       InitializationSettings(
         android: const AndroidInitializationSettings('@mipmap/ic_launcher'),
+        // Bez iOS nastavení plugin hodí ArgumentError a s ním padala celá
+        // APNs registrace — iPhony relayi neposlaly token vůbec. O oprávnění
+        // se žádá až v [requestPermission], ne při první notifikaci.
+        iOS: const DarwinInitializationSettings(
+          requestAlertPermission: false,
+          requestBadgePermission: false,
+          requestSoundPermission: false,
+        ),
         linux: LinuxInitializationSettings(
           defaultActionName: l10n.pushActionOpen,
         ),
@@ -48,17 +56,23 @@ class PushNotifier {
         priority: Priority.high,
         category: AndroidNotificationCategory.message,
       ),
+      iOS: const DarwinNotificationDetails(),
       linux: const LinuxNotificationDetails(),
     );
   }
 
-  /// Android 13+ runtime permission — volat při zapnutí pushe v nastavení.
+  /// Oprávnění k viditelným notifikacím (Android 13+, iOS) — volat při
+  /// zapnutí pushe. Tichý budíček na iOS ho nepotřebuje.
   static Future<void> requestPermission() async {
     await _ensureInit();
     await _plugin
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.requestNotificationsPermission();
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin>()
+        ?.requestPermissions(alert: true, badge: true, sound: true);
   }
 
   /// Notifikace o přijaté zprávě, když appka běží, ale není v popředí.

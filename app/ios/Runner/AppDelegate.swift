@@ -17,22 +17,29 @@ import flutter_callkit_incoming
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    let controller = window?.rootViewController as! FlutterViewController
-    let channel = FlutterMethodChannel(
-      name: "cz.sepot.sepot/apns", binaryMessenger: controller.binaryMessenger)
-    channel.setMethodCallHandler { [weak self] call, result in
-      switch call.method {
-      case "register":
-        // Nativní APNs registrace (bez Firebase) — token přijde v callbacku
-        application.registerForRemoteNotifications()
-        result(nil)
-      case "getToken":
-        result(self?.pendingToken)
-      default:
-        result(FlutterMethodNotImplemented)
+    // Bez force-castu: kdyby root nebyl FlutterViewController (jiný storyboard,
+    // budoucí scény), appka by spadla hned při startu. Registrar dá messenger
+    // enginu i tak.
+    let messenger =
+      (window?.rootViewController as? FlutterViewController)?.binaryMessenger
+      ?? registrar(forPlugin: "SepotApns")?.messenger()
+    if let messenger {
+      let channel = FlutterMethodChannel(
+        name: "cz.sepot.sepot/apns", binaryMessenger: messenger)
+      channel.setMethodCallHandler { [weak self] call, result in
+        switch call.method {
+        case "register":
+          // Nativní APNs registrace (bez Firebase) — token přijde v callbacku
+          application.registerForRemoteNotifications()
+          result(nil)
+        case "getToken":
+          result(self?.pendingToken)
+        default:
+          result(FlutterMethodNotImplemented)
+        }
       }
+      apnsChannel = channel
     }
-    apnsChannel = channel
 
     GeneratedPluginRegistrant.register(with: self)
 

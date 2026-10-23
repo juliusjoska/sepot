@@ -74,7 +74,7 @@ class PushBootstrap {
   static Future<bool> registrationFailed() async =>
       await _store.read(key: _registrationFailedKey) == '1';
 
-  static Future<void> _setRegistrationFailed(bool failed) => failed
+  static Future<void> setRegistrationFailed(bool failed) => failed
       ? _store.write(key: _registrationFailedKey, value: '1')
       : _store.delete(key: _registrationFailedKey);
 
@@ -93,7 +93,7 @@ class PushBootstrap {
       await UnifiedPush.initialize(
         onNewEndpoint: _onNewEndpoint,
         onRegistrationFailed: (_, _) =>
-            unawaited(_setRegistrationFailed(true)),
+            unawaited(setRegistrationFailed(true)),
         onUnregistered: _onUnregistered,
         onMessage: _onMessage,
       );
@@ -138,7 +138,7 @@ class PushBootstrap {
   }
 
   static void _onNewEndpoint(PushEndpoint endpoint, String instance) {
-    unawaited(_setRegistrationFailed(false)); // registrace se povedla
+    unawaited(setRegistrationFailed(false)); // registrace se povedla
     final s = _service;
     if (s != null) {
       s.handleNewEndpoint(endpoint.url);

@@ -27,6 +27,7 @@ import 'dart:typed_data';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:sepot/core/calls/call_ringer.dart';
 import 'package:sepot/core/push/apns_ios.dart';
 import 'package:sepot/core/push/push_bootstrap.dart';
@@ -35,10 +36,27 @@ import 'package:sepot/core/services/messaging_service.dart';
 import 'package:sepot/proto/sepot.pb.dart' as pb;
 import 'package:unifiedpush/unifiedpush.dart';
 
+/// Nativní strana iOS pushů. Oddělená od [PushService], aby šlo pořadí
+/// kroků a skládání registrace ověřit testem bez iPhonu.
+class IosPushPlatform {
+  const IosPushPlatform();
+
+  bool get isIOS => Platform.isIOS;
+  Future<void> registerApns() => ApnsBridge.register();
+  Future<String?> apnsToken() => ApnsBridge.currentToken();
+  Future<String?> voipToken() => CallRinger.voipToken();
+  Future<void> requestPermission() => PushNotifier.requestPermission();
+  Future<void> writeMode(String mode) => PushBootstrap.writeMode(mode);
+  Future<void> setRegistrationFailed(bool failed) =>
+      PushBootstrap.setRegistrationFailed(failed);
+}
+
 class PushService {
-  PushService(this._messaging);
+  PushService(this._messaging, {IosPushPlatform ios = const IosPushPlatform()})
+      : _ios = ios;
 
   final MessagingService _messaging;
+  final IosPushPlatform _ios;
   StreamSubscription<String>? _fcmTokenSub;
   StreamSubscription<RemoteMessage>? _fcmMessageSub;
 
@@ -94,34 +112,66 @@ class PushService {
 
   String? _apnsToken;
 
-  /// APNs token pro zprávy + VoIP token pro hovory v jedné registraci
-  /// (relay drží obojí u zařízení).
-  Future<void> _registerApnsToken(String token) async {
-    _apnsToken = token;
-    final voip = await CallRinger.voipToken();
-    final reg = _registration(
-      pb.RegisterPush_Platform.PLATFORM_APNS,
-      Uint8List.fromList(utf8.encode(token)),
+  /// Registrace iOS pushů pro relay: APNs token pro zprávy + VoIP token pro
+  /// hovory (relay drží obojí u zařízení). VoIP token jde i sám, s prázdným
+  /// endpointem — PushKit ho vydá nezávisle na APNs a hovory nesmí čekat,
+  /// až Apple vydá i token pro zprávy. Null = zatím není co poslat.
+  @visibleForTesting
+  static pb.RegisterPush? apnsRegistration({
+    String? apnsToken,
+    String? voipToken,
+  }) {
+    if (apnsToken == null && voipToken == null) return null;
+    final reg = pb.RegisterPush(
+      platform: pb.RegisterPush_Platform.PLATFORM_APNS,
+      endpoint: apnsToken == null
+          ? Uint8List(0)
+          : Uint8List.fromList(utf8.encode(apnsToken)),
     );
-    if (voip != null) reg.voipToken = utf8.encode(voip);
-    _messaging.registerPush(reg);
+    if (voipToken != null) reg.voipToken = utf8.encode(voipToken);
+    return reg;
   }
 
-  /// PushKit vydal (nový) VoIP token — přeregistrovat, pokud už APNs běží.
-  Future<void> refreshVoipToken() async {
-    final token = _apnsToken;
-    if (token != null) await _registerApnsToken(token);
+  Future<void> _sendApnsRegistration() async {
+    final reg = apnsRegistration(
+      apnsToken: _apnsToken,
+      voipToken: await _ios.voipToken(),
+    );
+    if (reg != null) _messaging.registerPush(reg);
   }
+
+  Future<void> _registerApnsToken(String token) async {
+    _apnsToken = token;
+    await _sendApnsRegistration();
+  }
+
+  /// PushKit vydal (nový) VoIP token — poslat ho relayi, i když APNs token
+  /// pro zprávy ještě nedorazil.
+  Future<void> refreshVoipToken() => _sendApnsRegistration();
 
   /// iOS nativní push (APNs) — zapne registraci u Apple; token přijde
   /// asynchronně a sám se pošle relayi. Bez Googlu.
+  ///
+  /// Registrace u Apple jde PŘED žádostí o oprávnění: tichý budíček
+  /// oprávnění nepotřebuje, takže odmítnutý (nebo selhaný) dialog nesmí
+  /// zastavit doručování zpráv.
   Future<void> enableApns() async {
     await init();
-    await PushNotifier.requestPermission();
-    await ApnsBridge.register();
-    final existing = await ApnsBridge.currentToken();
-    if (existing != null) _registerApnsToken(existing);
-    await PushBootstrap.writeMode('apns');
+    await _ios.registerApns();
+    await _ios.writeMode('apns');
+    final existing = await _ios.apnsToken();
+    if (existing != null) {
+      await _registerApnsToken(existing);
+    } else {
+      // VoIP token mohl přijít dřív než APNs — hovory ať zvoní hned.
+      await _sendApnsRegistration();
+    }
+    try {
+      await _ios.requestPermission();
+    } catch (e, s) {
+      // Bez oprávnění chodí budíčky dál, jen bez viditelné notifikace.
+      debugPrint('Oprávnění k notifikacím selhalo: $e\n$s');
+    }
   }
 
   /// Zapne push: použije uloženého/výchozího distributora a zaregistruje se.
@@ -245,10 +295,15 @@ class PushService {
   Future<void> restoreMode() async {
     // iOS: jediná smysluplná cesta je APNs (UnifiedPush je Android-only).
     // Zapínáme ho automaticky — pro iOS messenger jsou notifikace základ.
-    if (Platform.isIOS) {
+    if (_ios.isIOS) {
       try {
         await enableApns();
-      } catch (_) {
+        await _ios.setRegistrationFailed(false);
+      } catch (e, s) {
+        // Dřív se chyba spolkla a iPhone tiše zůstal bez budíčků. Teď ji
+        // uvidí stav pushů v chat listu (PushHealth.failed).
+        debugPrint('APNs registrace selhala: $e\n$s');
+        await _ios.setRegistrationFailed(true);
         await init();
       }
       return;
