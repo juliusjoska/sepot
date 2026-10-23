@@ -28,7 +28,16 @@ reproduce almost everything.
 
 ## What the relay can and cannot see
 
-The threat model is documented in the README: the relay sees routing tokens,
-message sizes, timing and push tokens, never content or sender identity.
-Reports that demonstrate the relay learning more than that are the ones we
-care about most.
+The threat model is documented in the README. In short: envelopes carry no
+sender (sealed sender) and the relay never sees content. It does see routing
+tokens, envelope sizes, timing and push tokens, and while a connection is
+open the client IP and which authenticated device submits an envelope to
+which delivery address. It stores no sender–recipient link and no IP
+addresses. Reports that demonstrate the relay learning or keeping more than
+that are the ones we care about most.
+
+## Audits
+
+We run regular internal security audits and penetration tests (August,
+September and October 2026); fixes are listed in `CHANGELOG.md`. No
+independent third-party audit has taken place yet.
