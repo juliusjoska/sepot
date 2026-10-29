@@ -41,6 +41,11 @@ const FRESH_CONNECTION_MS: u64 = 70_000;
 /// skupině během výpadku sítě = jeden push, ne třicet (APNs i FCM nápor
 /// tichých pushů škrtí, baterie taky).
 const WAKE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Viditelná notifikace („Nová zpráva“) se zvukem na jeden cíl nejvýš
+/// jednou za tohle okno. APNs je sloučí (collapse-id), ale každá by
+/// zazvonila — výměna deseti zpráv za minutu nemá zvonit desetkrát.
+/// V okně jde místo ní jen běžný tichý budíček.
+const ALERT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 /// Budíček hovoru (VoIP push / FCM k=call) zvoní na telefonu hned a bez
 /// ověření — proto má vlastní, přísnější strop na cíl: nejvýš jeden za
 /// `Limits::call_wake_min_interval` a `Limits::call_wakes_per_window` za
@@ -96,6 +101,7 @@ impl From<sqlx::Error> for RouteError {
 #[derive(Default)]
 pub struct WakeMarks {
     last_wake: Option<Instant>,
+    last_alert: Option<Instant>,
     call_wakes: std::collections::VecDeque<Instant>,
 }
 
@@ -260,6 +266,9 @@ impl AppState {
             m.last_wake
                 .map(|t| now.duration_since(t) < CALL_WAKE_WINDOW)
                 .unwrap_or(false)
+                || m.last_alert
+                    .map(|t| now.duration_since(t) < ALERT_MIN_INTERVAL)
+                    .unwrap_or(false)
                 || !m.call_wakes.is_empty()
         });
         self.otp_issued
@@ -299,6 +308,23 @@ impl AppState {
         {
             return false;
         }
+        marks.last_wake = Some(now);
+        true
+    }
+
+    /// Viditelná notifikace smí odejít nejvýš jednou za ALERT_MIN_INTERVAL
+    /// na cíl. Počítá se i jako běžný budíček.
+    fn allow_alert(&self, dst_address: &[u8]) -> bool {
+        let now = Instant::now();
+        let mut marks = self.wake_marks.entry(dst_address.to_vec()).or_default();
+        if marks
+            .last_alert
+            .map(|t| now.duration_since(t) < ALERT_MIN_INTERVAL)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        marks.last_alert = Some(now);
         marks.last_wake = Some(now);
         true
     }
@@ -399,6 +425,7 @@ impl AppState {
         .map_err(RouteError::Internal)?;
 
         let is_call = env.content_hint == v1::ContentHint::Call as i32;
+        let is_visible = env.content_hint == v1::ContentHint::Visible as i32;
         if let Some(dev) = self.online.get(&dst) {
             let deliver = v1::ServerFrame {
                 frame: Some(v1::server_frame::Frame::Deliver(env)),
@@ -420,6 +447,8 @@ impl AppState {
         // Offline, zatuchlé nebo plný kanál → zkusit push budíček.
         if is_call && self.allow_call_wake(&dst) {
             self.wake_call(&dst).await;
+        } else if is_visible && self.allow_alert(&dst) {
+            self.wake_message(&dst).await;
         } else if self.allow_wake(&dst) {
             self.wake(&dst).await;
         }
@@ -498,6 +527,27 @@ impl AppState {
         tokio::spawn(async move {
             crate::push::send_wake(&client, platform, &token, fcm.as_deref(), apns.as_deref())
                 .await;
+        });
+    }
+
+    /// Budíček pro novou zprávu, kterou člověk uvidí: iPhone dostane hned
+    /// viditelnou notifikaci s obecným textem, ostatní běžný budíček.
+    async fn wake_message(&self, dst_address: &[u8]) {
+        let Some((platform, token)) = self.push_target(dst_address).await else {
+            return;
+        };
+        let client = self.http.clone();
+        let fcm = self.fcm.clone();
+        let apns = self.apns.clone();
+        tokio::spawn(async move {
+            crate::push::send_message_wake(
+                &client,
+                platform,
+                &token,
+                fcm.as_deref(),
+                apns.as_deref(),
+            )
+            .await;
         });
     }
 
@@ -859,6 +909,19 @@ mod db_tests {
             .execute(&state.pool)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn viditelna_notifikace_ma_vlastni_strop_a_bere_i_budicek() {
+        let state = test_state().await;
+        let dst = rand_bytes(32);
+        assert!(state.allow_alert(&dst), "první zpráva zazvoní");
+        assert!(!state.allow_alert(&dst), "druhá v okně už ne");
+        assert!(
+            !state.allow_wake(&dst),
+            "notifikace se počítá i jako budíček — žádný tichý hned po ní"
+        );
     }
 
     #[tokio::test]

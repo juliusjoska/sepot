@@ -71,6 +71,26 @@ pub async fn send_call_wake(
     send_wake(client, target.platform, token, fcm, apns).await;
 }
 
+/// Budíček pro zprávu, kterou člověk uvidí (`ContentHint::Visible`).
+/// iPhone dostane hned viditelnou notifikaci s obecným lokalizovaným textem
+/// (tichý budíček iOS zdržuje podle baterie); obsah ani odesílatel v ní
+/// nejsou. Ostatní platformy dostanou běžný budíček.
+pub async fn send_message_wake(
+    client: &Client,
+    platform: i16,
+    token: &[u8],
+    fcm: Option<&crate::fcm::FcmSender>,
+    apns: Option<&crate::apns::ApnsSender>,
+) {
+    if platform == PLATFORM_APNS {
+        if let (Some(sender), Ok(device_token)) = (apns, std::str::from_utf8(token)) {
+            sender.send_message_alert(client, device_token).await;
+        }
+        return;
+    }
+    send_wake(client, platform, token, fcm, apns).await;
+}
+
 /// HTTP klient pro budíčky: bez redirectů (anti-SSRF přes 3xx), krátký
 /// timeout, generický UA.
 pub fn build_client() -> Client {

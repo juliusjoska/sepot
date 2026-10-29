@@ -26,6 +26,10 @@ use tokio::sync::Mutex;
 const PROD_HOST: &str = "https://api.push.apple.com";
 const SANDBOX_HOST: &str = "https://api.sandbox.push.apple.com";
 
+/// Obecná notifikace o nové zprávě. Klíč `PUSH_NEW_MESSAGE` je v
+/// `Localizable.strings` appky; bez něj by iPhone ukázal holý klíč.
+const MESSAGE_ALERT_BODY: &str = r#"{"aps":{"alert":{"loc-key":"PUSH_NEW_MESSAGE"},"sound":"default","mutable-content":1},"k":"msg"}"#;
+
 /// Do kdy má APNs budíček držet, když telefon zrovna není v síti (tunel,
 /// letadlo). S `apns-expiration: 0` ho APNs zkusí jen jednou a zahodí —
 /// telefon po návratu do sítě pak o zprávě neví, dokud appku někdo neotevře.
@@ -157,6 +161,36 @@ impl ApnsSender {
         }
     }
 
+    /// Viditelná notifikace o nové zprávě. Text si iPhone vezme z vlastní
+    /// lokalizace appky (`loc-key`), takže relay jazyk uživatele nezná.
+    /// `mutable-content` nechává prostor rozšíření appky (NSE), které text
+    /// nahradí dešifrovaným odesílatelem a obsahem. Víc notifikací APNs
+    /// sloučí do jedné (collapse-id), `k` appce řekne, že jde o tenhle druh.
+    pub async fn send_message_alert(&self, client: &reqwest::Client, device_token: &str) {
+        let Some(jwt) = self.auth_token().await else {
+            return;
+        };
+        let url = format!("{}/3/device/{}", self.host, device_token);
+        let resp = client
+            .post(&url)
+            .header("authorization", format!("bearer {jwt}"))
+            .header("apns-topic", &self.topic)
+            .header("apns-push-type", "alert")
+            .header("apns-priority", "10")
+            .header("apns-expiration", wake_expiration(Utc::now()).to_string())
+            .header("apns-collapse-id", "msg")
+            .body(MESSAGE_ALERT_BODY)
+            .send()
+            .await;
+        match resp {
+            Ok(r) if !r.status().is_success() => {
+                tracing::warn!(status = %r.status(), "APNs notifikace odmítnuta");
+            }
+            Err(e) => tracing::warn!("APNs notifikace selhala: {}", e.without_url()),
+            _ => {}
+        }
+    }
+
     /// VoIP push (PushKit) pro příchozí hovor. iOS po něm MUSÍ hned ukázat
     /// hovor v CallKit — to zařídí appka. Topic je `<bundle>.voip`, priorita
     /// 10 (u typu voip povolená) a krátká expirace: zvonit po minutě nemá
@@ -205,6 +239,16 @@ mod tests {
     /// APNs mluví jen HTTP/2. Bez featury `http2` v reqwestu relay spojení
     /// vůbec nenaváže a iPhone žádný budíček nedostane. Bez platného JWT
     /// vrátí Apple 403 (nebo 400) — to stačí: spojení i protokol sedí.
+    #[test]
+    fn notifikace_o_zprave_nenese_obsah_ani_odesilatele() {
+        let v: serde_json::Value = serde_json::from_str(MESSAGE_ALERT_BODY).unwrap();
+        let aps = &v["aps"];
+        assert_eq!(aps["alert"]["loc-key"], "PUSH_NEW_MESSAGE");
+        assert_eq!(aps["mutable-content"], 1);
+        assert_eq!(v.as_object().unwrap().len(), 2, "jen aps a k");
+        assert_eq!(aps["alert"].as_object().unwrap().len(), 1, "jen loc-key");
+    }
+
     #[tokio::test]
     #[ignore = "vyžaduje síť (api.push.apple.com)"]
     async fn apns_spojeni_jde_pres_http2() {
