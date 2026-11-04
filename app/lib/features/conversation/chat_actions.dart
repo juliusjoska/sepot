@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sepot/core/l10n/contact_name.dart';
+import 'package:sepot/core/l10n/disappearing_text.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
@@ -15,6 +16,8 @@ import 'package:sepot/models/group.dart';
 import 'package:sepot/providers/contacts_provider.dart';
 import 'package:sepot/providers/conversations_provider.dart';
 import 'package:sepot/providers/groups_provider.dart';
+import 'package:sepot/providers/identity_provider.dart';
+import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 
 String contactLabel(BuildContext context, Contact contact) =>
@@ -25,34 +28,26 @@ void _snack(BuildContext context, String text) {
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 }
 
-/// Popisky voleb mizících zpráv (sekundy → text); -1 = vypnuto.
-List<(int, String)> disappearingOptions(BuildContext context) => [
-      (-1, context.l10n.commonOff),
-      (30, context.l10n.chatDisappearing30s),
-      (300, context.l10n.chatDisappearing5m),
-      (3600, context.l10n.chatDisappearing1h),
-      (86400, context.l10n.chatDisappearing1d),
-      (604800, context.l10n.chatDisappearing1w),
-    ];
-
-/// Text aktuálního nastavení mizících zpráv („1 týden“ / „Vypnuto“).
-String disappearingLabel(BuildContext context, int? seconds) {
-  final options = disappearingOptions(context);
-  return options.where((o) => o.$1 == (seconds ?? -1)).firstOrNull?.$2 ??
-      context.l10n.commonOff;
-}
-
-/// Per-konverzace TTL mizících zpráv. Platí pro NOVĚ odeslané zprávy
-/// (TTL cestuje E2E kanálem, protistrana ho respektuje). Poctivá
+/// TTL mizících zpráv pro celou konverzaci: změna se rozešle protistraně
+/// nebo členům skupiny a platí pro NOVĚ odeslané zprávy všech. Poctivá
 /// hranice: je to dohoda klientů, ne DRM — screenshot nezastavíš.
 Future<void> configureDisappearing(
     BuildContext context, WidgetRef ref, String convId) async {
   final storage = ref.read(storageProvider);
   final conv = await storage.loadConversation(convId) ??
       Conversation(contactId: convId);
+  final group = await storage.loadGroup(convId);
+  final contact = group == null
+      ? (await storage.loadContacts()).where((c) => c.id == convId).firstOrNull
+      : null;
   if (!context.mounted) return;
+  final me = ref.read(identityProvider).valueOrNull?.id ?? '';
+  if (group != null && !group.isAdmin(me) && group.isEnforced(me)) {
+    _snack(context, context.l10n.chatDisappearingAdminOnly);
+    return;
+  }
 
-  final options = disappearingOptions(context);
+  final options = disappearingOptions(context.l10n);
   final current = conv.disappearAfterSeconds ?? -1;
 
   final picked = await showDialog<int>(
@@ -90,10 +85,12 @@ Future<void> configureDisappearing(
       ],
     ),
   );
-  if (picked == null) return;
+  // Stejná volba nic nemění — bez zbytečného oznámení u všech.
+  if (picked == null || picked == current) return;
 
-  conv.disappearAfterSeconds = picked == -1 ? null : picked;
-  await storage.saveConversation(conv);
+  await ref.read(messagingServiceProvider).setDisappearing(
+      convId, picked == -1 ? null : picked,
+      group: group, contact: contact);
   ref.invalidate(conversationProvider(convId));
   ref.invalidate(conversationsProvider);
   if (context.mounted) {

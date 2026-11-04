@@ -1172,7 +1172,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get pushModeApnsDesc =>
-      'Wake-ups are delivered by Apple. The device push token goes to Apple; message content never does.';
+      'Apple delivers notifications right away, only as “New message”. Apple gets the device push token; never the content or the sender.';
 
   @override
   String get pushSubtitleApns => 'Apple (APNs)';
@@ -1239,6 +1239,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get chatListEmptySubtitle => 'Add a contact and start whispering!';
 
   @override
+  String get chatListInviteFriend => 'Invite a friend';
+
+  @override
   String get chatListUnmute => 'Unmute';
 
   @override
@@ -1271,9 +1274,22 @@ class AppLocalizationsEn extends AppLocalizations {
   String get commonCopiedToClipboard => 'Copied to clipboard';
 
   @override
-  String qrShareInviteMessage(String shareString) {
-    return 'Add me on Šepot!\n\n$shareString';
+  String qrShareInviteMessage(String downloadUrl, String shareString) {
+    return 'Message me on Šepot – an encrypted messenger without a phone number.\n\n1. Get it here: $downloadUrl\n2. In the app, tap Add contact and paste this code:\n\n$shareString';
   }
+
+  @override
+  String get reviewAskTitle => 'Rate Šepot?';
+
+  @override
+  String get reviewAskBody =>
+      'Šepot has no ads and no investors. Your rating on Google Play helps more people find it.';
+
+  @override
+  String get reviewAskLater => 'Not now';
+
+  @override
+  String get reviewAskRate => 'Rate';
 
   @override
   String get commonShare => 'Share';
@@ -1335,6 +1351,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsAutoLockNever => 'Never';
+
+  @override
+  String get settingsAutoLockImmediately => 'Immediately';
 
   @override
   String get settingsAutoLock1min => 'After 1 minute';
@@ -1831,4 +1850,25 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get noticePreview => 'Security notice';
+
+  @override
+  String get chatDisappearingAdminOnly =>
+      'Only an admin can change disappearing messages in this group.';
+
+  @override
+  String noticeTimerChanged(String name, String duration) {
+    return '$name changed disappearing messages: $duration';
+  }
+
+  @override
+  String noticeTimerChangedByMe(String duration) {
+    return 'You changed disappearing messages: $duration';
+  }
+
+  @override
+  String get chatStatusUndelivered => 'Not delivered';
+
+  @override
+  String get messageInfoUndelivered =>
+      'This message could not be delivered, even after the encrypted connection was restored. Please send it again as a new message.';
 }

@@ -39,6 +39,10 @@ class AppConstants {
   static const int maxMessageLength = 4096;
   static const int defaultDisappearingSeconds = 86400; // 24 hodin
 
+  /// Volby časovače mizících zpráv. Sdílená změna (`tmr`) přijme jen
+  /// tyhle hodnoty: novou volbu starší klient stejně neumí pojmenovat.
+  static const Set<int> disappearingChoices = {30, 300, 3600, 86400, 604800};
+
   // Přílohy — musí sedět s relayem (SEPOT_MAX_ATTACHMENT_BYTES, default
   // 25 MiB na ŠIFROVANÝ blob; plaintext strop držíme kousek pod tím)
   static const int maxAttachmentBytes = 25 * 1024 * 1024 - 64 * 1024;
@@ -64,4 +68,13 @@ class AppConstants {
   static const String deletionUrl = 'https://sepot.cz/smazani-dat';
 
   static const String supportEmail = 'podpora@sepot.cz';
+
+  /// Odkaz v pozvánce. Příjemce Šepot většinou ještě nemá a holý
+  /// `sepot://add/…` mu nic neotevře; web podle telefonu přesměruje do
+  /// App Storu nebo Google Play.
+  static const String downloadUrl = 'https://sepot.cz/pozvanka';
+
+  static const String playStoreMarketUrl = 'market://details?id=cz.sepot.sepot';
+  static const String playStoreWebUrl =
+      'https://play.google.com/store/apps/details?id=cz.sepot.sepot';
 }

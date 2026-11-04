@@ -12,6 +12,7 @@ library;
 import 'dart:typed_data';
 
 import 'package:libsignal/libsignal.dart';
+import 'package:sepot/core/crypto/sepot_crypto.dart';
 import 'package:sepot/core/storage/crypto_db.dart';
 
 bool _bytesEqual(List<int> a, List<int> b) {
@@ -22,7 +23,7 @@ bool _bytesEqual(List<int> a, List<int> b) {
   return true;
 }
 
-class DbSessionStore implements SessionStore {
+class DbSessionStore implements SessionStore, SessionStoreSync {
   DbSessionStore(this._db);
 
   final CryptoDb _db;
@@ -43,7 +44,11 @@ class DbSessionStore implements SessionStore {
   Future<void> storeSession(
     ProtocolAddress address,
     SessionRecord record,
-  ) async {
+  ) async =>
+      storeSessionSync(address, record);
+
+  @override
+  void storeSessionSync(ProtocolAddress address, SessionRecord record) {
     // Atomicky — částečně zapsaný ratchet stav = „bad MAC"
     _db.transaction(() {
       _db.raw.execute(
@@ -93,7 +98,7 @@ class DbSessionStore implements SessionStore {
   }
 }
 
-class DbIdentityKeyStore implements IdentityKeyStore {
+class DbIdentityKeyStore implements IdentityKeyStore, IdentityKeyStoreSync {
   DbIdentityKeyStore(
     this._db, {
     required IdentityKeyPair identityKeyPair,
@@ -124,7 +129,11 @@ class DbIdentityKeyStore implements IdentityKeyStore {
   Future<bool> saveIdentity(
     ProtocolAddress address,
     PublicKey identityKey,
-  ) async {
+  ) async =>
+      saveIdentitySync(address, identityKey);
+
+  @override
+  bool saveIdentitySync(ProtocolAddress address, PublicKey identityKey) {
     final name = address.name();
     final incoming = identityKey.serialize();
     final existing = _stored(name);
@@ -159,7 +168,7 @@ class DbIdentityKeyStore implements IdentityKeyStore {
   }
 }
 
-class DbPreKeyStore implements PreKeyStore {
+class DbPreKeyStore implements PreKeyStore, PreKeyStoreSync {
   DbPreKeyStore(this._db);
 
   final CryptoDb _db;
@@ -192,7 +201,10 @@ class DbPreKeyStore implements PreKeyStore {
   }
 
   @override
-  Future<void> removePreKey(int preKeyId) async {
+  Future<void> removePreKey(int preKeyId) async => removePreKeySync(preKeyId);
+
+  @override
+  void removePreKeySync(int preKeyId) {
     // One-time prekey se po použití MAŽE (forward secrecy první zprávy)
     _db.raw.execute('DELETE FROM prekeys WHERE id = ?', [preKeyId]);
   }

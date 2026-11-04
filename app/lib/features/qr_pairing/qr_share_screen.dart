@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:sepot/core/utils/share_origin.dart';
+import 'package:sepot/core/utils/externi_obrazovka.dart';
+import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
@@ -129,10 +131,12 @@ class QrShareScreen extends ConsumerWidget {
                       child: Builder(
                         builder: (buttonContext) => ElevatedButton.icon(
                           onPressed: () {
-                            Share.share(
-                              context.l10n.qrShareInviteMessage(shareString),
-                              sharePositionOrigin: shareOrigin(buttonContext),
-                            );
+                            ExterniObrazovka.behem(() => Share.share(
+                                  context.l10n.qrShareInviteMessage(
+                                      AppConstants.downloadUrl, shareString),
+                                  sharePositionOrigin:
+                                      shareOrigin(buttonContext),
+                                ));
                           },
                           icon: const Icon(Icons.share),
                           label: Text(context.l10n.commonShare),

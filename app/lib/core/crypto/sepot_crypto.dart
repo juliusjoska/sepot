@@ -13,6 +13,7 @@ import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:libsignal/libsignal.dart';
+import 'package:sepot/core/crypto/sealed_sender_outer.dart';
 
 /// Pár serializovaných identity klíčů — jediný tvar, ve kterém identity
 /// klíče opouštějí fasádu (žádné backend-specifické typy ven).
@@ -80,7 +81,95 @@ class SepotSealedMessage {
   final Uint8List senderIdentityKey;
 }
 
-/// Jeden one-time prekey k publikaci na relay.
+/// Proč sealed-sender obálku nešlo otevřít. Rozhoduje, jestli ji ACKnout
+/// a jestli požádat odesílatele o obnovu relace.
+enum SepotDecryptFailure {
+  /// Klíč zprávy už byl spotřebován — obálka se dešifrovala dřív.
+  duplicate,
+
+  /// Relace s odesílatelem chybí nebo nesedí (přeinstalace, ztracený stav,
+  /// ztracený prekey). Opakování nepomůže, pomůže jen nová relace.
+  brokenSession,
+
+  /// Odesílatel přišel s jiným identity klíčem, než který známe.
+  untrustedIdentity,
+
+  /// Certifikát odesílatele neprošel (typicky vypršel, než si příjemce
+  /// obálku vyzvedl).
+  invalidCertificate,
+
+  /// Obálka není platná sealed-sender zpráva pro nás.
+  malformed,
+
+  /// Nic z výše uvedeného — může jít o dočasný stav (úložiště, FFI).
+  other,
+}
+
+class SepotDecryptException implements Exception {
+  SepotDecryptException(this.message) : kind = classify(message);
+
+  final String message;
+  final SepotDecryptFailure kind;
+
+  /// Balíček `libsignal` vrací chyby jen jako text (Display variant
+  /// SignalProtocolError z libsignal v0.96.4 a vlastní hlášky wrapperu
+  /// v sealed_sender.rs). Texty ověřuje test proti skutečné knihovně,
+  /// takže změnu po upgradu balíčku zachytí.
+  static SepotDecryptFailure classify(String message) {
+    final m = message.toLowerCase();
+    if (m.contains('message with old counter')) {
+      return SepotDecryptFailure.duplicate;
+    }
+    if (m.contains('untrusted identity')) {
+      return SepotDecryptFailure.untrustedIdentity;
+    }
+    if (m.contains('sender certificate validation failed')) {
+      return SepotDecryptFailure.invalidCertificate;
+    }
+    if (m.contains('not found') && m.contains('session') ||
+        m.contains('failed to deserialize existing session') ||
+        m.contains('invalid session') ||
+        m.contains('invalid prekey message') ||
+        m.contains('invalid whisper message') ||
+        m.contains('prekey identifier') ||
+        m.contains('pre-key') && m.contains('not found')) {
+      return SepotDecryptFailure.brokenSession;
+    }
+    if (m.contains('sealed sender') ||
+        m.contains('protobuf encoding was invalid') ||
+        m.contains('ciphertext')) {
+      return SepotDecryptFailure.malformed;
+    }
+    return SepotDecryptFailure.other;
+  }
+
+  @override
+  String toString() => 'SepotDecryptException(${kind.name}): $message';
+}
+
+/// Ověřený odesílatel obálky z vnější vrstvy sealed senderu.
+class SepotSealedSender {
+  SepotSealedSender({
+    required this.name,
+    required this.deviceId,
+    required this.identityKey,
+    required this.certificateExpiresAtMs,
+    required this.messageType,
+  });
+
+  /// Typ vnitřní zprávy (UnidentifiedSenderMessageContent.Type): běžná
+  /// zpráva existující relace, nebo PreKey zpráva, která relaci zakládá.
+  static const typePreKey = 1;
+  static const typeWhisper = 2;
+
+  /// accountId odesílatele (hex).
+  final String name;
+  final int deviceId;
+  final Uint8List identityKey;
+  final int certificateExpiresAtMs;
+  final int messageType;
+}
+
 /// Nový signed prekey k nahrání na relay (rotace).
 class SepotSignedPreKey {
   SepotSignedPreKey({
@@ -123,6 +212,7 @@ class SepotStores {
     required this.preKey,
     required this.signedPreKey,
     required this.kyberPreKey,
+    this.transaction,
   });
 
   /// In-memory sada (testy) — po zabití procesu je pryč.
@@ -141,6 +231,28 @@ class SepotStores {
   final PreKeyStore preKey;
   final SignedPreKeyStore signedPreKey;
   final KyberPreKeyStore kyberPreKey;
+
+  /// Provede [body] jako jednu synchronní transakci nad všemi stores.
+  /// S ní musí stores relací, identit a one-time prekeys umět zapisovat
+  /// i synchronně ([SessionStoreSync], [IdentityKeyStoreSync],
+  /// [PreKeyStoreSync]). Bez ní (paměťové stores) se zápisy dějí postupně.
+  final void Function(void Function() body)? transaction;
+}
+
+/// Synchronní zápisy stores. Uložení obsahu z deníku a posun ratchetu
+/// proběhnou v jedné transakci bez jediného `await` — mezi ně se nevklíní
+/// zápis jiného kódu, který by jinak skončil v téže transakci (a při chybě
+/// se s ní vrátil).
+abstract interface class SessionStoreSync {
+  void storeSessionSync(ProtocolAddress address, SessionRecord record);
+}
+
+abstract interface class IdentityKeyStoreSync {
+  bool saveIdentitySync(ProtocolAddress address, PublicKey identityKey);
+}
+
+abstract interface class PreKeyStoreSync {
+  void removePreKeySync(int preKeyId);
 }
 
 /// Jedna krypto identita (účet na jednom zařízení) se všemi stores.
@@ -343,6 +455,17 @@ class SepotCrypto {
   Future<void> dropSession(ProtocolAddress remote) =>
       _stores.session.deleteSession(remote);
 
+  /// Zahodí relaci, jejíž záznam nejde ani načíst (poškozený zápis). Na
+  /// takové by ztroskotalo i založení nové relace z bundle — libsignal
+  /// starou před přepsáním načítá, aby ji archivoval.
+  Future<void> dropUnreadableSession(ProtocolAddress remote) async {
+    try {
+      await _stores.session.loadSession(remote);
+    } on Object {
+      await _stores.session.deleteSession(remote);
+    }
+  }
+
   /// X3DH/PQXDH: zpracuje bundle protistrany a založí session.
   Future<void> processRemoteBundle(
     ProtocolAddress remote,
@@ -412,18 +535,33 @@ class SepotCrypto {
   );
 
   /// Sealed sender: dešifruje obálku a ověří sender certificate proti
-  /// pinnutému trust rootu relaye.
+  /// pinnutému trust rootu relaye. Selhání hází [SepotDecryptException]
+  /// s rozlišeným druhem.
+  ///
+  /// S [beforeCommit] se změny stavu (posun ratchetu, identita protistrany,
+  /// spotřebovaný one-time prekey) zapíšou až PO jeho úspěšném doběhnutí.
+  /// Volající v něm uloží otevřený obsah; když to nestihne (pád procesu,
+  /// zamčená DB), ratchet zůstane, kde byl, a obálka jde dešifrovat znovu.
+  /// Obráceně by šlo o zprávu navždy: libsignal klíč zprávy po prvním
+  /// dešifrování zahodí.
   Future<SepotSealedMessage> sealedDecrypt({
     required Uint8List ciphertext,
     required Uint8List trustRoot,
     required int timestampMs,
+    void Function(SepotSealedMessage opened)? beforeCommit,
   }) async {
-    final result = await _sealedCipher.decrypt(
-      ciphertext: ciphertext,
-      trustRoot: trustRoot,
-      timestamp: timestampMs,
-    );
-    return SepotSealedMessage(
+    final staged = beforeCommit == null ? null : _StagedWrites(_stores);
+    final SealedSenderDecryptionResult result;
+    try {
+      result = await (staged?.cipher(address) ?? _sealedCipher).decrypt(
+        ciphertext: ciphertext,
+        trustRoot: trustRoot,
+        timestamp: timestampMs,
+      );
+    } on Object catch (e) {
+      throw SepotDecryptException(e.toString());
+    }
+    final opened = SepotSealedMessage(
       plaintext: result.plaintext,
       senderName: result.senderAddress.name(),
       senderDeviceId: result.senderAddress.deviceId(),
@@ -431,6 +569,74 @@ class SepotCrypto {
         result.senderIdentityKey.serialize().toList(),
       ),
     );
+    if (beforeCommit != null) {
+      // Uložený obsah a posun ratchetu buď oba, nebo nic. Pád mezi nimi by
+      // jinak u PreKey zprávy nechal obsah bez relace (další zprávy od
+      // odesílatele by nešly otevřít) a u běžné zprávy ratchet, kterým jde
+      // tutéž obálku pod jiným msg_uuid otevřít podruhé.
+      final transaction = _stores.transaction;
+      if (transaction == null) {
+        beforeCommit(opened);
+        await staged!.commit();
+      } else {
+        transaction(() {
+          beforeCommit(opened);
+          staged!.commitSync();
+        });
+      }
+    }
+    return opened;
+  }
+
+  /// Odesílatel obálky z vnější vrstvy sealed senderu, i když vnitřní
+  /// zpráva nejde dešifrovat. Certifikát musí podepsat [trustRoot]; jeho
+  /// platnost v čase se jen hlásí ([SepotSealedSender.certificateExpiresAtMs]).
+  /// Obálka, která není platně zapečetěná pro tuhle identitu, hází
+  /// [FormatException].
+  SepotSealedSender identifySender({
+    required Uint8List ciphertext,
+    required Uint8List trustRoot,
+  }) {
+    final content = SealedSenderOuter.open(
+      ciphertext: ciphertext,
+      ourPrivate: PrivateKey.deserialize(bytes: _identity.privateKey.toList()),
+      ourPublic: identityPublicKey,
+    );
+    final cert = content.senderCertificate;
+    try {
+      final expires = senderCertificateGetExpiration(certificate: cert);
+      // Podpis trust rootem se ověřuje v okamžiku těsně před vypršením —
+      // samotné stáří certifikátu řeší volající.
+      final signed = validateSenderCertificate(
+        certificate: cert,
+        trustRoot: trustRoot,
+        timestamp: expires - BigInt.one,
+      );
+      final key = senderCertificateGetKey(certificate: cert);
+      if (!signed || !_bytesEqual(key, content.senderStaticKey)) {
+        throw const FormatException('sender certificate not trusted');
+      }
+      return SepotSealedSender(
+        name: senderCertificateGetSenderName(certificate: cert),
+        deviceId: senderCertificateGetSenderDeviceId(certificate: cert),
+        identityKey: Uint8List.fromList(key),
+        certificateExpiresAtMs: expires.toInt(),
+        messageType: content.messageType,
+      );
+    } on FormatException {
+      rethrow;
+    } on Object {
+      throw const FormatException('invalid sender certificate');
+    }
+  }
+
+  static bool _bytesEqual(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    var diff = 0;
+    for (var i = 0; i < a.length; i++) {
+      diff |= a[i] ^ b[i];
+    }
+    return diff == 0;
   }
 
   /// Vygeneruje dávku one-time prekeys (uloží privátní části do store,
@@ -518,4 +724,140 @@ class SepotCrypto {
       signature: Uint8List.fromList(signature.toList()),
     );
   }
+}
+
+/// Zápisy jednoho dešifrování odložené na později ([SepotCrypto.sealedDecrypt]
+/// s `beforeCommit`). Čtení jde do skutečných stores, ale vidí i vlastní
+/// odložené zápisy; pořadí zápisů se při [commit] zachová.
+class _StagedWrites implements SessionStore, IdentityKeyStore, PreKeyStore {
+  _StagedWrites(this._real);
+
+  final SepotStores _real;
+  final _ops = <({Future<void> Function() apply, void Function() applySync})>[];
+  final _sessions = <String, SessionRecord>{};
+  final _identities = <String, PublicKey>{};
+  final _removedPreKeys = <int>{};
+
+  static String _key(ProtocolAddress a) => '${a.name()}.${a.deviceId()}';
+
+  SealedSenderCipher cipher(ProtocolAddress local) => SealedSenderCipher(
+        localAddress: local,
+        sessionStore: this,
+        identityKeyStore: this,
+        preKeyStore: this,
+        signedPreKeyStore: _real.signedPreKey,
+        kyberPreKeyStore: _real.kyberPreKey,
+      );
+
+  Future<void> commit() async {
+    for (final op in _ops) {
+      await op.apply();
+    }
+    _ops.clear();
+  }
+
+  void commitSync() {
+    for (final op in _ops) {
+      op.applySync();
+    }
+    _ops.clear();
+  }
+
+  // ── SessionStore ──
+  @override
+  Future<SessionRecord?> loadSession(ProtocolAddress address) async =>
+      _sessions[_key(address)] ?? await _real.session.loadSession(address);
+
+  @override
+  Future<void> storeSession(ProtocolAddress address, SessionRecord record) async {
+    _sessions[_key(address)] = record;
+    _ops.add((
+      apply: () => _real.session.storeSession(address, record),
+      applySync: () => (_real.session as SessionStoreSync)
+          .storeSessionSync(address, record),
+    ));
+  }
+
+  @override
+  Future<bool> containsSession(ProtocolAddress address) async =>
+      _sessions.containsKey(_key(address)) ||
+      await _real.session.containsSession(address);
+
+  @override
+  Future<void> deleteSession(ProtocolAddress address) =>
+      throw UnsupportedError('deleteSession during staged decrypt');
+
+  @override
+  Future<void> deleteAllSessions(String name) =>
+      throw UnsupportedError('deleteAllSessions during staged decrypt');
+
+  @override
+  Future<List<int>> getSubDeviceSessions(String name) =>
+      _real.session.getSubDeviceSessions(name);
+
+  // ── IdentityKeyStore ──
+  @override
+  Future<IdentityKeyPair> getIdentityKeyPair() =>
+      _real.identity.getIdentityKeyPair();
+
+  @override
+  Future<int> getLocalRegistrationId() =>
+      _real.identity.getLocalRegistrationId();
+
+  @override
+  Future<bool> saveIdentity(ProtocolAddress address, PublicKey identityKey) async {
+    final known = await getIdentity(address);
+    _identities[address.name()] = identityKey;
+    _ops.add((
+      apply: () => _real.identity.saveIdentity(address, identityKey),
+      applySync: () => (_real.identity as IdentityKeyStoreSync)
+          .saveIdentitySync(address, identityKey),
+    ));
+    return known == null ||
+        !SepotCrypto._bytesEqual(known.serialize(), identityKey.serialize());
+  }
+
+  @override
+  Future<PublicKey?> getIdentity(ProtocolAddress address) async =>
+      _identities[address.name()] ?? await _real.identity.getIdentity(address);
+
+  @override
+  Future<bool> isTrustedIdentity(
+    ProtocolAddress address,
+    PublicKey identityKey,
+    Direction direction,
+  ) =>
+      _real.identity.isTrustedIdentity(address, identityKey, direction);
+
+  // ── PreKeyStore ──
+  @override
+  Future<PreKeyRecord?> loadPreKey(int preKeyId) async =>
+      _removedPreKeys.contains(preKeyId)
+          ? null
+          : await _real.preKey.loadPreKey(preKeyId);
+
+  @override
+  Future<void> storePreKey(int preKeyId, PreKeyRecord record) =>
+      throw UnsupportedError('storePreKey during staged decrypt');
+
+  @override
+  Future<bool> containsPreKey(int preKeyId) async =>
+      !_removedPreKeys.contains(preKeyId) &&
+      await _real.preKey.containsPreKey(preKeyId);
+
+  @override
+  Future<void> removePreKey(int preKeyId) async {
+    _removedPreKeys.add(preKeyId);
+    _ops.add((
+      apply: () => _real.preKey.removePreKey(preKeyId),
+      applySync: () =>
+          (_real.preKey as PreKeyStoreSync).removePreKeySync(preKeyId),
+    ));
+  }
+
+  @override
+  Future<List<int>> getAllPreKeyIds() async => [
+        for (final id in await _real.preKey.getAllPreKeyIds())
+          if (!_removedPreKeys.contains(id)) id,
+      ];
 }

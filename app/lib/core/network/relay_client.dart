@@ -484,16 +484,19 @@ class RelayClient {
     required Uint8List payload,
     pb.ContentHint hint = pb.ContentHint.CONTENT_HINT_DEFAULT,
     Duration timeout = const Duration(seconds: 10),
+    Uint8List? msgUuid,
   }) async {
-    final msgUuid = randomBytes(16);
+    // Volající může msg_uuid určit předem: zapíše si ho, ještě než obálka
+    // odejde, aby šlo později dohledat, o kterou zprávu protistrana žádá.
+    final uuid = msgUuid ?? randomBytes(16);
     final receiptFuture = _receiptController.stream
-        .firstWhere((r) => _bytesEqual(r.msgUuid, msgUuid))
+        .firstWhere((r) => _bytesEqual(r.msgUuid, uuid))
         .timeout(timeout);
     try {
       _send(pb.ClientFrame(
         envelope: pb.Envelope(
           dstAddress: dstAddress,
-          msgUuid: msgUuid,
+          msgUuid: uuid,
           contentHint: hint,
           payload: payload,
         ),
@@ -520,8 +523,22 @@ class RelayClient {
 
   /// Potvrdí zpracování obálky — relay ji smaže z fronty. Volat až PO
   /// uložení zprávy na disk.
-  void ack(List<int> msgUuid) {
-    _send(pb.ClientFrame(ack: pb.Ack(msgUuid: msgUuid)));
+  ///
+  /// Bez spojení se ACK neodešle a nehází: obálka je zapsaná v deníku
+  /// příjmu a relay ji po připojení pošle znovu, potvrdí se pak bez
+  /// dešifrování. Výjimka tu dřív přerušila zpracování už uložené zprávy
+  /// (bez upozornění a doručenky).
+  bool ack(List<int> msgUuid) {
+    final channel = _channel;
+    if (channel == null) return false;
+    try {
+      channel.sink
+          .add(pb.ClientFrame(ack: pb.Ack(msgUuid: msgUuid)).writeToBuffer());
+      return true;
+    } on StateError {
+      // Spojení se právě zavírá (sink už nepřijímá).
+      return false;
+    }
   }
 
   /// Nastaví/aktualizuje push registraci u relaye. Bezpečné volat kdykoliv:

@@ -1173,7 +1173,7 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get pushModeApnsDesc =>
-      'Budíčky doručí Apple. Push token zařízení jde Applu; obsah zpráv nikdy.';
+      'Upozornění doručí Apple hned, jen s textem „Nová zpráva“. Applu jde push token zařízení; obsah zpráv ani odesílatel nikdy.';
 
   @override
   String get pushSubtitleApns => 'Apple (APNs)';
@@ -1242,6 +1242,9 @@ class AppLocalizationsCs extends AppLocalizations {
   String get chatListEmptySubtitle => 'Přidej kontakt a začni šeptat!';
 
   @override
+  String get chatListInviteFriend => 'Pozvat kamaráda';
+
+  @override
   String get chatListUnmute => 'Zrušit ztlumení';
 
   @override
@@ -1274,9 +1277,22 @@ class AppLocalizationsCs extends AppLocalizations {
   String get commonCopiedToClipboard => 'Zkopírováno do schránky';
 
   @override
-  String qrShareInviteMessage(String shareString) {
-    return 'Přidej mě na Šepotu!\n\n$shareString';
+  String qrShareInviteMessage(String downloadUrl, String shareString) {
+    return 'Piš mi na Šepotu – šifrovaném messengeru bez telefonního čísla.\n\n1. Stáhni si ho: $downloadUrl\n2. V appce dej Přidat kontakt a vlož tenhle kód:\n\n$shareString';
   }
+
+  @override
+  String get reviewAskTitle => 'Ohodnotíš Šepot?';
+
+  @override
+  String get reviewAskBody =>
+      'Šepot je bez reklam a bez investorů. Tvoje hodnocení v Google Play pomůže, aby se o něm dozvědělo víc lidí.';
+
+  @override
+  String get reviewAskLater => 'Teď ne';
+
+  @override
+  String get reviewAskRate => 'Ohodnotit';
 
   @override
   String get commonShare => 'Sdílet';
@@ -1339,6 +1355,9 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get settingsAutoLockNever => 'Nikdy';
+
+  @override
+  String get settingsAutoLockImmediately => 'Okamžitě';
 
   @override
   String get settingsAutoLock1min => 'Po 1 minutě';
@@ -1838,4 +1857,25 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get noticePreview => 'Bezpečnostní upozornění';
+
+  @override
+  String get chatDisappearingAdminOnly =>
+      'Ve skupině mění mizení zpráv jen správce.';
+
+  @override
+  String noticeTimerChanged(String name, String duration) {
+    return '$name změnil(a) mizení zpráv: $duration';
+  }
+
+  @override
+  String noticeTimerChangedByMe(String duration) {
+    return 'Změnil(a) jsi mizení zpráv: $duration';
+  }
+
+  @override
+  String get chatStatusUndelivered => 'Nedoručeno';
+
+  @override
+  String get messageInfoUndelivered =>
+      'Zprávu se nepodařilo doručit ani po obnovení šifrovaného spojení. Pošli ji prosím znovu jako novou zprávu.';
 }

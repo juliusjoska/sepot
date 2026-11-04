@@ -152,6 +152,17 @@ void main() {
           Uint8List.fromList(List.generate(32, (i) => i)));
     });
 
+    test('fromShareString: celá vložená pozvánka i s textem', () async {
+      // Lidé kopírují celou zprávu z chatu, ne jen kód za ní.
+      final identity = await LocalIdentity.create('Vložená');
+      final link = identity.publicIdentity.toShareString();
+      final pozvanka = 'Piš mi na Šepotu.\n\n1. Stáhni si ho: '
+          'https://sepot.cz/pozvanka\n2. Vlož kód:\n\n$link\n';
+      final parsed = PublicIdentity.fromShareString(pozvanka);
+      expect(parsed, isNotNull);
+      expect(parsed!.fingerprint, identity.fingerprint);
+    });
+
     test('fromShareString: da špatné délky → null (ne vadný kontakt)', () async {
       final base = await LocalIdentity.create('Krátká');
       final bad = base.publicIdentity.withRouting(

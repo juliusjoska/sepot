@@ -9,6 +9,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:sepot/core/utils/share_origin.dart';
+import 'package:sepot/core/utils/externi_obrazovka.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:sepot/core/app_info.dart';
 import 'package:sepot/core/constants/app_constants.dart';
@@ -266,6 +267,8 @@ class SettingsScreen extends ConsumerWidget {
   /// Popisek intervalu auto-zámku pro daný počet sekund.
   String _autoLockLabel(AppLocalizations l10n, int sekundy) {
     switch (sekundy) {
+      case AutoLockNotifier.okamzite:
+        return l10n.settingsAutoLockImmediately;
       case 0:
         return l10n.settingsAutoLockNever;
       case 60:
@@ -375,8 +378,8 @@ class SettingsScreen extends ConsumerWidget {
       if (action == 'remove') {
         await service.removeMyAvatar();
       } else {
-        final picked = await ImagePicker()
-            .pickImage(source: ImageSource.gallery, maxWidth: 1600);
+        final picked = await ExterniObrazovka.behem(() => ImagePicker()
+            .pickImage(source: ImageSource.gallery, maxWidth: 1600));
         if (picked == null) return;
         final jpeg = await prepareAvatarJpeg(await picked.readAsBytes());
         if (jpeg == null) throw const FormatException('unreadable image');
@@ -536,11 +539,11 @@ class SettingsScreen extends ConsumerWidget {
       final path = '${dir.path}/sepot-zaloha.sepotbackup';
       await File(path).writeAsBytes(bytes);
       try {
-        await Share.shareXFiles(
-          [XFile(path, mimeType: 'application/octet-stream')],
-          subject: l10n.backupShareSubject,
-          sharePositionOrigin: origin,
-        );
+        await ExterniObrazovka.behem(() => Share.shareXFiles(
+              [XFile(path, mimeType: 'application/octet-stream')],
+              subject: l10n.backupShareSubject,
+              sharePositionOrigin: origin,
+            ));
       } finally {
         // Šifrovaná, ale v cache nemá co pohledávat po skončení sdílení.
         try {
@@ -565,7 +568,8 @@ class SettingsScreen extends ConsumerWidget {
       return;
     }
     try {
-      final res = await FilePicker.pickFiles(withData: true);
+      final res = await ExterniObrazovka.behem(
+          () => FilePicker.pickFiles(withData: true));
       final data = res?.files.firstOrNull?.bytes;
       if (data == null) return;
       final n = await ref.read(backupServiceProvider).import(identity, data);

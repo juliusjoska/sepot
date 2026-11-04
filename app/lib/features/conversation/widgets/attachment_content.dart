@@ -21,6 +21,7 @@ import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:sepot/core/utils/share_origin.dart';
+import 'package:sepot/core/utils/externi_obrazovka.dart';
 
 String formatBytes(AppLocalizations l10n, int bytes) {
   if (bytes < 1024) return l10n.attachmentSizeBytes(bytes);
@@ -457,13 +458,13 @@ class _DocumentAttachmentContentState
           .read(messagingServiceProvider)
           .loadDecryptedAttachment(widget.message);
       if (bytes == null) return;
-      await Share.shareXFiles([
-        XFile.fromData(
-          bytes,
-          name: meta.name ?? l10n.attachmentSharedFileFallbackName,
-          mimeType: meta.mime,
-        ),
-      ], sharePositionOrigin: origin);
+      await ExterniObrazovka.behem(() => Share.shareXFiles([
+            XFile.fromData(
+              bytes,
+              name: meta.name ?? l10n.attachmentSharedFileFallbackName,
+              mimeType: meta.mime,
+            ),
+          ], sharePositionOrigin: origin));
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

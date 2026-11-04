@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sepot/core/constants/app_constants.dart';
+import 'package:sepot/core/l10n/disappearing_text.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/features/calls/call_log_text.dart';
@@ -157,7 +158,9 @@ class ChatListTile extends StatelessWidget {
                           ),
                         )
                       else ...[
-                        if (mine && !lastMsg.isDeleted) ...[
+                        if (mine &&
+                            !lastMsg.isDeleted &&
+                            lastMsg.notice == null) ...[
                           MessageStatusIcon(status: lastMsg.status),
                           const SizedBox(width: 6),
                         ],
@@ -251,6 +254,15 @@ class ChatListTile extends StatelessWidget {
     if (call != null) {
       final label = callLogLabel(l10n, call);
       return (icon: label.icon, text: label.text);
+    }
+    if (msg.notice == MessageNotice.timerChanged) {
+      final seconds = timerNoticeSeconds(msg);
+      return (
+        icon: Icons.timer_outlined,
+        text: seconds == null
+            ? l10n.chatDisappearingDisabled
+            : l10n.chatDisappearingEnabled(disappearingLabel(l10n, seconds)),
+      );
     }
     if (msg.notice != null) {
       return (icon: Icons.gpp_maybe_rounded, text: l10n.noticePreview);

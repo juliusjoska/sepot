@@ -1,7 +1,9 @@
 import CallKit
 import Flutter
 import PushKit
+import StoreKit
 import UIKit
+import UserNotifications
 import WebRTC
 import flutter_callkit_incoming
 
@@ -16,6 +18,7 @@ import flutter_callkit_incoming
   // PushKit registry musí žít po celou dobu běhu appky, jinak VoIP pushe nechodí.
   private var voipRegistry: PKPushRegistry?
   private var apnsChannel: FlutterMethodChannel?
+  private var reviewChannel: FlutterMethodChannel?
   // Token dorazí asynchronně z APNs; když si o něj Dart řekne dřív, podržíme ho.
   private var pendingToken: String?
 
@@ -36,11 +39,45 @@ import flutter_callkit_incoming
         result(nil)
       case "getToken":
         result(self?.pendingToken)
+      case "clearMessageAlerts":
+        // Obecné „Nová zpráva“ z relaye (k=msg) po otevření appky jen
+        // straší — zprávy jsou vidět v ní. Vlastní lokální notifikace appky
+        // s odesílatelem zůstávají.
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { delivered in
+          let ids = delivered
+            .filter { $0.request.content.userInfo["k"] as? String == "msg" }
+            .map { $0.request.identifier }
+          center.removeDeliveredNotifications(withIdentifiers: ids)
+        }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
     }
     apnsChannel = channel
+
+    let review = FlutterMethodChannel(
+      name: "cz.sepot.sepot/review", binaryMessenger: flutterEngine.binaryMessenger)
+    review.setMethodCallHandler { call, result in
+      guard call.method == "requestReview" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      // Jestli se dialog opravdu ukáže, rozhoduje iOS (strop 3× ročně);
+      // appka se výsledek nedozví a nemá ho jak obejít.
+      if let scene = UIApplication.shared.connectedScenes
+        .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene
+      {
+        if #available(iOS 16.0, *) {
+          Task { @MainActor in AppStore.requestReview(in: scene) }
+        } else {
+          SKStoreReviewController.requestReview(in: scene)
+        }
+      }
+      result(nil)
+    }
+    reviewChannel = review
 
     // Hovory: VoIP push z relaye → CallKit.
     let registry = PKPushRegistry(queue: DispatchQueue.main)

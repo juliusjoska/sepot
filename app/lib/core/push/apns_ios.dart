@@ -1,11 +1,13 @@
 /// Nativní APNs most pro iOS (bez Firebase).
 ///
 /// Komunikuje s AppDelegate.swift přes MethodChannel `cz.sepot.sepot/apns`:
-///   Dart → native:  register (registerForRemoteNotifications), getToken
+///   Dart → native:  register (registerForRemoteNotifications), getToken,
+///                   clearMessageAlerts
 ///   native → Dart:  onToken (APNs device token hex), onWake (tichý budíček)
 ///
-/// APNs token se pošle relayi jako PLATFORM_APNS; relay pak posílá tichý
-/// background budíček přímo přes Apple, žádný Google v cestě.
+/// APNs token se pošle relayi jako PLATFORM_APNS; relay pak posílá přímo
+/// přes Apple (žádný Google v cestě) tichý budíček, nebo u nové zprávy
+/// viditelnou obecnou notifikaci „Nová zpráva“ bez obsahu.
 library;
 
 import 'dart:io' show Platform;
@@ -49,6 +51,13 @@ class ApnsBridge {
     if (!isSupported) return;
     ensureHandler();
     await _channel.invokeMethod<void>('register');
+  }
+
+  /// Smaže z centra notifikací obecné „Nová zpráva“ od relaye — po otevření
+  /// appky jsou zprávy vidět v ní.
+  static Future<void> clearMessageAlerts() async {
+    if (!isSupported) return;
+    await _channel.invokeMethod<void>('clearMessageAlerts');
   }
 
   /// Už vydaný token (null, pokud APNs ještě neodpověděl).

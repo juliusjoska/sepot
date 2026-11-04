@@ -123,11 +123,19 @@ final screenSecurityProvider =
 /// Hodnota žije v šifrované DB, takže se čte jen s odemčeným úložištěm.
 class AutoLockNotifier extends AsyncNotifier<int> {
   static const key = 'auto_lock_seconds';
+
+  /// Výchozí pro účty bez uložené volby, tedy založené před 1.2.5.
+  /// Nové účty dostanou [okamzite] při nastavení PINu; stávajícím se zámek
+  /// bez jejich vědomí nezpřísňuje.
   static const vychozi = 300;
 
+  /// Zamknout hned při odchodu na pozadí (zhasnutí displeje, jiná appka).
+  /// Záporné číslo, protože 0 už znamená „nikdy“.
+  static const okamzite = -1;
+
   /// Nabídka v UI (sekundy). Popisky skládá obrazovka z lokalizace
-  /// (settingsAutoLockNever/1min/5min/15min) — provider texty nemá.
-  static const moznostiSekundy = [0, 60, 300, 900];
+  /// (settingsAutoLockImmediately/1min/5min/15min/Never) — provider texty nemá.
+  static const moznostiSekundy = [okamzite, 60, 300, 900, 0];
 
   @override
   Future<int> build() async {
@@ -139,6 +147,33 @@ class AutoLockNotifier extends AsyncNotifier<int> {
   Future<void> set(int seconds) async {
     await ref.read(storageProvider).setSetting(key, seconds);
     state = AsyncData(seconds);
+  }
+
+  /// Jak dlouho smí trvat výběr fotky nebo sdílení při okamžitém zámku.
+  /// Kdo od fotoaparátu odejde a nechá telefon ležet, má být zamčený.
+  static const limitExterniObrazovky = vychozi;
+
+  /// Rozhodnutí zámku po [pryc] na pozadí. Mimo widget, aby šlo otestovat.
+  static bool maZamknout({
+    required int nastaveni,
+    required Duration pryc,
+    required bool kvuliExterniObrazovce,
+  }) {
+    if (nastaveni == 0) return false;
+    final limit = nastaveni != okamzite
+        ? nastaveni
+        : kvuliExterniObrazovce
+            ? limitExterniObrazovky
+            : 0;
+    return pryc.inSeconds >= limit;
+  }
+
+  /// Volá se po nastavení PINu. Uloženou volbu nepřepisuje, takže obnova
+  /// ze zálohy ani dodatečné nastavení PINu nezmění, co si člověk vybral.
+  Future<void> nastavProNovyPin() async {
+    final storage = ref.read(storageProvider);
+    if (await storage.getSetting<int>(key) != null) return;
+    await set(okamzite);
   }
 }
 

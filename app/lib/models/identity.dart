@@ -172,6 +172,7 @@ class PublicIdentity {
   final Uint8List? deliveryAddress;
 
   static const _linkPrefix = 'sepot://add/';
+  static final _linkInText = RegExp(r'sepot://add/([A-Za-z0-9_\-=]+)');
 
   /// Kompatibilní alias na fingerprint (dřív UUID).
   String get id => fingerprint.display;
@@ -210,9 +211,9 @@ class PublicIdentity {
   static PublicIdentity? fromShareString(String s) {
     try {
       var payload = s.trim();
-      if (payload.startsWith(_linkPrefix)) {
-        payload = payload.substring(_linkPrefix.length);
-      }
+      // Lidé vkládají celou pozvánku i s průvodním textem, ne jen kód.
+      final link = _linkInText.firstMatch(payload);
+      if (link != null) payload = link.group(1)!;
       final map = jsonDecode(utf8.decode(base64Url.decode(payload)))
           as Map<String, dynamic>;
       if (map['v'] != 2) return null;

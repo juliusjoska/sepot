@@ -22,6 +22,11 @@ enum ContentHint {
   // budí VoIP pushem (iOS) nebo FCM s krátkou platností — zvonit má hned.
   // Relay se tím dozví, že zařízení někdo volá; kdo, dál neví.
   CONTENT_HINT_CALL = 4;
+  // Zpráva, kterou člověk uvidí (text, příloha): offline iPhone dostane
+  // hned viditelnou notifikaci s obecným textem, ne tichý budíček, který
+  // iOS zdržuje. Relay se tím dozví jen to, že nejde o potvrzení či reakci;
+  // kdo a co píše, dál neví.
+  CONTENT_HINT_VISIBLE = 5;
 }
 
 message Envelope {

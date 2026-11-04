@@ -1190,7 +1190,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get pushModeApnsDesc =>
-      'Пробуждения доставляет Apple. Push-токен устройства передаётся Apple; содержимое сообщений — никогда.';
+      'Apple доставляет уведомления сразу, только с текстом «Новое сообщение». Apple получает push-токен устройства, но никогда не содержимое и не отправителя.';
 
   @override
   String get pushSubtitleApns => 'Apple (APNs)';
@@ -1267,6 +1267,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get chatListEmptySubtitle => 'Добавьте контакт и начните шептаться!';
 
   @override
+  String get chatListInviteFriend => 'Пригласить друга';
+
+  @override
   String get chatListUnmute => 'Включить звук';
 
   @override
@@ -1299,9 +1302,22 @@ class AppLocalizationsRu extends AppLocalizations {
   String get commonCopiedToClipboard => 'Скопировано в буфер обмена';
 
   @override
-  String qrShareInviteMessage(String shareString) {
-    return 'Добавьте меня в Šepot!\n\n$shareString';
+  String qrShareInviteMessage(String downloadUrl, String shareString) {
+    return 'Пишите мне в Šepot – зашифрованном мессенджере без номера телефона.\n\n1. Скачайте здесь: $downloadUrl\n2. В приложении нажмите «Добавить контакт» и вставьте этот код:\n\n$shareString';
   }
+
+  @override
+  String get reviewAskTitle => 'Оцените Šepot?';
+
+  @override
+  String get reviewAskBody =>
+      'В Šepot нет рекламы и инвесторов. Ваша оценка в Google Play поможет большему числу людей узнать о нём.';
+
+  @override
+  String get reviewAskLater => 'Не сейчас';
+
+  @override
+  String get reviewAskRate => 'Оценить';
 
   @override
   String get commonShare => 'Поделиться';
@@ -1365,6 +1381,9 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get settingsAutoLockNever => 'Никогда';
+
+  @override
+  String get settingsAutoLockImmediately => 'Сразу';
 
   @override
   String get settingsAutoLock1min => 'Через 1 минуту';
@@ -1874,4 +1893,25 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get noticePreview => 'Предупреждение безопасности';
+
+  @override
+  String get chatDisappearingAdminOnly =>
+      'В этой группе исчезающие сообщения может менять только администратор.';
+
+  @override
+  String noticeTimerChanged(String name, String duration) {
+    return '$name изменил(а) исчезающие сообщения: $duration';
+  }
+
+  @override
+  String noticeTimerChangedByMe(String duration) {
+    return 'Вы изменили исчезающие сообщения: $duration';
+  }
+
+  @override
+  String get chatStatusUndelivered => 'Не доставлено';
+
+  @override
+  String get messageInfoUndelivered =>
+      'Сообщение не удалось доставить даже после восстановления зашифрованного соединения. Отправьте его ещё раз как новое сообщение.';
 }

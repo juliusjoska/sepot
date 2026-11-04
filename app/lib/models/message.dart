@@ -14,6 +14,10 @@ enum MessageNotice {
   /// Neznámý odesílatel si zvolil jméno, které se plete s tímhle
   /// kontaktem. [Message.content] nese jméno, které si zvolil.
   lookalikeRequest,
+
+  /// Někdo v konverzaci změnil časovač mizících zpráv. Odesílatel = kdo
+  /// změnil, [Message.content] = nové sekundy ('0' = vypnuto).
+  timerChanged,
 }
 
 /// Typy zpráv — odpovídá Rust: MessageType
@@ -64,6 +68,11 @@ class Message {
   final Map<String, DateTime> deliveredTo;
   final Map<String, DateTime> readBy;
 
+  /// Příjemci, kterým zprávu nešlo doručit ani po obnově relace a opakovaném
+  /// poslání. Dodatečné odesílání je přeskakuje —
+  /// znovu by skončilo stejně; ruší je až doručenka od nich.
+  final Set<String> undeliveredTo;
+
   /// Anketa (textová zpráva, `content` nese záložní text pro starší appky).
   final Poll? poll;
 
@@ -97,6 +106,7 @@ class Message {
     this.reactions = const {},
     this.deliveredTo = const {},
     this.readBy = const {},
+    this.undeliveredTo = const {},
     this.poll,
     this.mentions = const [],
     this.callLog,
@@ -203,6 +213,7 @@ class Message {
     Map<String, String>? reactions,
     Map<String, DateTime>? deliveredTo,
     Map<String, DateTime>? readBy,
+    Set<String>? undeliveredTo,
     Poll? poll,
   }) {
     return Message(
@@ -225,6 +236,7 @@ class Message {
       reactions: reactions ?? this.reactions,
       deliveredTo: deliveredTo ?? this.deliveredTo,
       readBy: readBy ?? this.readBy,
+      undeliveredTo: undeliveredTo ?? this.undeliveredTo,
       poll: poll ?? this.poll,
       mentions: mentions,
       callLog: callLog,
@@ -266,6 +278,7 @@ class Message {
         'reactions': reactions,
         'deliveredTo': _timesToJson(deliveredTo),
         'readBy': _timesToJson(readBy),
+        if (undeliveredTo.isNotEmpty) 'undeliveredTo': undeliveredTo.toList(),
         'poll': poll?.toJson(),
         if (mentions.isNotEmpty) 'mentions': mentions,
         if (callLog != null) 'call': callLog!.toJson(),
@@ -318,6 +331,9 @@ class Message {
           const {},
       deliveredTo: _timesFromJson(json['deliveredTo']),
       readBy: _timesFromJson(json['readBy']),
+      undeliveredTo: {
+        ...?(json['undeliveredTo'] as List?)?.whereType<String>(),
+      },
       poll: Poll.fromJson(json['poll']),
       mentions: mentionsFromWire(json['mentions']),
       callLog: CallLog.fromJson(json['call']),

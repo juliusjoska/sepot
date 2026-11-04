@@ -3,8 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sepot/core/push/apns_ios.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
+import 'package:sepot/core/utils/externi_obrazovka.dart';
 import 'package:sepot/core/calls/call_controller.dart';
 import 'package:sepot/features/auth/change_pin_screen.dart';
 import 'package:sepot/features/calls/call_screen.dart';
@@ -30,6 +32,7 @@ import 'package:sepot/providers/identity_provider.dart';
 import 'package:sepot/providers/locale_provider.dart';
 import 'package:sepot/providers/settings_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
+import 'package:sepot/widgets/incoming_message_banner.dart';
 
 /// Hlavní router aplikace
 final _router = GoRouter(
@@ -156,25 +159,86 @@ class SepotApp extends ConsumerWidget {
     });
 
     return _AutoLockGate(
-      child: MaterialApp.router(
-        onGenerateTitle: (context) => context.l10n.appTitle,
-        theme: SepotTheme.dark,
-        routerConfig: _router,
-        debugShowCheckedModeBanner: false,
-        locale: locale,
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
-        // Explicitní pořadí: první položka je fallback pro systémové jazyky,
-        // které nepodporujeme (např. francouzština → angličtina, ne čeština).
-        supportedLocales: const [
-          Locale('en'),
-          Locale('cs'),
-          Locale('de'),
-          Locale('ru'),
-          Locale('it'),
-        ],
+      child: _ForegroundMessages(
+        child: MaterialApp.router(
+          onGenerateTitle: (context) => context.l10n.appTitle,
+          theme: SepotTheme.dark,
+          routerConfig: _router,
+          debugShowCheckedModeBanner: false,
+          locale: locale,
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          // Explicitní pořadí: první položka je fallback pro systémové jazyky,
+          // které nepodporujeme (např. francouzština → angličtina, ne čeština).
+          supportedLocales: const [
+            Locale('en'),
+            Locale('cs'),
+            Locale('de'),
+            Locale('ru'),
+            Locale('it'),
+          ],
+        ),
       ),
     );
   }
+}
+
+/// Banner a vibrace pro zprávu, která přijde do běžící appky v popředí.
+///
+/// Stojí nad MaterialApp, takže texty i overlay bere z navigátoru routeru.
+/// Zpráva do právě otevřeného chatu se neoznamuje: člověk ji vidí.
+class _ForegroundMessages extends ConsumerStatefulWidget {
+  const _ForegroundMessages({required this.child});
+
+  final Widget child;
+
+  @override
+  ConsumerState<_ForegroundMessages> createState() =>
+      _ForegroundMessagesState();
+}
+
+class _ForegroundMessagesState extends ConsumerState<_ForegroundMessages> {
+  StreamSubscription<ForegroundMessage>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = ref.read(foregroundMessagesProvider).stream.listen(_ukaz);
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    IncomingMessageBanner.hide();
+    super.dispose();
+  }
+
+  void _ukaz(ForegroundMessage zprava) {
+    final cesta = '/conversation/${zprava.convId}';
+    final kde = _router.routerDelegate.currentConfiguration.uri.path;
+    // Na hovoru a zamykacích obrazovkách by banner jen překážel.
+    if (kde == cesta || kde == '/call' || _bezZamku.contains(kde)) return;
+
+    final navigator = _router.routerDelegate.navigatorKey.currentState;
+    final overlay = navigator?.overlay;
+    if (navigator == null || overlay == null) return;
+    final l10n = navigator.context.l10n;
+    final jmeno = zprava.senderName;
+
+    IncomingMessageBanner.show(
+      overlay,
+      text: jmeno != null
+          ? l10n.pushNewMessageFrom(jmeno)
+          : zprava.isRequest
+          ? l10n.pushMessageRequest
+          : l10n.pushNewMessages,
+      avatarName: jmeno ?? '?',
+      avatarSeed: zprava.senderId,
+      onTap: () => _router.push(cesta),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// Hlídá, jak dlouho byla appka na pozadí, a po vypršení limitu zamkne.
@@ -196,10 +260,17 @@ class _AutoLockGateState extends ConsumerState<_AutoLockGate>
     with WidgetsBindingObserver {
   DateTime? _naPozadiOd;
 
+  /// Odešla appka na pozadí kvůli výběru fotky, souboru nebo sdílení?
+  /// Zachytí se v okamžiku odchodu: výběr může skončit dřív, než přijde
+  /// `resumed`, a pak by už [ExterniObrazovka.otevrena] lhala.
+  bool _odchodKvuliExterni = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Spuštění klepnutím na notifikaci není návrat z pozadí (resumed).
+    unawaited(ApnsBridge.clearMessageAlerts());
   }
 
   @override
@@ -214,8 +285,14 @@ class _AutoLockGateState extends ConsumerState<_AutoLockGate>
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
-        _naPozadiOd ??= DateTime.now();
+        if (_naPozadiOd != null) break;
+        _naPozadiOd = DateTime.now();
+        _odchodKvuliExterni = ExterniObrazovka.otevrena;
+        // Okamžitý zámek se uzavírá hned při odchodu, ne až po návratu:
+        // jinak by se po odemčení telefonu na zlomek vteřiny ukázal chat.
+        unawaited(_zvazZamek(Duration.zero));
       case AppLifecycleState.resumed:
+        unawaited(ApnsBridge.clearMessageAlerts());
         final od = _naPozadiOd;
         _naPozadiOd = null;
         if (od == null) break;
@@ -225,6 +302,9 @@ class _AutoLockGateState extends ConsumerState<_AutoLockGate>
         // Přenačtení z lokální DB je levné.
         if (ref.read(storageProvider).isUnlocked) {
           ref.invalidate(conversationsProvider);
+          // Otevřená konverzace se přenačítá zvlášť (celá family), jinak
+          // zprávy z doby na pozadí ukáže až po odchodu a návratu do chatu.
+          ref.invalidate(conversationProvider);
         }
         unawaited(_zvazZamek(DateTime.now().difference(od)));
       case AppLifecycleState.inactive:
@@ -236,9 +316,18 @@ class _AutoLockGateState extends ConsumerState<_AutoLockGate>
     final storage = ref.read(storageProvider);
     if (!storage.isUnlocked) return;
     if (!await storage.hasPin()) return;
+    // Zámek zastaví messaging a s ním i běžící hovor. Hovor na pozadí
+    // (zhasnutý displej u ucha) je normální stav, ne opuštěná appka.
+    if (ref.read(callProvider).busy) return;
 
     final limit = await ref.read(autoLockProvider.future);
-    if (limit <= 0 || pryc.inSeconds < limit) return;
+    if (!AutoLockNotifier.maZamknout(
+      nastaveni: limit,
+      pryc: pryc,
+      kvuliExterniObrazovce: _odchodKvuliExterni,
+    )) {
+      return;
+    }
 
     final kde = _router.state.uri.path;
     if (_bezZamku.contains(kde)) return;

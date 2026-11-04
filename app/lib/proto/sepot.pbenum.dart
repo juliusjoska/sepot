@@ -33,16 +33,24 @@ class ContentHint extends $pb.ProtobufEnum {
   static const ContentHint CONTENT_HINT_CALL =
       ContentHint._(4, _omitEnumNames ? '' : 'CONTENT_HINT_CALL');
 
+  /// Zpráva, kterou člověk uvidí (text, příloha): offline iPhone dostane
+  /// hned viditelnou notifikaci s obecným textem, ne tichý budíček, který
+  /// iOS zdržuje. Relay se tím dozví jen to, že nejde o potvrzení či reakci;
+  /// kdo a co píše, dál neví.
+  static const ContentHint CONTENT_HINT_VISIBLE =
+      ContentHint._(5, _omitEnumNames ? '' : 'CONTENT_HINT_VISIBLE');
+
   static const $core.List<ContentHint> values = <ContentHint>[
     CONTENT_HINT_DEFAULT,
     CONTENT_HINT_RESYNC,
     CONTENT_HINT_SUPPLEMENTARY,
     CONTENT_HINT_EPHEMERAL,
     CONTENT_HINT_CALL,
+    CONTENT_HINT_VISIBLE,
   ];
 
   static final $core.List<ContentHint?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 4);
+      $pb.ProtobufEnum.$_initByValueList(values, 5);
   static ContentHint? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

@@ -9,6 +9,11 @@ class Conversation {
   DateTime lastActivity;
   int? disappearAfterSeconds; // Globální nastavení mizících zpráv
 
+  /// Kdy vznikla platná změna časovače (čas odesílatele). Změny z drátu
+  /// chodí ve skupině po párech v libovolném pořadí — starší nesmí
+  /// přepsat novější, jinak by se členové rozešli.
+  DateTime? disappearingSetAt;
+
   /// Ztlumení, archivace a připnutí — čistě LOKÁLNÍ (neopouští zařízení).
   bool muted;
   DateTime? mutedUntil; // null + muted = navždy; jinak dočasně
@@ -20,6 +25,7 @@ class Conversation {
     List<Message>? messages,
     DateTime? lastActivity,
     this.disappearAfterSeconds,
+    this.disappearingSetAt,
     this.muted = false,
     this.mutedUntil,
     this.archived = false,
@@ -82,6 +88,7 @@ class Conversation {
         'messages': messages.map((m) => m.toJson()).toList(),
         'lastActivity': lastActivity.toIso8601String(),
         'disappearAfterSeconds': disappearAfterSeconds,
+        'disappearingSetAt': disappearingSetAt?.toIso8601String(),
         'muted': muted,
         'mutedUntil': mutedUntil?.toIso8601String(),
         'archived': archived,
@@ -97,6 +104,9 @@ class Conversation {
           [],
       lastActivity: DateTime.parse(json['lastActivity'] as String),
       disappearAfterSeconds: json['disappearAfterSeconds'] as int?,
+      disappearingSetAt: json['disappearingSetAt'] == null
+          ? null
+          : DateTime.parse(json['disappearingSetAt'] as String),
       // Defaulty — legacy JSON bez těchto klíčů musí projít
       muted: json['muted'] as bool? ?? false,
       mutedUntil: json['mutedUntil'] == null

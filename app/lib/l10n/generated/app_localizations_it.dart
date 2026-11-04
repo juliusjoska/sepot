@@ -1183,7 +1183,7 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get pushModeApnsDesc =>
-      'Le notifiche di risveglio le consegna Apple. Il token push del dispositivo va ad Apple; il contenuto dei messaggi mai.';
+      'Apple consegna subito le notifiche, solo come «Nuovo messaggio». Ad Apple va il token push del dispositivo, mai il contenuto né il mittente.';
 
   @override
   String get pushSubtitleApns => 'Apple (APNs)';
@@ -1251,6 +1251,9 @@ class AppLocalizationsIt extends AppLocalizations {
       'Aggiungi un contatto e inizia a sussurrare!';
 
   @override
+  String get chatListInviteFriend => 'Invita un amico';
+
+  @override
   String get chatListUnmute => 'Riattiva notifiche';
 
   @override
@@ -1283,9 +1286,22 @@ class AppLocalizationsIt extends AppLocalizations {
   String get commonCopiedToClipboard => 'Copiato negli appunti';
 
   @override
-  String qrShareInviteMessage(String shareString) {
-    return 'Aggiungimi su Šepot!\n\n$shareString';
+  String qrShareInviteMessage(String downloadUrl, String shareString) {
+    return 'Scrivimi su Šepot – un messenger cifrato senza numero di telefono.\n\n1. Scaricalo qui: $downloadUrl\n2. Nell\'app tocca Aggiungi contatto e incolla questo codice:\n\n$shareString';
   }
+
+  @override
+  String get reviewAskTitle => 'Valuti Šepot?';
+
+  @override
+  String get reviewAskBody =>
+      'Šepot non ha pubblicità né investitori. La tua valutazione su Google Play aiuta più persone a scoprirlo.';
+
+  @override
+  String get reviewAskLater => 'Non ora';
+
+  @override
+  String get reviewAskRate => 'Valuta';
 
   @override
   String get commonShare => 'Condividi';
@@ -1348,6 +1364,9 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get settingsAutoLockNever => 'Mai';
+
+  @override
+  String get settingsAutoLockImmediately => 'Immediatamente';
 
   @override
   String get settingsAutoLock1min => 'Dopo 1 minuto';
@@ -1848,4 +1867,25 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get noticePreview => 'Avviso di sicurezza';
+
+  @override
+  String get chatDisappearingAdminOnly =>
+      'In questo gruppo solo un amministratore può modificare i messaggi a tempo.';
+
+  @override
+  String noticeTimerChanged(String name, String duration) {
+    return '$name ha modificato i messaggi a tempo: $duration';
+  }
+
+  @override
+  String noticeTimerChangedByMe(String duration) {
+    return 'Hai modificato i messaggi a tempo: $duration';
+  }
+
+  @override
+  String get chatStatusUndelivered => 'Non consegnato';
+
+  @override
+  String get messageInfoUndelivered =>
+      'Non è stato possibile consegnare il messaggio nemmeno dopo il ripristino della connessione cifrata. Invialo di nuovo come nuovo messaggio.';
 }

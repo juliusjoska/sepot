@@ -16,14 +16,18 @@ import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/calls/call_controller.dart';
 import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
+import 'package:sepot/core/l10n/disappearing_text.dart';
 import 'package:sepot/core/l10n/l10n.dart';
+import 'package:sepot/core/review/review_prompt.dart';
 import 'package:sepot/core/services/image_processor.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/core/utils/text_fold.dart';
+import 'package:sepot/core/utils/externi_obrazovka.dart';
 import 'package:sepot/features/calls/call_log_text.dart';
 import 'package:sepot/features/conversation/chat_actions.dart';
 import 'package:sepot/features/conversation/message_request_panel.dart';
 import 'package:sepot/features/conversation/widgets/safety_notice_row.dart';
+import 'package:sepot/features/conversation/widgets/timer_notice_row.dart';
 import 'package:sepot/features/conversation/forward_sheet.dart';
 import 'package:sepot/features/conversation/widgets/attachment_content.dart';
 import 'package:sepot/features/conversation/widgets/create_poll_sheet.dart';
@@ -843,14 +847,21 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 if (showDate) _buildDateDivider(msg.timestamp),
-                SafetyNoticeRow(
-                  notice: notice,
-                  contactName: autorJmeno(widget.contactId),
-                  claimedName: msg.content,
-                  onVerify: group == null
-                      ? () => context.push('/verify/${widget.contactId}')
-                      : null,
-                ),
+                if (notice == MessageNotice.timerChanged)
+                  TimerNoticeRow(
+                    seconds: timerNoticeSeconds(msg),
+                    changedBy: autorJmeno(msg.senderId),
+                    byMe: isMine,
+                  )
+                else
+                  SafetyNoticeRow(
+                    notice: notice,
+                    contactName: autorJmeno(widget.contactId),
+                    claimedName: msg.content,
+                    onVerify: group == null
+                        ? () => context.push('/verify/${widget.contactId}')
+                        : null,
+                  ),
               ],
             ),
           );
@@ -1735,15 +1746,19 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
   }
 
   /// Drobný řádek pod mou poslední zprávou v 1:1 — kdy ji protistrana
-  /// dostala / přečetla, bez nutnosti otevírat Info.
+  /// dostala / přečetla, bez nutnosti otevírat Info. Nedoručená zpráva to
+  /// řekne slovy: samotná červená ikona se snadno přehlédne.
   Widget _buildReceiptCaption(Message msg) {
     final readAt = msg.firstReadAt;
     final deliveredAt = msg.firstDeliveredAt;
-    final text = readAt != null
-        ? context.l10n.chatStatusReadAt(_formatWhen(readAt))
-        : deliveredAt != null
-            ? context.l10n.chatStatusDeliveredAt(_formatWhen(deliveredAt))
-            : null;
+    final undelivered = msg.undeliveredTo.isNotEmpty;
+    final text = undelivered
+        ? context.l10n.chatStatusUndelivered
+        : readAt != null
+            ? context.l10n.chatStatusReadAt(_formatWhen(readAt))
+            : deliveredAt != null
+                ? context.l10n.chatStatusDeliveredAt(_formatWhen(deliveredAt))
+                : null;
     if (text == null || msg.isDeleted) return const SizedBox.shrink();
     return Align(
       alignment: Alignment.centerRight,
@@ -1753,7 +1768,11 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
           text,
           style: TextStyle(
             fontSize: 11,
-            color: readAt != null ? SepotColors.mist : SepotColors.textMuted,
+            color: undelivered
+                ? SepotColors.error
+                : readAt != null
+                    ? SepotColors.mist
+                    : SepotColors.textMuted,
           ),
         ),
       ),
@@ -1848,6 +1867,13 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
                 ],
                 radek(Icons.done_all_rounded,
                     context.l10n.messageInfoDelivered, msg.deliveredTo[f]),
+                if (msg.undeliveredTo.contains(f))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2, bottom: 4),
+                    child: Text(context.l10n.messageInfoUndelivered,
+                        style: const TextStyle(
+                            fontSize: 12, color: SepotColors.error)),
+                  ),
                 if (receiptsOn)
                   radek(Icons.visibility_outlined, context.l10n.messageInfoRead,
                       msg.readBy[f],
@@ -1936,14 +1962,15 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
         case _AttachAction.camera:
           // maxWidth/Height 2048 = strop ImageProcessoru; menší vstup šetří
           // RAM při náhledu i finálním renderu úprav.
-          final picked = await ImagePicker().pickImage(
-            source: action == _AttachAction.gallery
-                ? ImageSource.gallery
-                : ImageSource.camera,
-            maxWidth: 2048,
-            maxHeight: 2048,
-            imageQuality: 92,
-          );
+          final picked = await ExterniObrazovka.behem(() => ImagePicker()
+              .pickImage(
+                source: action == _AttachAction.gallery
+                    ? ImageSource.gallery
+                    : ImageSource.camera,
+                maxWidth: 2048,
+                maxHeight: 2048,
+                imageQuality: 92,
+              ));
           if (picked == null) return;
           final pickedBytes = await picked.readAsBytes();
           if (!mounted) return;
@@ -1966,7 +1993,8 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
         case _AttachAction.poll:
           return; // obslouženo výš, jen kvůli úplnosti switche
         case _AttachAction.document:
-          final result = await FilePicker.pickFiles(withData: true);
+          final result = await ExterniObrazovka.behem(
+              () => FilePicker.pickFiles(withData: true));
           final file = result?.files.firstOrNull;
           if (file == null || file.bytes == null) return;
           if (file.size > AppConstants.maxAttachmentBytes) {
@@ -2095,6 +2123,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
       } else {
         await notifier.sendMessage(widget.contactId, text,
             replyToId: replyToId, mentions: _mentionsIn(text));
+        unawaited(ref.read(reviewPromptProvider).noteMessageSent());
       }
       if (mounted) {
         setState(() {

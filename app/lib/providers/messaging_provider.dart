@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
@@ -11,6 +12,32 @@ import 'package:sepot/providers/conversations_provider.dart';
 import 'package:sepot/providers/groups_provider.dart';
 import 'package:sepot/providers/identity_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
+
+/// Zpráva, která přišla, když je appka v popředí. Systémovou notifikaci
+/// nahrazuje banner nahoře, který kreslí `app.dart` (má router i overlay).
+class ForegroundMessage {
+  const ForegroundMessage({
+    required this.convId,
+    required this.senderId,
+    required this.senderName,
+  });
+
+  final String convId;
+  final String senderId;
+
+  /// `null` = odesílatel není přijatý kontakt. Jméno, které si zvolil sám,
+  /// se neukazuje ani tady (stejně jako v notifikaci).
+  final String? senderName;
+
+  bool get isRequest => senderName == null && convId == senderId;
+}
+
+final foregroundMessagesProvider =
+    Provider<StreamController<ForegroundMessage>>((ref) {
+  final controller = StreamController<ForegroundMessage>.broadcast();
+  ref.onDispose(controller.close);
+  return controller;
+});
 
 /// Jediná instance messaging služby (krypto + relay + storage).
 final messagingServiceProvider = Provider<MessagingService>((ref) {
@@ -79,15 +106,23 @@ final messagingStartProvider = FutureProvider<void>((ref) async {
 
   // Appka běží, ale není v popředí (jiná appka / zhasnutý displej se
   // živým procesem) → systémová notifikace. Jen jméno, žádný obsah.
+  // V popředí místo ní banner s vibrací (foregroundMessagesProvider).
   // Ztlumená konverzace notifikaci potlačí (unread badge běží dál),
   // zmínka mě ve skupině projde i tak.
   service.onMessageReceived = (contact, message, convId) async {
     final visible = WidgetsBinding.instance.lifecycleState ==
         AppLifecycleState.resumed;
-    if (visible) return;
     final conv = await ref.read(storageProvider).loadConversation(convId);
     final mentionedMe = message.mentions.contains(identity.id);
     if (conv?.isMuted == true && !mentionedMe) return;
+    if (visible) {
+      ref.read(foregroundMessagesProvider).add(ForegroundMessage(
+            convId: convId,
+            senderId: contact.id,
+            senderName: contact.accepted ? contact.displayName : null,
+          ));
+      return;
+    }
     // Jméno, které si neznámý zvolil sám, nepatří do notifikace —
     // „Nová zpráva od Máma“ by byl phishing ještě před otevřením appky.
     if (contact.accepted) {

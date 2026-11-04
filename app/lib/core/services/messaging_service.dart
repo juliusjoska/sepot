@@ -6,6 +6,9 @@
 ///              fingerprint sender identity klíče → uložení → ACK
 ///
 /// ACK se posílá až PO uložení zprávy (relay pak obálku hard-maže).
+/// Dešifrovaný obsah jde nejdřív do deníku příjmu a teprve pak se posune
+/// ratchet; obálku, kterou nejde dešifrovat, vyřizuje obnova relace
+/// (ACK + žádost o znovuposlání).
 ///
 /// Content formát v1 = JSON uvnitř E2E ciphertextu (relay ho NIKDY nevidí):
 ///   text:    `{ v:1, t:'txt', id:<uuid>, txt:<text>, p:{...} }`
@@ -48,6 +51,7 @@ import 'package:sepot/core/storage/secure_storage.dart';
 import 'package:sepot/models/attachment.dart';
 import 'package:sepot/models/avatar_ref.dart';
 import 'package:sepot/models/contact.dart';
+import 'package:sepot/models/conversation.dart';
 import 'package:sepot/models/group.dart';
 import 'package:sepot/models/identity.dart';
 import 'package:sepot/models/message.dart';
@@ -117,7 +121,7 @@ class MessagingService {
   /// hovoru se tiše zahodila — hovory vůbec nešly přijmout.
   static const knownContentTypes = {
     'txt', 'att', 'rx', 'edit', 'del', 'dlv', 'rr', 'typ', 'vote', 'call',
-    ..._groupControlTypes,
+    'tmr', 'rtr', ..._groupControlTypes,
   };
 
   /// Prodleva dalšího pokusu o registraci; roste do [_registerRetryMax].
@@ -321,9 +325,23 @@ class MessagingService {
         preKey: DbPreKeyStore(db),
         signedPreKey: DbSignedPreKeyStore(db),
         kyberPreKey: DbKyberPreKeyStore(db),
+        transaction: db.transaction<void>,
       ),
     );
     _crypto = crypto;
+
+    // Pinovaný trust root stačí k ověření příchozích obálek hned. Dřív se
+    // nastavil až po stažení sender certifikátu: relay vylévá frontu hned
+    // po AUTH a obálky, které stažení předběhly, zůstaly bez ACK — zpráva
+    // se ukázala až po dalším připojení a pálila pokusy o doručení.
+    final pinnedRoot = db.kvGet('trust_root');
+    if (pinnedRoot != null) _trustRoot = Uint8List.fromList(pinnedRoot);
+
+    _loadResendLimits(db);
+    _purgeJournals(db);
+    // Obálky dešifrované před pádem nebo zamčením, které se nestihly
+    // zpracovat — relay je možná už zahodil, deník je drží.
+    _track(_replayInbox);
 
     final relay = _buildRelay();
     _relay = relay;
@@ -431,12 +449,25 @@ class MessagingService {
 
   Future<void> _purgeExpired() async {
     try {
+      final db = _db;
+      if (db != null && storage.isUnlocked) _purgeJournals(db);
       if (await storage.purgeExpiredMessages()) {
         onUpdate?.call();
       }
     } catch (_) {
       // best-effort — sweep nesmí shodit messaging
     }
+  }
+
+  /// Úklid deníku příjmu a záznamu odeslaných obálek. Běží i průběžně, ne
+  /// jen při startu: appka může běžet týdny bez restartu.
+  void _purgeJournals(CryptoDb db) {
+    final now = DateTime.now();
+    db.inboxPurge(
+      before: now.subtract(_inboxRetention),
+      pendingBefore: now.subtract(_inboxPendingMax),
+    );
+    db.sentLogPurge(now.subtract(_sentLogRetention));
   }
 
   Future<void> _registerWithRetry() async {
@@ -1070,11 +1101,13 @@ class MessagingService {
     await _sendControl(contact, {'t': 'del', 'ref': targetId});
   }
 
-  /// Odešle control zprávu (best-effort; lokální změna už proběhla).
+  /// Odešle control zprávu; lokální změna už proběhla. Co shodí síť,
+  /// počká ve frontě na další připojení.
   Future<void> _sendControl(
       Contact contact, Map<String, dynamic> extra) async {
+    Map<String, dynamic>? content;
     try {
-      await _sendContent(contact, {
+      content = {
         'v': 1,
         'id': const Uuid().v4(),
         // Čas vzniku, ne doručení — potvrzení přečtení z offline telefonu
@@ -1082,12 +1115,121 @@ class MessagingService {
         'ts': DateTime.now().millisecondsSinceEpoch,
         ...extra,
         'p': _profile(),
-      });
-    } catch (_) {
-      // síť selhala — lokální stav zůstává, protistrana se dozví později
-      // jen když znovu odešleme (v1: bez retry fronty pro control zprávy)
+      };
+      await _sendContent(contact, content);
+    } on Object catch (e) {
+      // Bez obsahu (služba ještě nemá identitu) není co dosílat.
+      if (content != null && !_recipientBroken(e)) {
+        await _queueControls([(to: contact.id, content: content)]);
+      }
     }
   }
+
+  /// Chyba, kterou opakování nespraví: příjemce nemá doručovací adresu nebo
+  /// pod jeho adresou sedí cizí klíč. Výpadek relaye a nedoběhlá vlastní
+  /// registrace jsou taky SepotUserError, ale přejdou — ty se opakují.
+  static bool _recipientBroken(Object e) =>
+      e is ContactNoDeliveryAddressError ||
+      e is MemberNoDeliveryAddressError ||
+      e is IdentityKeyMismatchError;
+
+  // ── Fronta řídicích zpráv ───────────────────────────────────────────
+  //
+  // Smazání pro všechny, úprava, časovač nebo hlas, které shodila síť, se
+  // nesmí tiše ztratit: u appky o soukromí je „smazal jsem to, a u adresáta
+  // to zůstalo“ ztráta důvěry. Fronta leží v šifrované DB (přežije restart)
+  // a dosílá se po každém připojení spolu s [_flushOutbox].
+
+  static const _pendingControlsKey = 'pending_controls';
+
+  /// Strop fronty: po dlouhém výpadku drží jen nejnovější položky, aby
+  /// jeden JSON v nastavení nerostl bez omezení.
+  static const _pendingControlsMax = 500;
+
+  /// Zápisy do fronty jdou postupně — read-modify-write z několika
+  /// souběžných odeslání by si položky přepsaly.
+  Future<void> _queueChain = Future.value();
+
+  Future<T> _withQueue<T>(Future<T> Function() op) {
+    final next = _queueChain.then((_) => op());
+    _queueChain = next.then((_) {}, onError: (_) {});
+    return next;
+  }
+
+  Future<List<Map<String, dynamic>>> _loadPendingControls() async =>
+      ((await storage.getSetting<List<dynamic>>(_pendingControlsKey)) ??
+              const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+  Future<void> _queueControls(
+      List<({String to, Map<String, dynamic> content})> items) {
+    if (items.isEmpty) return Future.value();
+    return _withQueue(() async {
+      final queue = await _loadPendingControls();
+      final at = DateTime.now().millisecondsSinceEpoch;
+      queue.addAll([
+        for (final i in items) {'to': i.to, 'at': at, 'c': i.content},
+      ]);
+      final kept = queue.length > _pendingControlsMax
+          ? queue.sublist(queue.length - _pendingControlsMax)
+          : queue;
+      await storage.setSetting(_pendingControlsKey, kept);
+    });
+  }
+
+  /// Došle frontu. Položky starší než [_outboxMaxAge], pro zablokovaný
+  /// nebo smazaný kontakt nebo pro skupinu, ve které už adresát není,
+  /// zahodí. Při síťové chybě skončí a zbytek nechá na další připojení.
+  Future<void> _flushPendingControls() => _withQueue(() async {
+        final queue = await _loadPendingControls();
+        if (queue.isEmpty) return;
+        final cutoff = DateTime.now().subtract(_outboxMaxAge);
+        final contacts = {
+          for (final c in await storage.loadContacts()) c.id: c,
+        };
+        final rest = <Map<String, dynamic>>[];
+        var offline = false;
+        for (final item in queue) {
+          if (offline) {
+            rest.add(item);
+            continue;
+          }
+          final at = DateTime.fromMillisecondsSinceEpoch(
+              item['at'] as int? ?? 0);
+          final contact = contacts[item['to']];
+          final content = item['c'];
+          if (at.isBefore(cutoff) ||
+              contact == null ||
+              contact.blocked ||
+              content is! Map<String, dynamic> ||
+              !await _stillMember(content['gid'], contact.id)) {
+            continue;
+          }
+          try {
+            await _sendContent(contact, content);
+          } on Object catch (e) {
+            if (!_recipientBroken(e)) {
+              offline = true;
+              rest.add(item);
+            }
+          }
+        }
+        await storage.setSetting(_pendingControlsKey, rest);
+      });
+
+  Future<bool> _stillMember(Object? gid, String fp) async {
+    if (gid is! String) return true;
+    final group = await storage.loadGroup(gid);
+    return group != null && !group.left && group.isMember(fp);
+  }
+
+  @visibleForTesting
+  Future<List<Map<String, dynamic>>> debugPendingControls() =>
+      _loadPendingControls();
+
+  @visibleForTesting
+  Future<void> debugFlushPendingControls() => _flushPendingControls();
 
   /// Signalizace hovoru (`t:'call'`). Na rozdíl od ostatních
   /// řídicích zpráv chybu nepolyká — hovor, který neodešel, musí UI ukončit.
@@ -1432,6 +1574,89 @@ class MessagingService {
     }
   }
 
+  /// Časovač mizících zpráv pro celou konverzaci (null = vypnuto). Platí
+  /// u všech: protistraně / členům jde řídicí zpráva `tmr` a každý si
+  /// zapíše oznámení. Starší verze `tmr` zahodí a drží si svůj časovač.
+  Future<void> setDisappearing(String convId, int? seconds,
+      {Group? group, Contact? contact}) async {
+    final now = DateTime.now();
+    final conv = await storage.loadConversation(convId) ??
+        Conversation(contactId: convId);
+    conv
+      ..disappearAfterSeconds = seconds
+      ..disappearingSetAt = now;
+    await storage.saveConversation(conv);
+    await _addTimerNotice(convId, _identity!.id, seconds);
+
+    final control = {'t': 'tmr', 's': seconds ?? 0};
+    if (group != null) {
+      await _fanoutToGroup(group, {
+        'v': 1,
+        'id': const Uuid().v4(),
+        'ts': now.millisecondsSinceEpoch,
+        'gid': group.id,
+        ...control,
+        'p': _profile(),
+      });
+    } else if (contact != null) {
+      await _sendControl(contact, control);
+    }
+  }
+
+  /// Převezme cizí změnu časovače. Ve skupině s podepsanými správci smí
+  /// časovač měnit jen správce (stejně jako název), jinak kdokoli z členů.
+  Future<void> _applyIncomingTimer(String convId, String senderFp,
+      Map<String, dynamic> content, Group? group) async {
+    final raw = content['s'];
+    if (raw is! int) return;
+    if (raw != 0 && !AppConstants.disappearingChoices.contains(raw)) return;
+    if (group != null &&
+        !group.isAdmin(senderFp) &&
+        group.isEnforced(_myFingerprint)) {
+      return;
+    }
+    final at = wireSentAt(content['ts']);
+    final conv = await storage.loadConversation(convId) ??
+        Conversation(contactId: convId);
+    final previous = conv.disappearingSetAt;
+    if (previous != null && !at.isAfter(previous)) return;
+    final seconds = raw == 0 ? null : raw;
+    final changed = conv.disappearAfterSeconds != seconds;
+    conv
+      ..disappearAfterSeconds = seconds
+      ..disappearingSetAt = at;
+    await storage.saveConversation(conv);
+    if (changed) await _addTimerNotice(convId, senderFp, seconds);
+    onUpdate?.call();
+  }
+
+  /// Platný časovač konverzace pro pozvánku; null = nikdo ho nenastavil.
+  Future<Map<String, dynamic>?> _timerWire(String convId) async {
+    final conv = await storage.loadConversation(convId);
+    final at = conv?.disappearingSetAt;
+    if (conv == null || at == null) return null;
+    return {
+      's': conv.disappearAfterSeconds ?? 0,
+      'ts': at.millisecondsSinceEpoch,
+    };
+  }
+
+  Future<void> _addTimerNotice(
+      String convId, String changedBy, int? seconds) async {
+    final me = _identity;
+    if (me == null) return;
+    await storage.addMessage(
+      convId,
+      Message.notice(
+        contactId: changedBy,
+        myId: me.id,
+        notice: MessageNotice.timerChanged,
+        content: '${seconds ?? 0}',
+      ),
+    );
+    onUpdate?.call();
+  }
+
   /// Reakce ve skupině (emoji == null = odebrat).
   Future<void> sendGroupReaction(
       Group group, String targetId, String? emoji) async {
@@ -1497,6 +1722,7 @@ class MessagingService {
       'gname': group.name,
       'roster': roster,
       'gop': ?op?.toWire(),
+      'tmr': ?await _timerWire(group.id),
       'p': _profile(),
     });
   }
@@ -1562,6 +1788,7 @@ class MessagingService {
         'gname': group.name,
         'roster': roster,
         'gop': _signOp(op).toWire(),
+        'tmr': ?await _timerWire(group.id),
         'p': _profile(),
       };
     }
@@ -1585,6 +1812,16 @@ class MessagingService {
   Future<void> debugHandleGroupControl(
           String senderFp, Map<String, dynamic> content) =>
       _handleGroupControl(senderFp, content['t'] as String?, content);
+
+  /// Příchozí `tmr` bez sealed obálky; stejná brána členství jako na drátu.
+  @visibleForTesting
+  Future<void> debugHandleTimer(
+      String senderFp, Map<String, dynamic> content) async {
+    final gid = content['gid'] as String?;
+    final group = gid == null ? null : await _groupForIncoming(gid, senderFp);
+    if (gid != null && group == null) return;
+    await _applyIncomingTimer(gid ?? senderFp, senderFp, content, group);
+  }
 
   @visibleForTesting
   Future<Group?> debugGroupForIncoming(String gid, String senderFp) =>
@@ -1651,6 +1888,7 @@ class MessagingService {
     final byFp = {for (final c in contacts) c.id: c};
     final payload = {...content, 'gv': groupProtocolVersion};
     var anyOk = false;
+    final failed = <({String to, Map<String, dynamic> content})>[];
     for (final fp in recipients ?? group.memberIds) {
       if (fp == _myFingerprint) continue;
       final c = byFp[fp];
@@ -1658,10 +1896,16 @@ class MessagingService {
       try {
         await _sendContent(c, payload);
         anyOk = true;
-      } catch (_) {
-        // člen offline/bez routingu — v1 bez per-member retry fronty
+      } on Object catch (e) {
+        if (!_recipientBroken(e)) failed.add((to: fp, content: payload));
       }
     }
+    // Zprávu (txt/att), která neodešla nikomu, došle celou outbox podle
+    // stavu `failed`; do fronty jdou jen členové, kterým chybí, zatímco
+    // ostatní ji mají. Jinak by odešla dvakrát.
+    final type = content['t'];
+    final outboxCovers = !anyOk && (type == 'txt' || type == 'att');
+    if (!outboxCovers) await _queueControls(failed);
     return anyOk;
   }
 
@@ -1701,6 +1945,19 @@ class MessagingService {
   final _groupSyncAnsweredAt = <String, DateTime>{};
 
   Future<void> _handleGroupControl(
+      String senderFp, String? type, Map<String, dynamic> content) async {
+    await _applyGroupControl(senderFp, type, content);
+    // Pozvánka nese i časovač mizících zpráv — nový člen by se ho jinak
+    // dozvěděl až při další změně. Po aplikaci rosteru, ať je už členem.
+    final gid = content['gid'];
+    final tmr = content['tmr'];
+    if (type == 'ginv' && gid is String && tmr is Map<String, dynamic>) {
+      final group = await _groupForIncoming(gid, senderFp);
+      if (group != null) await _applyIncomingTimer(gid, senderFp, tmr, group);
+    }
+  }
+
+  Future<void> _applyGroupControl(
       String senderFp, String? type, Map<String, dynamic> content) async {
     final gid = content['gid'];
     if (gid is! String || gid.isEmpty || gid.length > 64) return;
@@ -2151,6 +2408,7 @@ class MessagingService {
     try {
       final identity = _identity;
       if (identity == null) return;
+      await _flushPendingControls();
       final cutoff = DateTime.now().subtract(_outboxMaxAge);
 
       final stuck = <(String convId, Message message)>[];
@@ -2162,6 +2420,9 @@ class MessagingService {
             continue;
           }
           if (m.timestamp.isBefore(cutoff) || m.isDeleted) continue;
+          // Nedoručitelná i po obnově relace: další pokus by skončil stejně
+          // a s protistranou by se točil kolečkem rtr → znovuposlání.
+          if (m.undeliveredTo.contains(conv.contactId)) continue;
           stuck.add((conv.contactId, m));
         }
       }
@@ -2186,7 +2447,12 @@ class MessagingService {
       final group = await storage.loadGroup(convId);
       final bool delivered;
       if (group != null) {
-        delivered = await _fanoutToGroup(group, _outboxWire(message, gid: convId));
+        delivered = await _fanoutToGroup(
+          group,
+          _outboxWire(message, gid: convId),
+          recipients: group.memberIds
+              .where((fp) => !message.undeliveredTo.contains(fp)),
+        );
       } else {
         final contact = (await storage.loadContacts())
             .where((c) => c.id == convId)
@@ -2257,12 +2523,15 @@ class MessagingService {
 
   /// Zašifruje obsah pro kontakt a pošle obálku. U [ephemeral] se nová
   /// session nezakládá (X3DH kvůli „píše…“ nedává smysl) — bez session
-  /// vrací null.
+  /// vrací null. [freshSession] založí novou relaci z bundle i tehdy, když
+  /// nějaká existuje (obnova po žádosti protistrany); stará se
+  /// v libsignal archivuje, rozpracované zprávy z ní dál jdou dešifrovat.
   Future<pb.Receipt_Status?> _sendSealed(
     Contact contact,
     Map<String, dynamic> content, {
     bool ephemeral = false,
     bool ring = false,
+    bool freshSession = false,
   }) async {
     final crypto = _crypto ?? (throw StateError('Service not started'));
     final relay = _relay!;
@@ -2289,7 +2558,8 @@ class MessagingService {
       await _dropForeignSession(crypto, peerAddr, contact);
       // První zpráva: X3DH z bundle. Identity klíč v bundle MUSÍ sedět
       // s klíčem z kontaktu (jinak by relay mohl podstrčit vlastní).
-      if (!await crypto.hasSession(peerAddr)) {
+      if (freshSession) await crypto.dropUnreadableSession(peerAddr);
+      if (freshSession || !await crypto.hasSession(peerAddr)) {
         if (ephemeral) return null;
         final bundle = await relay.fetchBundle(peerDa);
         if (!_listEquals(bundle.identityKey, peer.identityKey)) {
@@ -2306,17 +2576,60 @@ class MessagingService {
     });
     if (sealed == null) return null;
 
-    final receipt = await relay.sendEnvelope(
-      dstAddress: peerDa,
-      payload: sealed,
-      hint: ephemeral
-          ? pb.ContentHint.CONTENT_HINT_EPHEMERAL
-          : ring
-              ? pb.ContentHint.CONTENT_HINT_CALL
-              : pb.ContentHint.CONTENT_HINT_DEFAULT,
-    );
-    return receipt.status;
+    // Záznam před odesláním: žádost o znovuposlání může dorazit dřív, než
+    // se vrátí receipt relaye.
+    final msgUuid = RelayClient.randomBytes(16);
+    if (!ephemeral) _logSent(msgUuid, contact, content);
+    try {
+      final receipt = await relay.sendEnvelope(
+        msgUuid: msgUuid,
+        dstAddress: peerDa,
+        payload: sealed,
+        hint: ephemeral
+            ? pb.ContentHint.CONTENT_HINT_EPHEMERAL
+            : ring
+                ? pb.ContentHint.CONTENT_HINT_CALL
+                : _visibleTypes.contains(content['t'])
+                    ? pb.ContentHint.CONTENT_HINT_VISIBLE
+                    : pb.ContentHint.CONTENT_HINT_DEFAULT,
+      );
+      return receipt.status;
+    } on Object {
+      _db?.sentLogDrop(msgUuid);
+      rethrow;
+    }
   }
+
+  /// Zapíše odcházející obálku, aby šlo vyhovět žádosti o znovuposlání —
+  /// jen druh a id zprávy, které se týká, nikdy obsah. Ten se při
+  /// znovuposlání sestaví z aktuálního stavu ([_rebuildForResend]).
+  /// Doručenky, „píše…“, hovory, žádosti samotné a správa skupin (tu
+  /// dorovnává `gsync`) se neopakují.
+  void _logSent(
+      Uint8List msgUuid, Contact contact, Map<String, dynamic> content) {
+    final kind = content['t'];
+    final convId = (content['gid'] as String?) ?? contact.id;
+    final target = switch (kind) {
+      'txt' || 'att' => content['id'],
+      'rx' || 'edit' || 'del' || 'vote' => content['ref'],
+      'tmr' => convId,
+      _ => null,
+    };
+    if (kind is! String || target is! String) return;
+    _db?.sentLogPut(
+      msgUuid: msgUuid,
+      contactId: contact.id,
+      convId: convId,
+      targetId: target,
+      kind: kind,
+    );
+  }
+
+  /// Obsah, který příjemce uvidí jako novou zprávu. Jen u něj iPhone
+  /// offline příjemce dostane hned viditelnou notifikaci; doručenky,
+  /// reakce a správa skupin zůstávají u tichého budíčku, jinak by telefon
+  /// hlásil „Nová zpráva“ u každého ✓✓.
+  static const _visibleTypes = {'txt', 'att'};
 
   /// libsignal 5.0.9 nad prázdným paměťovým storem identit důvěřuje
   /// čemukoli (TOFU bez paměti): příchozí PreKey zpráva s cizím klíčem pod
@@ -2346,36 +2659,604 @@ class MessagingService {
   /// Dodávky se zpracovávají postupně (viz [_serial]) a evidují jako
   /// rozpracované, aby na ně [stop] počkal.
   void _onDeliver(pb.Envelope envelope) {
+    debugDeliveries++;
+    _track(() => _handleDelivery(envelope));
+  }
+
+  void _track(Future<void> Function() op) {
     _inFlight++;
-    unawaited(_serial(() => _handleDelivery(envelope))
-        .then((_) {}, onError: (_) {})
-        .whenComplete(() {
+    unawaited(_serial(op).then((_) {}, onError: (_) {}).whenComplete(() {
       _inFlight--;
       if (_inFlight == 0) _drained?.complete();
     }));
   }
 
+  /// Kolik obálek relay doručil (testy: redelivery po ztraceném ACK).
+  @visibleForTesting
+  int debugDeliveries = 0;
+
+  /// Test: ACK se „ztratí“ cestou (spojení spadlo hned po uložení).
+  @visibleForTesting
+  bool debugDropAcks = false;
+
+  /// Test: proces „spadne“ hned po dešifrování, před zpracováním obsahu.
+  @visibleForTesting
+  bool debugCrashAfterDecrypt = false;
+
+  /// Test: zásah do stavu těsně před dešifrováním (rozbitá relace).
+  @visibleForTesting
+  Future<void> Function()? debugBeforeDecrypt;
+
+  /// Test: zpracování obsahu z deníku selže (chyba úložiště, chyba v appce).
+  @visibleForTesting
+  Future<void> Function()? debugBeforeProcess;
+
+  /// Test: hodiny příjemce (telefon vypnutý déle, než platí certifikát).
+  @visibleForTesting
+  DateTime Function() debugClock = DateTime.now;
+
+  @visibleForTesting
+  bool get debugTrustRootReady => _trustRoot != null;
+
+  /// Jak dlouho držet msg_uuid vyřízených obálek. Relay obálku drží
+  /// nejvýš 30 dní (QUEUE_TTL_DAYS), pak už redelivery nepřijde.
+  static const _inboxRetention = Duration(days: 35);
+
+  /// Jak dlouho jde požádat o znovuposlání zprávy. Odpovídá frontě relaye
+  /// (příjemce se může vrátit po měsíci); zpráva samotná se bere až při
+  /// znovuposlání z konverzace, takže smazaná nebo zmizelá nikam nejde.
+  static const _sentLogRetention = Duration(days: 30);
+
+  /// Dešifrovaný obsah, který nejde zpracovat (chyba úložiště, chyba
+  /// v appce), se zkouší znovu při každém startu a redelivery — ale ne
+  /// donekonečna: po tolika selháních nebo po týdnu se vyřídí a obsah
+  /// z disku zmizí.
+  static const _inboxMaxAttempts = 5;
+  static const _inboxPendingMax = Duration(days: 7);
+
   Future<void> _handleDelivery(pb.Envelope envelope) async {
     final crypto = _crypto;
     final trustRoot = _trustRoot;
+    final db = _db;
     // Zamčené úložiště (auto-lock stihl zamknout dřív, než jsme se dostali
     // na řadu): nedešifrovat — ratchet by postoupil a zápis by selhal.
     // Relay obálku doručí znovu po odemčení.
-    if (crypto == null || trustRoot == null || !storage.isUnlocked) return;
+    if (crypto == null || trustRoot == null || db == null ||
+        !storage.isUnlocked) {
+      return;
+    }
+    final msgUuid = envelope.msgUuid;
 
+    // Obálku už známe: buď je vyřízená a ztratil se jen ACK (druhé
+    // dešifrování by libsignal odmítl jako duplicitu a obálka by frontu
+    // otravovala do stropu pokusů), nebo leží v deníku nezpracovaná.
+    final journaled = db.inboxGet(msgUuid);
+    if (journaled != null) {
+      final opened = _openedFromJournal(journaled);
+      if (opened == null) {
+        _sendAck(msgUuid);
+      } else {
+        await _processOpened(opened, msgUuid);
+      }
+      return;
+    }
+
+    await debugBeforeDecrypt?.call();
+    final payload = Uint8List.fromList(envelope.payload);
     final SepotSealedMessage opened;
     try {
       opened = await crypto.sealedDecrypt(
-        ciphertext: Uint8List.fromList(envelope.payload),
+        ciphertext: payload,
         trustRoot: trustRoot,
-        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        timestampMs: debugClock().millisecondsSinceEpoch,
+        beforeCommit: (o) => _journal(db, msgUuid, o),
       );
-    } catch (_) {
-      // Nedešifrovatelná/cizí obálka: NEACKovat, ať ji fronta podrží
-      // (může jít o dočasný stav — např. cert refresh).
+    } on SepotDecryptException catch (e) {
+      await _onUndecryptable(crypto, db, payload, trustRoot, msgUuid, e);
       return;
     }
-    await _processOpened(opened, envelope.msgUuid);
+    if (debugCrashAfterDecrypt) {
+      debugCrashAfterDecrypt = false;
+      throw StateError('test: pád po dešifrování');
+    }
+    await _processOpened(opened, msgUuid);
+  }
+
+  void _journal(CryptoDb db, List<int> msgUuid, SepotSealedMessage o) =>
+      db.inboxPut(
+        msgUuid: msgUuid,
+        senderName: o.senderName,
+        senderDevice: o.senderDeviceId,
+        senderIdentity: o.senderIdentityKey,
+        plaintext: o.plaintext,
+      );
+
+  SepotSealedMessage? _openedFromJournal(InboxEntry e) {
+    final plaintext = e.plaintext;
+    final name = e.senderName;
+    final identity = e.senderIdentity;
+    if (e.done || plaintext == null || name == null || identity == null) {
+      return null;
+    }
+    return SepotSealedMessage(
+      plaintext: plaintext,
+      senderName: name,
+      senderDeviceId: e.senderDevice ?? 1,
+      senderIdentityKey: identity,
+    );
+  }
+
+  Future<void> _replayInbox() async {
+    final db = _db;
+    if (db == null || !storage.isUnlocked) return;
+    for (final entry in db.inboxPending()) {
+      final opened = _openedFromJournal(entry);
+      if (opened == null) continue;
+      await _processOpened(opened, entry.msgUuid);
+    }
+  }
+
+  /// Zpracování obsahu z deníku selhalo. Počítají se jen skutečná selhání,
+  /// ne pokusy: zabití appky na pozadí nebo zamčení uprostřed zpracování
+  /// zprávu nesmí přiblížit k zahození. Po posledním pokusu se obálka
+  /// vyřídí a odesílatel dostane žádost, ať zprávu pošle znovu v nové
+  /// obálce — jinak by u sebe dál viděl „doručeno“.
+  Future<void> _noteProcessingFailure(
+      SepotSealedMessage opened, List<int> msgUuid) async {
+    final db = _db;
+    if (db == null || !storage.isUnlocked) return;
+    if (db.inboxAttempt(msgUuid) < _inboxMaxAttempts) return;
+    _settle(msgUuid);
+    await _requestResend(opened.senderIdentityKey, msgUuid);
+  }
+
+  @visibleForTesting
+  Future<void> debugReplayInbox() => _replayInbox();
+
+  /// Obálka je vyřízená: deník si ji pamatuje (bez obsahu) a relay ji smí
+  /// smazat.
+  void _settle(List<int> msgUuid) {
+    _db?.inboxDone(msgUuid);
+    _sendAck(msgUuid);
+  }
+
+  void _sendAck(List<int> msgUuid) {
+    if (debugDropAcks) return;
+    _relay?.ack(msgUuid);
+  }
+
+  /// Obálku nejde dešifrovat. Rozhoduje druh chyby: co opakování nespraví,
+  /// se ACKne — jinak by ji relay po stropu
+  /// pokusů stejně tiše zahodil — a když víme, od koho je, požádáme
+  /// odesílatele o znovuposlání. Neznámá chyba může být dočasná (úložiště,
+  /// FFI): bez ACK, relay obálku zkusí znovu.
+  Future<void> _onUndecryptable(
+    SepotCrypto crypto,
+    CryptoDb db,
+    Uint8List payload,
+    Uint8List trustRoot,
+    List<int> msgUuid,
+    SepotDecryptException error,
+  ) async {
+    if (error.kind == SepotDecryptFailure.other) return;
+
+    SepotSealedSender? sender;
+    try {
+      sender = crypto.identifySender(ciphertext: payload, trustRoot: trustRoot);
+    } on FormatException {
+      sender = null;
+    }
+
+    var failure = error.kind;
+    if (failure == SepotDecryptFailure.invalidCertificate &&
+        sender != null &&
+        await _mayAcceptExpiredCertificate(crypto, sender)) {
+      try {
+        final opened = await crypto.sealedDecrypt(
+          ciphertext: payload,
+          trustRoot: trustRoot,
+          timestampMs: sender.certificateExpiresAtMs - 1,
+          beforeCommit: (o) => _journal(db, msgUuid, o),
+        );
+        await _processOpened(opened, msgUuid);
+        return;
+      } on SepotDecryptException catch (e) {
+        if (e.kind == SepotDecryptFailure.other) return;
+        failure = e.kind;
+      }
+    }
+
+    _settle(msgUuid);
+    if (sender == null) return;
+    switch (failure) {
+      case SepotDecryptFailure.duplicate:
+        await _requestResend(sender.identityKey, msgUuid, duplicate: true);
+      case SepotDecryptFailure.brokenSession:
+        await _requestResend(sender.identityKey, msgUuid, resetSession: true);
+      // Starý certifikát u zprávy, kterou výjimka nepokryje: odesílatel ji
+      // pošle znovu s čerstvým. U PreKey zprávy odesílatel založil novou
+      // relaci a tu naši už nemusí mít — žádost proto jde novou relací
+      // z jeho bundle, jinak by ji nepřečetl.
+      // Starší obálku relay ve frontě nedrží — je to přehraná stará
+      // obálka a kvůli ní se relace resetovat nebude.
+      case SepotDecryptFailure.invalidCertificate
+          when _certificateExpiredFor(sender) < _inboxRetention:
+        await _requestResend(sender.identityKey, msgUuid,
+            resetSession: sender.messageType == SepotSealedSender.typePreKey);
+      default:
+    }
+  }
+
+  /// Certifikát platí týden, fronta relaye drží obálky 30 dní: telefon,
+  /// který byl týden vypnutý, by bez výjimky všechny čekající zprávy
+  /// odmítl. Výjimka platí jen pro běžnou zprávu relace, která už existuje
+  /// — tu mohl poslat jen ten, s kým relaci máme, takže stáří certifikátu
+  /// nic nemění na tom, kdo ji poslal. PreKey zprávu (zakládá relaci) se
+  /// starým certifikátem nebereme: s uniklým klíčem a starým certifikátem
+  /// by šlo zakládat relace ještě měsíc po jeho vypršení.
+  Duration _certificateExpiredFor(SepotSealedSender sender) =>
+      debugClock().difference(
+          DateTime.fromMillisecondsSinceEpoch(sender.certificateExpiresAtMs));
+
+  Future<bool> _mayAcceptExpiredCertificate(
+      SepotCrypto crypto, SepotSealedSender sender) async {
+    if (sender.messageType != SepotSealedSender.typeWhisper) return false;
+    if (_certificateExpiredFor(sender) >= _inboxRetention) return false;
+    return crypto.hasSession(
+        ProtocolAddress(name: sender.name, deviceId: sender.deviceId));
+  }
+
+  // ── Obnova relace a znovuposlání ───────────────────────────────────
+  //
+  // Příjemce, který obálku nerozšifruje, zná z vnější vrstvy sealed senderu
+  // odesílatele a pošle mu `rtr` s msg_uuid nedoručených obálek. Je-li
+  // relace rozbitá, založí před odesláním novou z bundle — `rtr` pak jde
+  // jako PreKey zpráva a protistraně relaci rovnou opraví (i starší verzi,
+  // která `rtr` nezná a zahodí ho). Odesílatel zprávy dohledá ve svém
+  // záznamu odeslaných obálek a pošle je znovu se stejným id.
+
+  /// Žádosti se sbírají chvíli: vylití fronty po připojení přinese
+  /// nedoručitelné obálky v dávce a jedna `rtr` je lepší než devět.
+  static const _resendRequestDelay = Duration(seconds: 2);
+
+  /// Nová relace s týmž kontaktem nejvýš jednou za tuhle dobu — každá
+  /// spotřebuje one-time prekey protistrany a dvě strany s rozbitým
+  /// stavem by se jinak mohly resetovat dokola.
+  static const _sessionResetInterval = Duration(minutes: 10);
+
+  /// Strop žádostí na kontakt a hodinu a obálek v jedné žádosti.
+  static const _resendRequestsPerHour = 6;
+  static const _resendRefsMax = 50;
+
+  /// Kolikrát nanejvýš jednu zprávu poslat znovu. Pak se označí jako
+  /// nedoručená — uživatel to musí vidět, ne zprávu tiše ztratit.
+  static const _maxResends = 2;
+
+  final _resendPending = <String,
+      ({Contact contact, Set<String> refs, Set<String> dups, bool reset})>{};
+  Timer? _resendTimer;
+
+  /// Kdy jsme kterému kontaktu (fingerprint) poslali žádost a kdy s ním
+  /// naposledy založili novou relaci. Leží v DB, ne jen v paměti: iOS
+  /// appku na pozadí zabíjí a limity by se jinak s každým startem
+  /// vynulovaly.
+  final _resendSentAt = <String, List<DateTime>>{};
+  final _sessionResetAt = <String, DateTime>{};
+  static const _resendLimitsKey = 'rtr_limits';
+
+  void _loadResendLimits(CryptoDb db) {
+    _resendSentAt.clear();
+    _sessionResetAt.clear();
+    final raw = db.kvGet(_resendLimitsKey);
+    if (raw == null) return;
+    try {
+      final map = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
+      for (final MapEntry(key: fp, value: v) in map.entries) {
+        if (v is! Map<String, dynamic>) continue;
+        final reset = v['r'];
+        if (reset is int) {
+          _sessionResetAt[fp] = DateTime.fromMillisecondsSinceEpoch(reset);
+        }
+        final sent = v['s'];
+        if (sent is List) {
+          _resendSentAt[fp] = [
+            for (final t in sent.whereType<int>())
+              DateTime.fromMillisecondsSinceEpoch(t),
+          ];
+        }
+      }
+    } on FormatException {
+      // Poškozený záznam = žádné limity z minula; nejhůř jedna žádost navíc.
+    }
+  }
+
+  void _saveResendLimits(DateTime now) {
+    final db = _db;
+    if (db == null) return;
+    final fps = {..._resendSentAt.keys, ..._sessionResetAt.keys};
+    final map = <String, dynamic>{};
+    for (final fp in fps) {
+      final sent = [
+        for (final t in _resendSentAt[fp] ?? const <DateTime>[])
+          if (now.difference(t) < const Duration(hours: 1))
+            t.millisecondsSinceEpoch,
+      ];
+      final reset = _sessionResetAt[fp];
+      final keepReset =
+          reset != null && now.difference(reset) < _sessionResetInterval;
+      if (sent.isEmpty && !keepReset) continue;
+      map[fp] = {
+        if (sent.isNotEmpty) 's': sent,
+        if (keepReset) 'r': reset.millisecondsSinceEpoch,
+      };
+    }
+    db.kvPut(_resendLimitsKey, utf8.encode(jsonEncode(map)));
+  }
+
+  Future<void> _requestResend(
+    Uint8List senderIdentity,
+    List<int> msgUuid, {
+    bool duplicate = false,
+    bool resetSession = false,
+  }) async {
+    final fp = SepotFingerprint.ofPublicKey(senderIdentity).display;
+    final contact =
+        (await storage.loadContacts()).where((c) => c.id == fp).firstOrNull;
+    // Jen přijatý kontakt: odpověď na cizí obálku by komukoli s platným
+    // certifikátem potvrdila, že účet žije (stejně jako doručenka).
+    if (contact == null || contact.blocked || !contact.accepted) return;
+    final prev = _resendPending[fp];
+    final ref = base64Encode(msgUuid);
+    _resendPending[fp] = (
+      contact: contact,
+      refs: {...?prev?.refs, if (!duplicate) ref},
+      dups: {...?prev?.dups, if (duplicate) ref},
+      reset: (prev?.reset ?? false) || resetSession,
+    );
+    _resendTimer ??= Timer(_resendRequestDelay, () {
+      _resendTimer = null;
+      unawaited(_flushResendRequests());
+    });
+  }
+
+  Future<void> _flushResendRequests() async {
+    final batch = Map.of(_resendPending);
+    _resendPending.clear();
+    final now = DateTime.now();
+    for (final MapEntry(key: fp, value: r) in batch.entries) {
+      final recent = (_resendSentAt[fp] ?? const <DateTime>[])
+          .where((t) => now.difference(t) < const Duration(hours: 1))
+          .toList();
+      if (recent.length >= _resendRequestsPerHour) continue;
+      _resendSentAt[fp] = [...recent, now];
+      final lastReset = _sessionResetAt[fp];
+      final reset = r.reset &&
+          (lastReset == null ||
+              now.difference(lastReset) >= _sessionResetInterval);
+      if (reset) _sessionResetAt[fp] = now;
+      // Limit se zapíše dřív, než žádost odejde: zabití appky během
+      // odesílání ho nesmí obejít.
+      _saveResendLimits(now);
+      try {
+        await _sendSealed(
+          r.contact,
+          {
+            'v': 1,
+            'id': const Uuid().v4(),
+            'ts': now.millisecondsSinceEpoch,
+            't': 'rtr',
+            'refs': r.refs.take(_resendRefsMax).toList(),
+            if (r.dups.isNotEmpty) 'dup': r.dups.take(_resendRefsMax).toList(),
+            'p': _profile(),
+          },
+          freshSession: reset,
+        );
+      } on Object {
+        // Bez spojení nebo bez bundle protistrany žádost nepůjde. Obálka je
+        // vyřízená, takže druhá šance nepřijde — odesílatel ale zprávu
+        // dál vidí bez doručenky a protistrana dostane novou relaci, až jí
+        // příště napíšeme.
+      }
+    }
+  }
+
+  @visibleForTesting
+  Future<void> debugFlushResendRequests() {
+    _resendTimer?.cancel();
+    _resendTimer = null;
+    return _flushResendRequests();
+  }
+
+  /// Test: služba bez [start] (odesílání přes [debugSendTap]) pracuje nad
+  /// DB odemčeného úložiště.
+  @visibleForTesting
+  void debugAttachStorageDb() => _loadResendLimits(_db = storage.db);
+
+  @visibleForTesting
+  Future<void> debugRequestResend(SepotSealedSender sender, List<int> msgUuid,
+          {bool resetSession = false}) =>
+      _requestResend(sender.identityKey, msgUuid, resetSession: resetSession);
+
+  @visibleForTesting
+  Future<void> debugHandleResendRequest(
+          Contact contact, Map<String, dynamic> content) =>
+      _handleResendRequest(contact, content);
+
+  /// `rtr` od [contact]: znovu poslat obálky, o které žádá. Běží uvnitř
+  /// [_serial] (příjem), samotné odeslání proto až mimo něj — vrácený
+  /// Future čeká jen testy.
+  Future<void> _handleResendRequest(
+      Contact contact, Map<String, dynamic> content) {
+    final db = _db;
+    if (db == null) return Future.value();
+    List<String> refs(Object? raw) =>
+        raw is List ? raw.whereType<String>().take(_resendRefsMax).toList() : [];
+    final work = <(SentLogEntry, bool)>[];
+    for (final (list, duplicate) in [
+      (refs(content['refs']), false),
+      (refs(content['dup']), true),
+    ]) {
+      for (final ref in list) {
+        final Uint8List uuid;
+        try {
+          uuid = base64Decode(ref);
+        } on FormatException {
+          continue;
+        }
+        final entry = db.sentLogTake(uuid, contact.id);
+        if (entry != null) work.add((entry, duplicate));
+      }
+    }
+    if (work.isEmpty) return Future.value();
+    return () async {
+      for (final (entry, duplicate) in work) {
+        await _resendLogged(contact, entry, duplicate: duplicate);
+      }
+      onUpdate?.call();
+    }();
+  }
+
+  /// [duplicate] = příjemce obálku kdysi dešifroval, jen nevíme, jestli ji
+  /// stihl uložit. Znovu se pak posílá jen zpráva z konverzace (příjemce
+  /// ji podle id nezdvojí), ne řídicí zprávy, které by se aplikovaly dvakrát,
+  /// a zpráva se nikdy neoznačí jako nedoručená — příjemce ji nejspíš má.
+  Future<void> _resendLogged(Contact contact, SentLogEntry entry,
+      {required bool duplicate}) async {
+    final group = await storage.loadGroup(entry.convId);
+    final gid = group?.id;
+    // Kdo ze skupiny mezitím odešel nebo byl odebrán, nic znovu nedostane.
+    if (gid != null && !await _stillMember(gid, contact.id)) return;
+    final conv = await storage.loadConversation(entry.convId);
+    final isMessage = entry.kind == 'txt' || entry.kind == 'att';
+
+    if (!isMessage) {
+      if (duplicate ||
+          entry.failures > _maxResends ||
+          DateTime.now().difference(entry.sentAt) > _outboxMaxAge) {
+        return;
+      }
+      final control = _rebuildControl(entry, conv);
+      if (control == null) return;
+      final wire = _wrapForResend(control, gid);
+      try {
+        await _sendContent(contact, wire);
+      } on Object catch (e) {
+        if (!_recipientBroken(e)) {
+          await _queueControls([(to: contact.id, content: wire)]);
+        }
+      }
+      return;
+    }
+
+    final message =
+        conv?.messages.where((m) => m.id == entry.targetId).firstOrNull;
+    if (message == null || message.isDeleted) return;
+    if (entry.failures > _maxResends) {
+      if (!duplicate) await _markUndelivered(entry.convId, message, contact.id);
+      return;
+    }
+    final wire = {..._outboxWire(message, gid: gid), 'gv': ?_groupVersion(gid)};
+    try {
+      final online = await _sendContent(contact, wire);
+      // Ve skupině stav zprávy skládají doručenky všech členů; znovuposlání
+      // jednomu z nich ho nemění.
+      if (gid == null) {
+        await _mutateLocalMessage(entry.convId, message.id, (m) {
+          if (m.status != MessageStatus.sending &&
+              m.status != MessageStatus.failed &&
+              m.status != MessageStatus.sent) {
+            return m;
+          }
+          return m.copyWith(
+            status: online ? MessageStatus.delivered : MessageStatus.sent,
+            isDelivered: online,
+          );
+        });
+      }
+    } on Object catch (e) {
+      if (_recipientBroken(e)) {
+        if (!duplicate) {
+          await _markUndelivered(entry.convId, message, contact.id);
+        }
+      } else if (gid != null) {
+        await _queueControls([(to: contact.id, content: wire)]);
+      } else {
+        // Síť: dodatečné odeslání to zkusí po dalším připojení. Stav
+        // „doručeno“ od relaye tu nic nedokazuje, platí jen doručenka.
+        await _mutateLocalMessage(entry.convId, message.id, (m) {
+          if (m.deliveredTo.containsKey(contact.id) ||
+              m.readBy.containsKey(contact.id)) {
+            return m;
+          }
+          return m.copyWith(status: MessageStatus.sending, isDelivered: false);
+        });
+      }
+    }
+  }
+
+  int? _groupVersion(String? gid) => gid == null ? null : groupProtocolVersion;
+
+  /// Řídicí obsah sestavený z aktuálního stavu: co se mezitím změnilo,
+  /// jde v nové podobě, co zmizelo, nejde vůbec.
+  Map<String, dynamic>? _rebuildControl(
+      SentLogEntry entry, Conversation? conv) {
+    if (conv == null) return null;
+    if (entry.kind == 'tmr') {
+      return {'t': 'tmr', 's': conv.disappearAfterSeconds ?? 0};
+    }
+    final m = conv.messages.where((m) => m.id == entry.targetId).firstOrNull;
+    if (m == null) return null;
+    final me = _myFingerprint;
+    return switch (entry.kind) {
+      'del' => m.isDeleted ? {'t': 'del', 'ref': m.id} : null,
+      'edit' => !m.isDeleted && m.editedAt != null && m.isMine(_identity!.id)
+          ? {'t': 'edit', 'ref': m.id, 'txt': m.content ?? ''}
+          : null,
+      'rx' => m.isDeleted
+          ? null
+          : {'t': 'rx', 'ref': m.id, 'e': ?m.reactions[me]},
+      'vote' => m.isDeleted || m.poll == null
+          ? null
+          : {'t': 'vote', 'ref': m.id, 'o': m.poll!.votes[me] ?? const <int>[]},
+      _ => null,
+    };
+  }
+
+  Map<String, dynamic> _wrapForResend(
+          Map<String, dynamic> control, String? gid) =>
+      {
+        'v': 1,
+        'id': const Uuid().v4(),
+        'ts': DateTime.now().millisecondsSinceEpoch,
+        'gid': ?gid,
+        ...control,
+        'p': _profile(),
+        'gv': ?_groupVersion(gid),
+      };
+
+  /// Zprávu se nepodařilo doručit [recipientFp] ani po obnově relace.
+  /// Neztratí se potichu: v 1:1 ji odesílatel uvidí jako nedoručenou, ve
+  /// skupině u daného člena v Info o zprávě (stav celé zprávy skládají
+  /// ostatní). Dodatečné odesílání tohoto příjemce přeskočí. Stav
+  /// „doručeno“ tu nic nedokazuje — nastavuje ho už relay, když obálku
+  /// předá živému spojení; platí jen doručenka nebo přečtení.
+  Future<void> _markUndelivered(
+      String convId, Message message, String recipientFp) async {
+    final isGroup = convId != recipientFp;
+    await _mutateLocalMessage(convId, message.id, (m) {
+      if (m.deliveredTo.containsKey(recipientFp) ||
+          m.readBy.containsKey(recipientFp)) {
+        return m;
+      }
+      final undelivered = {...m.undeliveredTo, recipientFp};
+      return isGroup
+          ? m.copyWith(undeliveredTo: undelivered)
+          : m.copyWith(
+              undeliveredTo: undelivered,
+              status: MessageStatus.failed,
+              isDelivered: false,
+            );
+    });
   }
 
   @visibleForTesting
@@ -2386,11 +3267,10 @@ class MessagingService {
   /// Zpracuje už dešifrovanou obálku: kontakt, typ obsahu, uložení, ACK.
   Future<void> _processOpened(
       SepotSealedMessage opened, List<int> msgUuid) async {
-    // Od tohohle bodu ratchet postoupil — obálku na relayi už NIKDY znovu
-    // nedešifrujeme (duplicitní decrypt libsignal odmítne). Vadný OBSAH se
-    // proto ACKuje a zahazuje: redelivery nemůže nic spravit, jen by
-    // trvale otravovala frontu při každém reconnectu.
+    // Ratchet postoupil, obsah leží v deníku příjmu ([_handleDelivery]).
+    // Vadný OBSAH se vyřizuje a zahazuje: opakování nemůže nic spravit.
     try {
+      await debugBeforeProcess?.call();
       final content =
           jsonDecode(utf8.decode(opened.plaintext)) as Map<String, dynamic>;
       final type = content['t'] as String?;
@@ -2398,7 +3278,7 @@ class MessagingService {
       if (content['v'] != 1 || !known.contains(type)) {
         // Neznámý typ/verze: obsah je pro tuhle verzi navždy nečitelný
         // a po upgradu ho stejně nejde znovu dešifrovat — ACK a zahodit.
-        _relay?.ack(msgUuid);
+        _settle(msgUuid);
         return;
       }
 
@@ -2408,7 +3288,17 @@ class MessagingService {
       // Blokovaný kontakt: zahoď cokoliv od něj (ACK, ať se nefrontuje),
       // nic neukládej ani nezobrazuj a neposílej doručenku.
       if (contact.blocked) {
-        _relay?.ack(msgUuid);
+        _settle(msgUuid);
+        return;
+      }
+
+      // Žádost o znovuposlání jen od přijatého kontaktu: cizí klíč by
+      // si jinak mohl nechat potvrdit, že je účet aktivní.
+      if (type == 'rtr') {
+        if (content['gid'] == null && contact.accepted) {
+          unawaited(_handleResendRequest(contact, content));
+        }
+        _settle(msgUuid);
         return;
       }
 
@@ -2420,7 +3310,7 @@ class MessagingService {
         if (content['gid'] == null && contact.accepted) {
           onCallSignal?.call(contact, content);
         }
-        _relay?.ack(msgUuid);
+        _settle(msgUuid);
         return;
       }
 
@@ -2430,7 +3320,7 @@ class MessagingService {
       // nepomůže).
       if (_groupControlTypes.contains(type)) {
         await _handleGroupControl(senderFp, type, content);
-        _relay?.ack(msgUuid);
+        _settle(msgUuid);
         return;
       }
 
@@ -2440,7 +3330,7 @@ class MessagingService {
       final group =
           gid == null ? null : await _groupForIncoming(gid, senderFp);
       if (gid != null && group == null) {
-        _relay?.ack(msgUuid);
+        _settle(msgUuid);
         return;
       }
       if (group != null && _noteCapability(group, senderFp, content)) {
@@ -2455,7 +3345,7 @@ class MessagingService {
         final fresh = DateTime.now().difference(wireSentAt(content['ts'])) <
             TypingTracker.showFor;
         if (fresh && await _typingEnabled()) typing.mark(convId, senderFp);
-        _relay?.ack(msgUuid);
+        _settle(msgUuid);
         return;
       }
 
@@ -2490,8 +3380,18 @@ class MessagingService {
             );
           }
         }
-        _relay?.ack(msgUuid);
+        _settle(msgUuid);
         onUpdate?.call();
+        return;
+      }
+
+      // Žádost o zprávu (nepřijatý kontakt) časovač neřídí — cizí klíč by
+      // jinak plnil konverzaci oznámeními.
+      if (type == 'tmr') {
+        if (group != null || contact.accepted) {
+          await _applyIncomingTimer(convId, senderFp, content, group);
+        }
+        _settle(msgUuid);
         return;
       }
 
@@ -2499,7 +3399,7 @@ class MessagingService {
       // novou bublinu. Aplikujeme a ACKneme (retry z fronty nepomůže).
       if (type == 'rx' || type == 'edit' || type == 'del' || type == 'vote') {
         await _applyIncomingControl(convId, type!, content, opened);
-        _relay?.ack(msgUuid);
+        _settle(msgUuid);
         onUpdate?.call();
         return;
       }
@@ -2517,7 +3417,7 @@ class MessagingService {
         if (raw is! String) {
           // Trvale vadná obálka (chybí/netypové 'txt') — retry z fronty
           // nepomůže, ACKnout a zahodit stejně jako u vadných příloh.
-          _relay?.ack(msgUuid);
+          _settle(msgUuid);
           return;
         }
         // Strop délky z drátu: obálka unese 256 KiB a konverzace je jeden
@@ -2551,7 +3451,7 @@ class MessagingService {
           }
         } on Object {
           // Trvale vadná metadata — retry z fronty nepomůže, ACKnout
-          _relay?.ack(msgUuid);
+          _settle(msgUuid);
           return;
         }
         message = Message(
@@ -2576,7 +3476,7 @@ class MessagingService {
       // Uloženo na disku → teprve teď smí relay obálku zahodit.
       // (Blob přílohy do fronty nepatří — stahuje se na pozadí a při
       // neúspěchu má UI retry, ACK na něj nečeká.)
-      _relay?.ack(msgUuid);
+      _settle(msgUuid);
 
       // Zprávu už známe (odesílatel ji poslal znovu po výpadku spojení).
       // Druhá bublina ani další stahování téhož blobu nemá vzniknout, ale
@@ -2599,15 +3499,16 @@ class MessagingService {
     } on FormatException {
       // Malformovaný obsah (ne-UTF-8/ne-JSON plaintext, vadná base64
       // v profilu či rosteru) — trvale vadné, ACK a zahodit.
-      _relay?.ack(msgUuid);
+      _settle(msgUuid);
     } on TypeError {
       // Pole se špatným typem (txt/ttl/id/re/p jako číslo apod.) —
       // trvale vadné, ACK a zahodit.
-      _relay?.ack(msgUuid);
-    } catch (_) {
-      // Přechodné selhání zpracování (storage apod.): NEACKovat — další
-      // pokus po reconnectu za nic nedá, i když duplicitní decrypt
-      // pravděpodobně selže. Trvalé chyby obsahu řeší větve výše.
+      _settle(msgUuid);
+    } on Object {
+      // Přechodné selhání zpracování (storage apod.): NEACKovat. Obsah
+      // zůstává v deníku příjmu — zpracuje se znovu při další doručení
+      // obálky nebo po startu. Trvalé chyby obsahu řeší větve výše.
+      await _noteProcessingFailure(opened, msgUuid);
     }
   }
 
@@ -2653,6 +3554,7 @@ class MessagingService {
       isDelivered: true,
       deliveredTo: deliveredTo,
       readBy: readBy,
+      undeliveredTo: {...m.undeliveredTo}..remove(from),
     );
   }
 
@@ -2959,6 +3861,9 @@ class MessagingService {
 
   Future<void> stop() async {
     _registerRetryTimer?.cancel();
+    _resendTimer?.cancel();
+    _resendTimer = null;
+    _resendPending.clear();
     typing.dispose();
     _avatarCache.clear();
     _purgeTimer?.cancel();

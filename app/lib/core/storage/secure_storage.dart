@@ -561,6 +561,17 @@ class SecureStorageService {
     await saveConversation(Conversation(contactId: contactId));
   }
 
+  /// Smaže zprávu jen u mě. Záznam o její odeslané obálce jde s ní: žádost
+  /// o znovuposlání by smazanou zprávu sice nenašla, záznam o tom, komu
+  /// a kdy šla, ale nemá zůstat.
+  Future<void> deleteMessageLocally(String contactId, String messageId) async {
+    final conv = await loadConversation(contactId);
+    if (conv == null) return;
+    conv.messages.removeWhere((m) => m.id == messageId);
+    await saveConversation(conv);
+    db.sentLogForget(contactId, [messageId]);
+  }
+
   /// Nahradí existující zprávu (dle id) — stav přílohy, doručenka…
   Future<void> updateMessage(String contactId, Message message) async {
     final conv = await loadConversation(contactId);
@@ -593,6 +604,8 @@ class SecureStorageService {
       changed = true;
       conv.messages.removeWhere(isExpired);
       await saveConversation(conv);
+      // Záznam odeslané obálky (pro znovuposlání) nesmí zprávu přežít.
+      db.sentLogForget(conv.contactId, [for (final m in expired) m.id]);
       for (final m in expired) {
         final blobId = m.attachment?.blobId;
         if (blobId != null) {

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
+import 'package:sepot/providers/settings_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 
 /// Nastavení PINu (6 číslic)
@@ -234,6 +235,13 @@ class _PinSetupScreenState extends ConsumerState<PinSetupScreen> {
             _isSaving = false;
           });
           return;
+        }
+
+        try {
+          await ref.read(autoLockProvider.notifier).nastavProNovyPin();
+        } catch (e) {
+          // PIN už platí; bez uložené volby zůstane výchozích 5 minut.
+          debugPrint('auto-lock default not stored: $e');
         }
 
         if (mounted) {

@@ -6,6 +6,76 @@ verzování dle [ajtak standardu](#verzování).
 
 ## [Nevydáno]
 
+## [1.2.5] – 2026-10-29
+
+### Přidáno
+- **Okamžitá upozornění na iPhonu.** Nová zpráva nebo příloha se na
+  iPhonu ohlásí hned, i když je Šepot zavřený. Upozornění říká jen „Nová
+  zpráva“: kdo píše a co, se k Applu ani na server nedostane. Po otevření
+  aplikace taková upozornění zmizí.
+- **Mizící zprávy platí pro celou konverzaci.** Změna časovače se pošle
+  protistraně i všem členům skupiny, převezmou ji a v chatu se ukáže, kdo
+  a na kolik ho nastavil. Ve skupině se správci mění časovač jen správce
+  (stejně jako název). Starší verze změnu ignorují a drží si vlastní
+  nastavení; pozdě doručená starší změna novější nepřepíše.
+- **Nový člen skupiny dostane časovač hned v pozvánce,** nečeká na
+  další změnu.
+- **Pozvánka pro někoho, kdo Šepot ještě nemá.** Sdílená pozvánka nese
+  odkaz sepot.cz/pozvanka, který telefon pošle rovnou do jeho obchodu,
+  a krátký postup, kam vložit kód. Přidání kontaktu přijme i celou
+  vloženou zprávu, nejen samotný kód. Prázdný seznam chatů nabízí
+  tlačítko Pozvat kamaráda.
+- **Žádost o hodnocení** až po delším používání (20 odeslaných zpráv
+  a 3 dny), nejvýš třikrát a nikdy v nátlakovém režimu. Na iPhonu
+  systémový dialog, na Androidu odkaz do Google Play bez knihoven Googlu.
+- **Okamžitý zámek.** Nová volba automatického zámku zamkne Šepot hned
+  při zhasnutí displeje nebo odchodu do jiné aplikace; nové účty ji mají
+  jako výchozí, stávajícím zůstává jejich volba. Výběr fotky, fotoaparát
+  a sdílení appku nezamknou (nejdéle 5 minut), stejně jako probíhající
+  hovor.
+- **Zpráva z jiného chatu se ohlásí i v otevřené aplikaci:** krátké
+  zavibrování a banner nahoře se jménem, klepnutím se chat otevře. Ztlumené
+  chaty mlčí, obsah zprávy se nezobrazuje.
+
+### Opraveno
+- Po návratu do aplikace se obnoví i otevřená konverzace, ne jen seznam
+  chatů.
+- **Smazání, úprava, reakce, hlas ani změna časovače se neztratí při
+  výpadku sítě.** Co neodešlo, počká v šifrované frontě a dojde po
+  dalším připojení (nejdéle 24 hodin, stejně jako zprávy). Ve skupině se
+  dosílá jen členům, kterým to chybí, a jen pokud jsou pořád členy.
+- **Zprávy se neztrácejí, když je nejde rozšifrovat.** Dosud server
+  zprávu, kterou telefon osmkrát nepotvrdil, tiše zahodil. Teď:
+  - zpráva, která už v telefonu je a jen se ztratilo potvrzení (iPhone
+    uspal aplikaci, spadlo spojení), se potvrdí bez opakovaného
+    rozšifrování;
+  - rozšifrovaná zpráva a posun šifrovacího stavu se ukládají naráz,
+    takže pád nebo zamčení aplikace uprostřed ji už nezničí;
+  - když telefon zprávu rozšifrovat nemůže (protistrana přeinstalovala,
+    rozbitý šifrovací stav), naváže s odesílatelem nové šifrované spojení
+    a požádá ho o znovuposlání. Žádost jde jen kontaktům, které jsi
+    přijal, a je omezená, aby se nemohla točit dokola;
+  - zpráva, která nedojde ani po obnově spojení, se odesílateli ukáže
+    jako **Nedoručeno**, ne jako doručená; ve skupině v Info o zprávě
+    u člena, kterému nedošla. Aplikace ji pak už znovu neposílá dokola;
+  - pro znovuposlání si telefon pamatuje jen, o kterou zprávu šlo, nikdy
+    její obsah — mizící ani smazaná zpráva nepřežije ani tady;
+  - zprávu, kterou se ani po opakovaných pokusech nepodaří uložit,
+    telefon nezahodí potichu: požádá odesílatele, ať ji pošle znovu;
+  - zprávy čekající déle než týden (vypnutý telefon) se po zapnutí
+    rozšifrují, i když mezitím vypršel certifikát odesílatele; první
+    zpráva nového šifrovaného spojení se starým certifikátem se nepřijme
+    a odesílatel ji pošle znovu s platným;
+  - zprávy, které dorazily hned po otevření aplikace, se už neodkládají
+    do příštího spuštění;
+  - server čerstvou zprávu nezahodí jen proto, že se telefon často
+    připojuje — nepotvrzenou zahodí nejdřív po třech dnech;
+  - vědomá omezení: první zpráva od někoho, koho jsi nepřijal, se při
+    chybě jen zahodí bez žádosti o znovuposlání (odpověď by mu prozradila,
+    že účet žije). Šepot do verze 1.2.4 žádost o znovuposlání nezná —
+    šifrované spojení se mu obnoví, ale zprávu, která se ztratila, znovu
+    nepošle.
+
 ## [1.2.4] – 2026-10-23
 
 ### Soukromí

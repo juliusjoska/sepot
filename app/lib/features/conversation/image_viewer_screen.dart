@@ -12,6 +12,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/l10n/l10n.dart';
+import 'package:sepot/core/utils/externi_obrazovka.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/models/attachment.dart';
 import 'package:sepot/models/message.dart';
@@ -95,9 +96,9 @@ class _ImageViewerScreenState extends ConsumerState<ImageViewerScreen> {
     final origin = shareOrigin(context);
     final bytes = await _load(_current);
     if (bytes == null) return;
-    await Share.shareXFiles([
-      XFile.fromData(bytes, name: name, mimeType: meta.mime),
-    ], sharePositionOrigin: origin);
+    await ExterniObrazovka.behem(() => Share.shareXFiles([
+          XFile.fromData(bytes, name: name, mimeType: meta.mime),
+        ], sharePositionOrigin: origin));
   }
 
   String _senderName(Message m) {

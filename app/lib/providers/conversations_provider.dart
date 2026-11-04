@@ -196,10 +196,7 @@ class ConversationsNotifier extends AsyncNotifier<List<Conversation>> {
   /// Smazání zprávy jen u mě (lokálně) — protistraně se nic neposílá.
   Future<void> deleteLocalMessage(String contactId, String messageId) async {
     final storage = ref.read(storageProvider);
-    final conv = await storage.loadConversation(contactId);
-    if (conv == null) return;
-    conv.messages.removeWhere((m) => m.id == messageId);
-    await storage.saveConversation(conv);
+    await storage.deleteMessageLocally(contactId, messageId);
     state = AsyncData(await storage.loadConversations());
   }
 
