@@ -47,6 +47,7 @@ class IosPushPlatform {
   Future<String?> voipToken() => CallRinger.voipToken();
   Future<void> requestPermission() => PushNotifier.requestPermission();
   Future<void> writeMode(String mode) => PushBootstrap.writeMode(mode);
+  Future<String?> readStoredMode() => PushBootstrap.readStoredMode();
   Future<void> setRegistrationFailed(bool failed) =>
       PushBootstrap.setRegistrationFailed(failed);
 }
@@ -133,6 +134,9 @@ class PushService {
   }
 
   Future<void> _sendApnsRegistration() async {
+    // PushKit vydává VoIP token při každém startu sám; vědomé „vypnuto" by
+    // ho jinak znovu zaregistrovalo u relaye.
+    if (await _ios.readStoredMode() == 'off') return;
     final reg = apnsRegistration(
       apnsToken: _apnsToken,
       voipToken: await _ios.voipToken(),
@@ -214,11 +218,16 @@ class PushService {
   Future<bool> get isEnabled async =>
       Platform.isAndroid && (await UnifiedPush.getDistributor()) != null;
 
-  // ── Režimy (off / up / fcm) ─────────────────────────────────────────
+  // ── Režimy (off / up / fcm, na iOS off / apns) ──────────────────────
+
+  /// Na iOS je jediný doručovatel Apple — UnifiedPush ani FCM tam nejsou,
+  /// nastavení proto nabízí jen „vypnuto" a APNs.
+  bool get isIOS => _ios.isIOS;
 
   /// Aktuální režim; 'up' zpětně dovodí z vybraného distributora
   /// (instalace před zavedením režimů).
   Future<String> currentMode() async {
+    if (_ios.isIOS) return await _ios.readStoredMode() ?? 'off';
     final mode = await PushBootstrap.readMode();
     if (mode != 'off') return mode;
     if (!Platform.isAndroid) return mode;
@@ -230,6 +239,13 @@ class PushService {
   Future<bool> registrationFailed() => PushBootstrap.registrationFailed();
 
   Future<void> setModeOff() async {
+    if (_ios.isIOS) {
+      // Mód zapsat dřív než odregistraci: souběžný VoIP token z PushKitu
+      // už pak relayi neodejde.
+      await _ios.writeMode('off');
+      handleUnregistered();
+      return;
+    }
     await _teardownFcm(deleteToken: true);
     try {
       await UnifiedPush.unregister();
@@ -291,19 +307,34 @@ class PushService {
     }
   }
 
+  /// iOS: zapne APNs (volba v nastavení i výchozí stav). Chyba se zapíše
+  /// a projde dál — volající rozhodne, jestli ji ukáže.
+  Future<void> setModeApns() async {
+    try {
+      await enableApns();
+      await _ios.setRegistrationFailed(false);
+    } catch (_) {
+      await _ios.setRegistrationFailed(true);
+      rethrow;
+    }
+  }
+
   /// Obnova režimu po startu appky (volá pushInitProvider).
   Future<void> restoreMode() async {
     // iOS: jediná smysluplná cesta je APNs (UnifiedPush je Android-only).
-    // Zapínáme ho automaticky — pro iOS messenger jsou notifikace základ.
+    // Zapínáme ho automaticky — pro iOS messenger jsou notifikace základ —
+    // kromě vědomého „vypnuto" z nastavení.
     if (_ios.isIOS) {
+      if (await _ios.readStoredMode() == 'off') {
+        await init();
+        return;
+      }
       try {
-        await enableApns();
-        await _ios.setRegistrationFailed(false);
+        await setModeApns();
       } catch (e, s) {
         // Dřív se chyba spolkla a iPhone tiše zůstal bez budíčků. Teď ji
         // uvidí stav pushů v chat listu (PushHealth.failed).
         debugPrint('APNs registrace selhala: $e\n$s');
-        await _ios.setRegistrationFailed(true);
         await init();
       }
       return;

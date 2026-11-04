@@ -1,5 +1,7 @@
 // Needs the native libsignal library (FFI); skipped on builders without it (--exclude-tags ffi).
 @Tags(['ffi'])
+library;
+
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -11,7 +13,7 @@ import 'package:sepot/core/storage/crypto_db.dart';
 import 'package:sepot/core/storage/persistent_stores.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-/// S3: krypto stavy musí přežít restart procesu — ratchet pokračuje
+/// Krypto stavy musí přežít restart procesu — ratchet pokračuje
 /// z disku, jinak by každý restart appky rozbil všechny konverzace.
 void main() {
   late Directory tmp;

@@ -5,7 +5,8 @@ import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/providers/push_provider.dart';
 
-/// Nastavení push notifikací — degooglovaný UnifiedPush.
+/// Nastavení push notifikací — na Androidu UnifiedPush / FCM,
+/// na iOS jen Apple (APNs).
 /// Zapnutí = výběr distributora (ntfy) + registrace endpointu u relaye.
 /// Budíček nenese obsah ani odesílatele; při probuzení se appka připojí
 /// a vyzvedne frontu.
@@ -43,15 +44,23 @@ class _PushSettingsTileState extends ConsumerState<PushSettingsTile> {
   }
 
   Future<void> _chooseMode() async {
+    final ios = ref.read(pushServiceProvider).isIOS;
     final picked = await showDialog<String>(
       context: context,
       builder: (ctx) => SimpleDialog(
         title: Text(ctx.l10n.pushTitle),
         children: [
-          _modeOption(ctx, 'off', ctx.l10n.commonOff, ctx.l10n.pushModeOffDesc),
-          _modeOption(ctx, 'up', ctx.l10n.pushModeUp, ctx.l10n.pushModeUpDesc),
-          _modeOption(
-              ctx, 'fcm', ctx.l10n.pushModeFcm, ctx.l10n.pushModeFcmDesc),
+          _modeOption(ctx, 'off', ctx.l10n.commonOff,
+              ios ? ctx.l10n.pushModeOffDescIos : ctx.l10n.pushModeOffDesc),
+          if (ios)
+            _modeOption(
+                ctx, 'apns', ctx.l10n.pushModeApns, ctx.l10n.pushModeApnsDesc)
+          else ...[
+            _modeOption(
+                ctx, 'up', ctx.l10n.pushModeUp, ctx.l10n.pushModeUpDesc),
+            _modeOption(
+                ctx, 'fcm', ctx.l10n.pushModeFcm, ctx.l10n.pushModeFcmDesc),
+          ],
         ],
       ),
     );
@@ -63,6 +72,8 @@ class _PushSettingsTileState extends ConsumerState<PushSettingsTile> {
       switch (picked) {
         case 'off':
           await push.setModeOff();
+        case 'apns':
+          await push.setModeApns();
         case 'up':
           final ok = await push.setModeUnifiedPush();
           if (!ok && mounted) await _pickDistributor();
@@ -172,6 +183,7 @@ class _PushSettingsTileState extends ConsumerState<PushSettingsTile> {
             'up' => context.l10n.pushSubtitleUnifiedPush(
                 _distributor ?? context.l10n.pushNoDistributorFallback),
             'fcm' => context.l10n.pushSubtitleFcm,
+            'apns' => context.l10n.pushSubtitleApns,
             _ => context.l10n.commonOff,
           };
     return ListTile(

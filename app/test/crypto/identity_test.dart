@@ -1,5 +1,7 @@
 // Needs the native libsignal library (FFI); skipped on builders without it (--exclude-tags ffi).
 @Tags(['ffi'])
+library;
+
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -8,7 +10,7 @@ import 'package:sepot/core/errors.dart';
 import 'package:sepot/core/crypto/sepot_crypto.dart';
 import 'package:sepot/models/identity.dart';
 
-/// S1/S2 testy nad reálným libsignal backendem (nativní knihovna).
+/// Identita a mnemonic nad reálným libsignal backendem (nativní knihovna).
 void main() {
   setUpAll(() async {
     await SepotCrypto.init();

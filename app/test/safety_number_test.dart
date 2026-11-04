@@ -1,5 +1,7 @@
 // Needs the native libsignal library (FFI); skipped on builders without it (--exclude-tags ffi).
 @Tags(['ffi'])
+library;
+
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';

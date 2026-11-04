@@ -21,6 +21,7 @@ import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/widgets/avatar.dart';
 import 'package:sepot/widgets/glass.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:sepot/core/utils/share_origin.dart';
 
 /// Fotky zprávy, které jde otevřít: stažené obrázky, ne smazané.
 bool isViewableImage(Message m) =>
@@ -91,11 +92,12 @@ class _ImageViewerScreenState extends ConsumerState<ImageViewerScreen> {
             ? 'gif'
             : 'jpg';
     final name = context.l10n.attachmentSharedImageFilename(ext);
+    final origin = shareOrigin(context);
     final bytes = await _load(_current);
     if (bytes == null) return;
     await Share.shareXFiles([
       XFile.fromData(bytes, name: name, mimeType: meta.mime),
-    ]);
+    ], sharePositionOrigin: origin);
   }
 
   String _senderName(Message m) {

@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:sepot/core/utils/share_origin.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:sepot/core/app_info.dart';
 import 'package:sepot/core/constants/app_constants.dart';
@@ -522,6 +523,7 @@ class SettingsScreen extends ConsumerWidget {
 
   Future<void> _exportBackup(BuildContext context, WidgetRef ref) async {
     final l10n = context.l10n;
+    final origin = shareOrigin(context);
     final identity = ref.read(identityProvider).valueOrNull;
     if (identity == null) return;
     if (!await confirmSensitiveAction(context, ref,
@@ -537,6 +539,7 @@ class SettingsScreen extends ConsumerWidget {
         await Share.shareXFiles(
           [XFile(path, mimeType: 'application/octet-stream')],
           subject: l10n.backupShareSubject,
+          sharePositionOrigin: origin,
         );
       } finally {
         // Šifrovaná, ale v cache nemá co pohledávat po skončení sdílení.

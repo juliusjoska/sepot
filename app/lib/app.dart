@@ -25,6 +25,7 @@ import 'package:sepot/features/settings/settings_screen.dart';
 import 'package:sepot/features/safety/report_screen.dart';
 import 'package:sepot/features/qr_pairing/qr_share_screen.dart';
 import 'package:sepot/features/qr_pairing/qr_scan_screen.dart';
+import 'package:sepot/providers/conversations_provider.dart';
 import 'package:sepot/providers/identity_provider.dart';
 import 'package:sepot/providers/locale_provider.dart';
 import 'package:sepot/providers/settings_provider.dart';
@@ -217,7 +218,15 @@ class _AutoLockGateState extends ConsumerState<_AutoLockGate>
       case AppLifecycleState.resumed:
         final od = _naPozadiOd;
         _naPozadiOd = null;
-        if (od != null) unawaited(_zvazZamek(DateTime.now().difference(od)));
+        if (od == null) break;
+        // Seznam chatů jinak obnovuje jen MessagingService.onUpdate; po
+        // pobytu na pozadí (uspaný proces, budíček push) na to nespoléhat —
+        // nové zprávy se pak ukázaly až po vstupu do konverzace a zpět.
+        // Přenačtení z lokální DB je levné.
+        if (ref.read(storageProvider).isUnlocked) {
+          ref.invalidate(conversationsProvider);
+        }
+        unawaited(_zvazZamek(DateTime.now().difference(od)));
       case AppLifecycleState.inactive:
         break; // krátký přechod (notifikační lišta, hovor) — neřešit
     }
@@ -284,14 +293,17 @@ class _LoadingScreenState extends ConsumerState<_LoadingScreen> {
       // Odemkne PIN obrazovka (Argon2id unwrap DEK)
       context.go('/pin-lock');
     } else {
-      // Bez PINu — DEK přímo z OS keystore. Před-S9 instalace s PBKDF2
-      // pin_hash jde nastavit PIN znovu (starý formát DEK nechránil).
+      // Bez PINu — DEK přímo z OS keystore. PIN je povinný a v appce nejde
+      // vypnout, takže sem vede jen nedokončené nastavení: registrace i obnova
+      // se označí za hotové dřív, než se PIN uloží, a iOS zamčenou appku
+      // mezitím může ukončit. Cesta rovnou do chatů by tiše nechala účet
+      // bez PINu. Patří sem i starší instalace s PBKDF2
+      // pin_hash (starý formát DEK nechránil).
       final storage = ref.read(storageProvider);
-      final legacyPin = await storage.hasLegacyPin();
       await storage.unlockWithoutPin();
       if (!mounted) return;
       ref.invalidate(screenSecurityProvider);
-      context.go(legacyPin ? '/pin-setup' : '/chats');
+      context.go('/pin-setup');
     }
   }
 

@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:sepot/core/utils/share_origin.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
@@ -42,7 +44,10 @@ class QrShareScreen extends ConsumerWidget {
           // poslat první zprávu → „Kontakt nemá doručovací adresu"). Radši
           // než mrtvý kód ukázat stav připojování.
           if (!hasRouting) {
-            return _ConnectingPlaceholder(identity: identity);
+            return QrConnectingPlaceholder(
+              identity: identity,
+              powProgress: service.registrationPowProgress,
+            );
           }
 
           final shareString = shareable.toShareString();
@@ -121,14 +126,17 @@ class QrShareScreen extends ConsumerWidget {
                     ),
                     const SizedBox(width: 16),
                     Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: () {
-                          Share.share(
-                            context.l10n.qrShareInviteMessage(shareString),
-                          );
-                        },
-                        icon: const Icon(Icons.share),
-                        label: Text(context.l10n.commonShare),
+                      child: Builder(
+                        builder: (buttonContext) => ElevatedButton.icon(
+                          onPressed: () {
+                            Share.share(
+                              context.l10n.qrShareInviteMessage(shareString),
+                              sharePositionOrigin: shareOrigin(buttonContext),
+                            );
+                          },
+                          icon: const Icon(Icons.share),
+                          label: Text(context.l10n.commonShare),
+                        ),
                       ),
                     ),
                   ],
@@ -173,23 +181,47 @@ class QrShareScreen extends ConsumerWidget {
 
 /// Stav obrazovky, dokud vlastní registrace na relay nedoběhne — místo
 /// neúplného QR (bez routingu) ukáže identitu a hlášku o připojování.
-class _ConnectingPlaceholder extends StatelessWidget {
-  const _ConnectingPlaceholder({required this.identity});
+/// Stav „ještě nejsem zaregistrovaný“ místo QR kódu. Veřejné jen kvůli
+/// widget testu (jinak ho nikdo mimo tenhle soubor nestaví).
+@visibleForTesting
+class QrConnectingPlaceholder extends StatelessWidget {
+  const QrConnectingPlaceholder({
+    super.key,
+    required this.identity,
+    required this.powProgress,
+  });
 
   final LocalIdentity identity;
 
+  /// Postup proof-of-work před registrací; `null` = obyčejné připojování.
+  final ValueListenable<double?> powProgress;
+
   @override
   Widget build(BuildContext context) {
+    return ValueListenableBuilder<double?>(
+      valueListenable: powProgress,
+      builder: (context, progress, _) => _content(context, progress),
+    );
+  }
+
+  Widget _content(BuildContext context, double? progress) {
+    final computing = progress != null;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const CircularProgressIndicator(color: SepotColors.ember),
+            CircularProgressIndicator(
+              color: SepotColors.ember,
+              // Počet pokusů je náhodný — hodnota je odhad, ne slib.
+              value: computing && progress > 0 ? progress : null,
+            ),
             const SizedBox(height: 32),
             Text(
-              context.l10n.qrShareConnectingTitle,
+              computing
+                  ? context.l10n.qrShareSecuringTitle
+                  : context.l10n.qrShareConnectingTitle,
               textAlign: TextAlign.center,
               style: const TextStyle(
                 fontFamily: kFontSans,
@@ -200,7 +232,9 @@ class _ConnectingPlaceholder extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              context.l10n.qrShareConnectingBody,
+              computing
+                  ? context.l10n.qrShareSecuringBody
+                  : context.l10n.qrShareConnectingBody,
               textAlign: TextAlign.center,
               style: const TextStyle(
                 fontSize: 14,

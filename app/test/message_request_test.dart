@@ -1,4 +1,4 @@
-// Potřebuje nativní libsignal (FFI) — na builderu bez Rust toolchainu se vynechává (--exclude-tags ffi).
+// Needs the native libsignal library (FFI); skipped on builders without it (--exclude-tags ffi).
 @Tags(['ffi'])
 library;
 
@@ -175,6 +175,38 @@ void main() {
 
     await service.sendReadReceipts(await contactOf(mama), ['m2']);
     expect(sent.single.$2['t'], 'rr');
+  });
+
+  group('doručenka (✓✓)', () {
+    List<Map<String, dynamic>> doruceni() =>
+        [for (final s in sent) if (s.$2['t'] == 'dlv') s.$2];
+
+    test('žádost o zprávu doručenku nedostane, ani opakovaná zpráva',
+        () async {
+      final cizi = await LocalIdentity.create('Někdo');
+      final zprava = text('Někdo', 'ahoj');
+      await deliver(cizi, 'f' * 32, zprava);
+      await deliver(cizi, 'f' * 32, zprava);
+      expect(doruceni(), isEmpty);
+    });
+
+    test('po přijetí žádosti chodí doručenky běžně, starší se nedoposílají',
+        () async {
+      final cizi = await LocalIdentity.create('Někdo');
+      await deliver(cizi, 'f' * 32, text('Někdo', 'před přijetím'));
+      await storage.saveContact((await contactOf(cizi))..accepted = true);
+
+      final po = text('Někdo', 'po přijetí');
+      await deliver(cizi, 'f' * 32, po);
+      expect(doruceni().map((d) => d['ref']), [po['id']]);
+    });
+
+    test('přijatý kontakt dostane doručenku', () async {
+      final zprava = text('Máma', 'ahoj');
+      await deliver(mama, mamaAccount, zprava);
+      expect(sent.single.$1, mama.id);
+      expect(doruceni().single['ref'], zprava['id']);
+    });
   });
 
   test('známý kontakt dál chodí do své konverzace beze změny', () async {

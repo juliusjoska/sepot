@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sepot/core/crypto/dek_wrap.dart';
 
-/// S9: PIN musí být klíčem k DEK, ne hashem na porovnání. Testy běží
+/// PIN musí být klíčem k DEK, ne hashem na porovnání. Testy běží
 /// na OWASP floor parametrech (rychlejší, ale pořád reálné krypto).
 void main() {
   final rng = Random.secure();

@@ -486,7 +486,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
         avatar: SepotAvatar(
             name: name, seed: widget.contactId, size: 40, verified: verified),
         title: name,
-        // Stav ověření místo syrového ID (UX-FLOWS §3.1)
+        // Stav ověření místo syrového ID
         subtitle: typing
             ? _typingLabel(context.l10n.chatTyping)
             : contact != null && !contact.accepted

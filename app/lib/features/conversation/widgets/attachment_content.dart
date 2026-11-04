@@ -20,6 +20,7 @@ import 'package:sepot/providers/conversations_provider.dart';
 import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/providers/storage_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:sepot/core/utils/share_origin.dart';
 
 String formatBytes(AppLocalizations l10n, int bytes) {
   if (bytes < 1024) return l10n.attachmentSizeBytes(bytes);
@@ -449,6 +450,7 @@ class _DocumentAttachmentContentState
   Future<void> _open() async {
     final meta = widget.message.attachment!;
     final l10n = context.l10n;
+    final origin = shareOrigin(context);
     setState(() => _opening = true);
     try {
       final bytes = await ref
@@ -461,7 +463,7 @@ class _DocumentAttachmentContentState
           name: meta.name ?? l10n.attachmentSharedFileFallbackName,
           mimeType: meta.mime,
         ),
-      ]);
+      ], sharePositionOrigin: origin);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

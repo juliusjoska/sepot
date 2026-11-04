@@ -8,7 +8,7 @@ import 'package:sepot/core/storage/secure_storage.dart';
 import 'package:sepot/models/conversation.dart';
 import 'package:sepot/models/message.dart';
 
-/// S9: aplikační data (konverzace, zprávy, nastavení) žijí v SQLCipher DB,
+/// Aplikační data (konverzace, zprávy, nastavení) žijí v SQLCipher DB,
 /// ne v plain Hive. Testuje se DB vrstva i service nad ní (debugAttachDb —
 /// OS keystore na Linux VM není).
 void main() {

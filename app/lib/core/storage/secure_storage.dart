@@ -308,13 +308,6 @@ class SecureStorageService {
     }
   }
 
-  /// Starší instalace měla PIN jako PBKDF2 hash — starý formát neumíme
-  /// (a nechceme) ověřit, uživatel si PIN nastaví znovu. Číst PŘED
-  /// unlockem ([_cleanupLegacy] marker maže).
-  Future<bool> hasLegacyPin() async {
-    return await _secureStorage.read(key: _legacyPinHashKey) != null;
-  }
-
   /// Zamkne úložiště — zavře DB a zahodí DEK z paměti.
   void lock() {
     _db?.close();

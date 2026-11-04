@@ -1169,6 +1169,20 @@ class AppLocalizationsCs extends AppLocalizations {
   String get pushSubtitleFcm => 'Google (FCM)';
 
   @override
+  String get pushModeApns => 'Apple (APNs, výchozí)';
+
+  @override
+  String get pushModeApnsDesc =>
+      'Budíčky doručí Apple. Push token zařízení jde Applu; obsah zpráv nikdy.';
+
+  @override
+  String get pushSubtitleApns => 'Apple (APNs)';
+
+  @override
+  String get pushModeOffDescIos =>
+      'Zprávy se stáhnou až po otevření appky a hovory nezazvoní.';
+
+  @override
   String get restoreErrorNameRequired => 'Zadej zobrazované jméno.';
 
   @override
@@ -1240,6 +1254,9 @@ class AppLocalizationsCs extends AppLocalizations {
   String get qrShareTitle => 'Můj Šepot ID';
 
   @override
+  String get qrIdentityNotFound => 'Identita nebyla nalezena';
+
+  @override
   String get qrShareConnectingTitle => 'Připojuji k relayi…';
 
   @override
@@ -1247,7 +1264,11 @@ class AppLocalizationsCs extends AppLocalizations {
       'Až se Šepot poprvé připojí, objeví se tvůj QR kód a odkaz. Chvilku strpení — stačí pár sekund.';
 
   @override
-  String get qrIdentityNotFound => 'Identita nebyla nalezena';
+  String get qrShareSecuringTitle => 'Zabezpečuji registraci…';
+
+  @override
+  String get qrShareSecuringBody =>
+      'Telefon počítá krátkou úlohu, která brání hromadnému zakládání falešných účtů. Obvykle to trvá pár sekund.';
 
   @override
   String get commonCopiedToClipboard => 'Zkopírováno do schránky';

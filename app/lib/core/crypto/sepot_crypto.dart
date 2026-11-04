@@ -125,7 +125,7 @@ class SepotStores {
     required this.kyberPreKey,
   });
 
-  /// In-memory sada (spike, testy) — po zabití procesu je pryč.
+  /// In-memory sada (testy) — po zabití procesu je pryč.
   factory SepotStores.inMemory(IdentityKeyPair identity, int registrationId) {
     return SepotStores(
       session: InMemorySessionStore(),

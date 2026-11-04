@@ -2102,6 +2102,30 @@ abstract class AppLocalizations {
   /// **'Google (FCM)'**
   String get pushSubtitleFcm;
 
+  /// Label volby 'apns' v dialogu výběru režimu pushů — jen na iOS (vlastní název)
+  ///
+  /// In cs, this message translates to:
+  /// **'Apple (APNs, výchozí)'**
+  String get pushModeApns;
+
+  /// Popisek volby Apple (APNs) v dialogu výběru režimu pushů — jen na iOS
+  ///
+  /// In cs, this message translates to:
+  /// **'Budíčky doručí Apple. Push token zařízení jde Applu; obsah zpráv nikdy.'**
+  String get pushModeApnsDesc;
+
+  /// Subtitle ListTile v nastavení, když je aktivní režim APNs (iOS)
+  ///
+  /// In cs, this message translates to:
+  /// **'Apple (APNs)'**
+  String get pushSubtitleApns;
+
+  /// Popisek volby 'Vypnuto' na iOS — bez APNs nezvoní ani hovory (VoIP budíček)
+  ///
+  /// In cs, this message translates to:
+  /// **'Zprávy se stáhnou až po otevření appky a hovory nezazvoní.'**
+  String get pushModeOffDescIos;
+
   /// Validační chyba pod formulářem obnovy účtu, když je jméno prázdné
   ///
   /// In cs, this message translates to:
@@ -2204,6 +2228,12 @@ abstract class AppLocalizations {
   /// **'Můj Šepot ID'**
   String get qrShareTitle;
 
+  /// Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)
+  ///
+  /// In cs, this message translates to:
+  /// **'Identita nebyla nalezena'**
+  String get qrIdentityNotFound;
+
   /// Titulek na QR obrazovce, když vlastní registrace na relay ještě nedoběhla — routing (aid+da) není hotový, QR by byl neúplný.
   ///
   /// In cs, this message translates to:
@@ -2216,11 +2246,17 @@ abstract class AppLocalizations {
   /// **'Až se Šepot poprvé připojí, objeví se tvůj QR kód a odkaz. Chvilku strpení — stačí pár sekund.'**
   String get qrShareConnectingBody;
 
-  /// Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)
+  /// Titulek na QR obrazovce, zatímco telefon před registrací na relay počítá proof-of-work (ochrana proti hromadné registraci). Trvá jednotky sekund.
   ///
   /// In cs, this message translates to:
-  /// **'Identita nebyla nalezena'**
-  String get qrIdentityNotFound;
+  /// **'Zabezpečuji registraci…'**
+  String get qrShareSecuringTitle;
+
+  /// Vysvětlení pod qrShareSecuringTitle. Bez technického žargonu (ne „proof-of-work“).
+  ///
+  /// In cs, this message translates to:
+  /// **'Telefon počítá krátkou úlohu, která brání hromadnému zakládání falešných účtů. Obvykle to trvá pár sekund.'**
+  String get qrShareSecuringBody;
 
   /// SnackBar po stisku tlačítka Kopírovat (zkopírování share stringu) — pravděpodobně sdílené i jinde v appce
   ///

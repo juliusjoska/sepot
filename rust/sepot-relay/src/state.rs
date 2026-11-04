@@ -32,15 +32,6 @@ const FLUSH_BATCH: i64 = 64;
 /// konec. Osm pokusů je velkoryse nad běžné „appka spadla před ACK".
 const MAX_DELIVERY_ATTEMPTS: i16 = 8;
 
-/// Strop pokusů smí obálku zahodit až po téhle době ve frontě. Pokus se
-/// počítá za každé připojení. iPhone, který appku otevírá a uspává, jich
-/// za den spálí desítky — a klient do 1.2.4 nechával bez ACK i obálky, které
-/// předběhly stažení certifikátu nebo přišly těsně před zamčením. Zahazovaly
-/// se tak i obálky, které by se dalším pokusem v pořádku doručily. Opravdu
-/// neprůchodné obálky (ztracený ACK u klienta do 1.2.4) zmizí o pár dní
-/// později; klient od 1.2.5 nedešifrovatelné obálky ACKuje sám.
-const MIN_HOURS_BEFORE_DROP: i32 = 72;
-
 /// Jak dlouho po posledním rámci od klienta se spojení ještě považuje za
 /// prokazatelně živé. Klient odpovídá na ping à 30 s (ws::PING_INTERVAL),
 /// takže dva zmeškané cykly znamenají, že už nedýchá.
@@ -50,11 +41,6 @@ const FRESH_CONNECTION_MS: u64 = 70_000;
 /// skupině během výpadku sítě = jeden push, ne třicet (APNs i FCM nápor
 /// tichých pushů škrtí, baterie taky).
 const WAKE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-/// Viditelná notifikace („Nová zpráva“) se zvukem na jeden cíl nejvýš
-/// jednou za tohle okno. APNs je sloučí (collapse-id), ale každá by
-/// zazvonila — výměna deseti zpráv za minutu nemá zvonit desetkrát.
-/// V okně jde místo ní jen běžný tichý budíček.
-const ALERT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 /// Budíček hovoru (VoIP push / FCM k=call) zvoní na telefonu hned a bez
 /// ověření — proto má vlastní, přísnější strop na cíl: nejvýš jeden za
 /// `Limits::call_wake_min_interval` a `Limits::call_wakes_per_window` za
@@ -110,7 +96,6 @@ impl From<sqlx::Error> for RouteError {
 #[derive(Default)]
 pub struct WakeMarks {
     last_wake: Option<Instant>,
-    last_alert: Option<Instant>,
     call_wakes: std::collections::VecDeque<Instant>,
 }
 
@@ -275,9 +260,6 @@ impl AppState {
             m.last_wake
                 .map(|t| now.duration_since(t) < CALL_WAKE_WINDOW)
                 .unwrap_or(false)
-                || m.last_alert
-                    .map(|t| now.duration_since(t) < ALERT_MIN_INTERVAL)
-                    .unwrap_or(false)
                 || !m.call_wakes.is_empty()
         });
         self.otp_issued
@@ -317,23 +299,6 @@ impl AppState {
         {
             return false;
         }
-        marks.last_wake = Some(now);
-        true
-    }
-
-    /// Viditelná notifikace smí odejít nejvýš jednou za ALERT_MIN_INTERVAL
-    /// na cíl. Počítá se i jako běžný budíček.
-    fn allow_alert(&self, dst_address: &[u8]) -> bool {
-        let now = Instant::now();
-        let mut marks = self.wake_marks.entry(dst_address.to_vec()).or_default();
-        if marks
-            .last_alert
-            .map(|t| now.duration_since(t) < ALERT_MIN_INTERVAL)
-            .unwrap_or(false)
-        {
-            return false;
-        }
-        marks.last_alert = Some(now);
         marks.last_wake = Some(now);
         true
     }
@@ -434,7 +399,6 @@ impl AppState {
         .map_err(RouteError::Internal)?;
 
         let is_call = env.content_hint == v1::ContentHint::Call as i32;
-        let is_visible = env.content_hint == v1::ContentHint::Visible as i32;
         if let Some(dev) = self.online.get(&dst) {
             let deliver = v1::ServerFrame {
                 frame: Some(v1::server_frame::Frame::Deliver(env)),
@@ -456,8 +420,6 @@ impl AppState {
         // Offline, zatuchlé nebo plný kanál → zkusit push budíček.
         if is_call && self.allow_call_wake(&dst) {
             self.wake_call(&dst).await;
-        } else if is_visible && self.allow_alert(&dst) {
-            self.wake_message(&dst).await;
         } else if self.allow_wake(&dst) {
             self.wake(&dst).await;
         }
@@ -536,27 +498,6 @@ impl AppState {
         tokio::spawn(async move {
             crate::push::send_wake(&client, platform, &token, fcm.as_deref(), apns.as_deref())
                 .await;
-        });
-    }
-
-    /// Budíček pro novou zprávu, kterou člověk uvidí: iPhone dostane hned
-    /// viditelnou notifikaci s obecným textem, ostatní běžný budíček.
-    async fn wake_message(&self, dst_address: &[u8]) {
-        let Some((platform, token)) = self.push_target(dst_address).await else {
-            return;
-        };
-        let client = self.http.clone();
-        let fcm = self.fcm.clone();
-        let apns = self.apns.clone();
-        tokio::spawn(async move {
-            crate::push::send_message_wake(
-                &client,
-                platform,
-                &token,
-                fcm.as_deref(),
-                apns.as_deref(),
-            )
-            .await;
         });
     }
 
@@ -694,12 +635,10 @@ impl AppState {
         // pošlou. Maže se až tady, ne hned po inkrementu: poslední pokus
         // dostane šanci doběhnout do ACK.
         let dropped = sqlx::query(
-            "DELETE FROM message_queue WHERE dst_address = $1 AND attempt_count >= $2
-               AND enqueued_at < now() - make_interval(hours => $3)",
+            "DELETE FROM message_queue WHERE dst_address = $1 AND attempt_count >= $2",
         )
         .bind(delivery_address)
         .bind(MAX_DELIVERY_ATTEMPTS)
-        .bind(MIN_HOURS_BEFORE_DROP)
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -717,10 +656,12 @@ impl AppState {
                     sqlx::query_as(
                         "SELECT envelope, enqueued_at, msg_uuid FROM message_queue
                          WHERE dst_address = $1 AND expires_at > now()
+                           AND attempt_count < $2
                          ORDER BY enqueued_at, msg_uuid
-                         LIMIT $2",
+                         LIMIT $3",
                     )
                     .bind(delivery_address)
+                    .bind(MAX_DELIVERY_ATTEMPTS)
                     .bind(FLUSH_BATCH)
                     .fetch_all(&self.pool)
                     .await?
@@ -729,11 +670,13 @@ impl AppState {
                     sqlx::query_as(
                         "SELECT envelope, enqueued_at, msg_uuid FROM message_queue
                          WHERE dst_address = $1 AND expires_at > now()
-                           AND (enqueued_at, msg_uuid) > ($2, $3)
+                           AND attempt_count < $2
+                           AND (enqueued_at, msg_uuid) > ($3, $4)
                          ORDER BY enqueued_at, msg_uuid
-                         LIMIT $4",
+                         LIMIT $5",
                     )
                     .bind(delivery_address)
+                    .bind(MAX_DELIVERY_ATTEMPTS)
                     .bind(ts)
                     .bind(uuid)
                     .bind(FLUSH_BATCH)
@@ -780,14 +723,11 @@ impl AppState {
         if msg_uuids.is_empty() {
             return;
         }
-        // Strop typu sloupce: obálka se teď doručuje 72 h bez ohledu na
-        // počet pokusů a přetečení SMALLINT by shodilo UPDATE celé dávky.
         if let Err(e) = sqlx::query(
-            "UPDATE message_queue SET attempt_count = LEAST(attempt_count + 1, $2)
+            "UPDATE message_queue SET attempt_count = attempt_count + 1
              WHERE msg_uuid = ANY($1)",
         )
         .bind(msg_uuids)
-        .bind(i16::MAX)
         .execute(&self.pool)
         .await
         {
@@ -919,19 +859,6 @@ mod db_tests {
             .execute(&state.pool)
             .await
             .unwrap();
-    }
-
-    #[tokio::test]
-    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
-    async fn viditelna_notifikace_ma_vlastni_strop_a_bere_i_budicek() {
-        let state = test_state().await;
-        let dst = rand_bytes(32);
-        assert!(state.allow_alert(&dst), "první zpráva zazvoní");
-        assert!(!state.allow_alert(&dst), "druhá v okně už ne");
-        assert!(
-            !state.allow_wake(&dst),
-            "notifikace se počítá i jako budíček — žádný tichý hned po ní"
-        );
     }
 
     #[tokio::test]
@@ -1364,12 +1291,10 @@ mod db_tests {
             content_hint: 0,
             payload: vec![0x33; 32],
         };
-        // Rovnou na stropu a dost stará = obálka, která se marně posílala
-        // MAX_DELIVERY_ATTEMPTS× déle než MIN_HOURS_BEFORE_DROP.
+        // Rovnou na stropu = obálka, která se marně posílala MAX_DELIVERY_ATTEMPTS×.
         sqlx::query(
-            "INSERT INTO message_queue (msg_uuid, dst_address, envelope, expires_at,
-                                        attempt_count, enqueued_at)
-             VALUES ($1, $2, $3, now() + interval '30 days', $4, now() - interval '4 days')",
+            "INSERT INTO message_queue (msg_uuid, dst_address, envelope, expires_at, attempt_count)
+             VALUES ($1, $2, $3, now() + interval '30 days', $4)",
         )
         .bind(&msg_uuid)
         .bind(&dst)
@@ -1394,95 +1319,6 @@ mod db_tests {
                 .await
                 .unwrap();
         assert_eq!(zbylo.0, 0, "vyčerpaná obálka měla být zahozena");
-    }
-
-    /// Mladá obálka na stropu pokusů se dál doručuje: pokusy pálí každé
-    /// připojení (iPhone otevírá a uspává appku), ne skutečná nedoručitelnost.
-    #[tokio::test]
-    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
-    async fn flush_queue_mlada_obalka_na_stropu_se_doruci() {
-        let state = test_state().await;
-        let dst = rand_bytes(32);
-        let msg_uuid = rand_bytes(16);
-        let env = v1::Envelope {
-            dst_address: dst.clone(),
-            msg_uuid: msg_uuid.clone(),
-            content_hint: 0,
-            payload: vec![0x44; 32],
-        };
-        sqlx::query(
-            "INSERT INTO message_queue (msg_uuid, dst_address, envelope, expires_at, attempt_count)
-             VALUES ($1, $2, $3, now() + interval '30 days', $4)",
-        )
-        .bind(&msg_uuid)
-        .bind(&dst)
-        .bind(env.encode_to_vec())
-        .bind(MAX_DELIVERY_ATTEMPTS + 5)
-        .execute(&state.pool)
-        .await
-        .unwrap();
-
-        let (tx, mut rx) = mpsc::channel::<v1::ServerFrame>(16);
-        assert_eq!(state.flush_queue(&dst, &tx).await.unwrap(), 1);
-        assert!(rx.try_recv().is_ok(), "obálka odešla příjemci");
-
-        state.ack(&dst, &msg_uuid).await.unwrap();
-        let zbylo: (i64,) =
-            sqlx::query_as("SELECT count(*) FROM message_queue WHERE dst_address = $1")
-                .bind(&dst)
-                .fetch_one(&state.pool)
-                .await
-                .unwrap();
-        assert_eq!(zbylo.0, 0, "ACK ji smazal");
-    }
-
-    /// Počítadlo pokusů nepřeteče: obálka na stropu typu sloupce nesmí
-    /// shodit započítání pokusu ostatním obálkám v dávce.
-    #[tokio::test]
-    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
-    async fn flush_queue_pocitadlo_pokusu_nepretece() {
-        let state = test_state().await;
-        let dst = rand_bytes(32);
-        let mut uuids = Vec::new();
-        for (i, attempts) in [i16::MAX, 3].into_iter().enumerate() {
-            let msg_uuid = rand_bytes(16);
-            let env = v1::Envelope {
-                dst_address: dst.clone(),
-                msg_uuid: msg_uuid.clone(),
-                content_hint: 0,
-                payload: vec![0x55; 32],
-            };
-            sqlx::query(
-                "INSERT INTO message_queue
-                   (msg_uuid, dst_address, envelope, enqueued_at, expires_at, attempt_count)
-                 VALUES ($1, $2, $3, now() + (interval '1 second' * $4),
-                         now() + interval '30 days', $5)",
-            )
-            .bind(&msg_uuid)
-            .bind(&dst)
-            .bind(env.encode_to_vec())
-            .bind(i as i32)
-            .bind(attempts)
-            .execute(&state.pool)
-            .await
-            .unwrap();
-            uuids.push(msg_uuid);
-        }
-
-        let (tx, _rx) = mpsc::channel::<v1::ServerFrame>(16);
-        assert_eq!(state.flush_queue(&dst, &tx).await.unwrap(), 2);
-
-        let mut pokusy = Vec::new();
-        for uuid in &uuids {
-            let (n,): (i16,) =
-                sqlx::query_as("SELECT attempt_count FROM message_queue WHERE msg_uuid = $1")
-                    .bind(uuid)
-                    .fetch_one(&state.pool)
-                    .await
-                    .unwrap();
-            pokusy.push(n);
-        }
-        assert_eq!(pokusy, vec![i16::MAX, 4]);
     }
 
     /// Audit #3: FIFO strop zahodí nejstarší přes limit, nejnovější nechá.

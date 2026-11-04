@@ -63,6 +63,9 @@ class _FakeIos extends IosPushPlatform {
   Future<void> writeMode(String m) async => mode = m;
 
   @override
+  Future<String?> readStoredMode() async => mode;
+
+  @override
   Future<void> setRegistrationFailed(bool failed) async => failedFlag = failed;
 }
 
@@ -126,5 +129,51 @@ void main() {
     final ios = _FakeIos(registerFails: true);
     await PushService(_FakeMessaging(), ios: ios).restoreMode();
     expect(ios.failedFlag, isTrue);
+  });
+
+  group('volba v nastavení (iOS)', () {
+    test('čerstvá instalace hlásí APNs, ne „vypnuto"', () async {
+      final ios = _FakeIos(apns: 'ab12');
+      final push = PushService(_FakeMessaging(), ios: ios);
+      await push.restoreMode();
+      expect(await push.currentMode(), 'apns');
+    });
+
+    test('vypnutí odregistruje relay a start appky ho nepřebije', () async {
+      final messaging = _FakeMessaging();
+      final ios = _FakeIos(apns: 'ab12', voip: 'cd34');
+      final push = PushService(messaging, ios: ios);
+      await push.setModeOff();
+      expect(messaging.registrations.single.platform,
+          pb.RegisterPush_Platform.PLATFORM_NONE);
+
+      ios.calls.clear();
+      await push.restoreMode();
+      await push.refreshVoipToken();
+      expect(ios.calls, isEmpty, reason: 'bez registrace u Apple');
+      expect(messaging.registrations, hasLength(1),
+          reason: 'VoIP token po vypnutí relayi neodchází');
+      expect(await push.currentMode(), 'off');
+    });
+
+    test('opětovné zapnutí APNs pošle tokeny relayi', () async {
+      final messaging = _FakeMessaging();
+      final ios = _FakeIos(apns: 'ab12', voip: 'cd34');
+      final push = PushService(messaging, ios: ios);
+      await push.setModeOff();
+      await push.setModeApns();
+      final reg = messaging.registrations.last;
+      expect(reg.platform, pb.RegisterPush_Platform.PLATFORM_APNS);
+      expect(text(reg.endpoint), 'ab12');
+      expect(ios.failedFlag, isFalse);
+      expect(await push.currentMode(), 'apns');
+    });
+
+    test('selhání zapnutí z nastavení dojde až do UI', () async {
+      final ios = _FakeIos(registerFails: true);
+      final push = PushService(_FakeMessaging(), ios: ios);
+      await expectLater(push.setModeApns(), throwsStateError);
+      expect(ios.failedFlag, isTrue);
+    });
   });
 }

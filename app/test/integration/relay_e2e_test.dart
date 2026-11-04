@@ -9,12 +9,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:libsignal/libsignal.dart' show IdentityKeyPair, ProtocolAddress;
 import 'package:sepot/core/crypto/attachment_cipher.dart';
 import 'package:sepot/core/crypto/sepot_crypto.dart';
+import 'package:sepot/core/network/register_pow.dart';
 import 'package:sepot/core/network/relay_client.dart';
 import 'package:sepot/core/storage/crypto_db.dart';
 import 'package:sepot/core/storage/persistent_stores.dart';
 import 'package:sepot/models/attachment.dart';
 
-/// E2E přes REÁLNÝ lokální relay (S3+S6): produkční cesta bez UI.
+/// E2E přes REÁLNÝ lokální relay: produkční cesta bez UI.
 /// Spuštění: relay musí běžet (SEPOT_RELAY, default http://127.0.0.1:8470).
 ///   flutter test test/integration --tags relay
 void main() {
@@ -202,7 +203,37 @@ void main() {
     bobDb.close();
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('příloha: šifrovaný blob přes relay + meta E2E zprávou (§4.6)',
+  test('registrace s proof-of-work: výzva → řešení v isolate → 201',
+      () async {
+    final keys = SepotCrypto.generateIdentityKeys();
+    final crypto = SepotCrypto.fromPrivateKey(
+      privateKey: keys.privateKey,
+      accountId: 'unbound',
+      registrationId: 3001,
+    );
+    final relay = RelayClient(baseUrl: relayUrl, crypto: crypto);
+    final challenge = await relay.fetchRegisterChallenge();
+    if (challenge == null) {
+      markTestSkipped('relay PoW nevydává (starší verze nebo režim off)');
+      return;
+    }
+    final counter = await solveRegisterPow(challenge, crypto.identityPublicKey);
+    final reg = await relay.register(
+      bundle: await crypto.generatePreKeyBundle(
+        preKeyId: 1,
+        signedPreKeyId: 1,
+        kyberPreKeyId: 1,
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+      ),
+      oneTimePreKeys: await crypto.generateOneTimePreKeys(startId: 2, count: 3),
+      deliveryAddress: RelayClient.randomBytes(32),
+      pow: powHeader(challenge, counter),
+    );
+    expect(reg.deviceUuid, matches(RegExp(r'^[0-9a-f]{32}$')));
+    await relay.dispose();
+  });
+
+  test('příloha: šifrovaný blob přes relay + meta E2E zprávou',
       () async {
     final nowMs = DateTime.now().millisecondsSinceEpoch;
 

@@ -1,4 +1,4 @@
-// Potřebuje nativní sqlcipher a Argon2id — na builderu se vynechává (--exclude-tags ffi).
+// Needs the native sqlcipher library and Argon2id; skipped on builders without them (--exclude-tags ffi).
 @Tags(['ffi'])
 // Argon2id (64 MiB) ~2 s na pokus, test jich dělá přes deset.
 @Timeout(Duration(minutes: 3))

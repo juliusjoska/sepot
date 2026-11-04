@@ -1568,6 +1568,22 @@
   "@pushSubtitleFcm": {
     "description": "Subtitle ListTile v nastavení, když je aktivní režim FCM"
   },
+  "pushModeApns": "Apple (APNs, výchozí)",
+  "@pushModeApns": {
+    "description": "Label volby 'apns' v dialogu výběru režimu pushů — jen na iOS (vlastní název)"
+  },
+  "pushModeApnsDesc": "Budíčky doručí Apple. Push token zařízení jde Applu; obsah zpráv nikdy.",
+  "@pushModeApnsDesc": {
+    "description": "Popisek volby Apple (APNs) v dialogu výběru režimu pushů — jen na iOS"
+  },
+  "pushSubtitleApns": "Apple (APNs)",
+  "@pushSubtitleApns": {
+    "description": "Subtitle ListTile v nastavení, když je aktivní režim APNs (iOS)"
+  },
+  "pushModeOffDescIos": "Zprávy se stáhnou až po otevření appky a hovory nezazvoní.",
+  "@pushModeOffDescIos": {
+    "description": "Popisek volby 'Vypnuto' na iOS — bez APNs nezvoní ani hovory (VoIP budíček)"
+  },
   "restoreErrorNameRequired": "Zadej zobrazované jméno.",
   "@restoreErrorNameRequired": {
     "description": "Validační chyba pod formulářem obnovy účtu, když je jméno prázdné"
@@ -1667,6 +1683,10 @@
   "@qrShareTitle": {
     "description": "AppBar titulek obrazovky sdílení vlastního QR/Šepot ID"
   },
+  "qrIdentityNotFound": "Identita nebyla nalezena",
+  "@qrIdentityNotFound": {
+    "description": "Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)"
+  },
   "qrShareConnectingTitle": "Připojuji k relayi…",
   "@qrShareConnectingTitle": {
     "description": "Titulek na QR obrazovce, když vlastní registrace na relay ještě nedoběhla — routing (aid+da) není hotový, QR by byl neúplný."
@@ -1675,9 +1695,13 @@
   "@qrShareConnectingBody": {
     "description": "Vysvětlení pod titulkem qrShareConnectingTitle. 'Šepot' je značka, nepřekládat."
   },
-  "qrIdentityNotFound": "Identita nebyla nalezena",
-  "@qrIdentityNotFound": {
-    "description": "Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)"
+  "qrShareSecuringTitle": "Zabezpečuji registraci…",
+  "@qrShareSecuringTitle": {
+    "description": "Titulek na QR obrazovce, zatímco telefon před registrací na relay počítá proof-of-work (ochrana proti hromadné registraci). Trvá jednotky sekund."
+  },
+  "qrShareSecuringBody": "Telefon počítá krátkou úlohu, která brání hromadnému zakládání falešných účtů. Obvykle to trvá pár sekund.",
+  "@qrShareSecuringBody": {
+    "description": "Vysvětlení pod qrShareSecuringTitle. Bez technického žargonu (ne „proof-of-work“)."
   },
   "commonCopiedToClipboard": "Zkopírováno do schránky",
   "@commonCopiedToClipboard": {

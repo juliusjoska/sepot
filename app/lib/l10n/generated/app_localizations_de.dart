@@ -1189,6 +1189,20 @@ class AppLocalizationsDe extends AppLocalizations {
   String get pushSubtitleFcm => 'Google (FCM)';
 
   @override
+  String get pushModeApns => 'Apple (APNs, Standard)';
+
+  @override
+  String get pushModeApnsDesc =>
+      'Weckrufe stellt Apple zu. Der Push-Token des Geräts geht an Apple; der Inhalt der Nachrichten nie.';
+
+  @override
+  String get pushSubtitleApns => 'Apple (APNs)';
+
+  @override
+  String get pushModeOffDescIos =>
+      'Nachrichten werden erst beim Öffnen der App abgerufen, und Anrufe klingeln nicht.';
+
+  @override
   String get restoreErrorNameRequired => 'Gib einen Anzeigenamen ein.';
 
   @override
@@ -1260,6 +1274,9 @@ class AppLocalizationsDe extends AppLocalizations {
   String get qrShareTitle => 'Meine Šepot-ID';
 
   @override
+  String get qrIdentityNotFound => 'Identität nicht gefunden';
+
+  @override
   String get qrShareConnectingTitle => 'Verbinde mit dem Relay…';
 
   @override
@@ -1267,7 +1284,11 @@ class AppLocalizationsDe extends AppLocalizations {
       'Dein QR-Code und Link erscheinen, sobald sich Šepot zum ersten Mal verbindet. Einen Moment — es dauert nur ein paar Sekunden.';
 
   @override
-  String get qrIdentityNotFound => 'Identität nicht gefunden';
+  String get qrShareSecuringTitle => 'Registrierung wird abgesichert…';
+
+  @override
+  String get qrShareSecuringBody =>
+      'Dein Handy löst eine kurze Aufgabe, die das massenhafte Anlegen gefälschter Konten verhindert. Das dauert meist nur ein paar Sekunden.';
 
   @override
   String get commonCopiedToClipboard => 'In die Zwischenablage kopiert';

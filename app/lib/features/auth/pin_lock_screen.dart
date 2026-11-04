@@ -7,6 +7,7 @@ import 'package:sepot/core/crypto/dek_wrap.dart';
 import 'package:sepot/core/storage/secure_storage.dart' show PinLockedException;
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
+import 'package:sepot/providers/conversations_provider.dart';
 import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/providers/push_provider.dart';
 import 'package:sepot/providers/settings_provider.dart';
@@ -30,15 +31,20 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
   @override
   void initState() {
     super.initState();
-    // Biometrie zapnutá → rovnou nabídnout systémovou výzvu
-    WidgetsBinding.instance.addPostFrameCallback((_) => _tryBiometrics());
+    // Výzvu ke Face ID / otisku spouští jen tlačítko, ne zobrazení obrazovky:
+    // automatická výzva odemkne skutečnou appku dřív, než člověk pod nátlakem
+    // stihne zadat nátlakový PIN — stačí mu telefon namířit na obličej.
+    _loadBiometricsAvailability();
+  }
+
+  Future<void> _loadBiometricsAvailability() async {
+    final enabled = await ref.read(storageProvider).isBiometricsEnabled();
+    if (mounted) setState(() => _biometricsAvailable = enabled);
   }
 
   Future<void> _tryBiometrics() async {
     final unlockReason = context.l10n.pinUnlockTitle;
     final storage = ref.read(storageProvider);
-    if (!await storage.isBiometricsEnabled()) return;
-    if (mounted) setState(() => _biometricsAvailable = true);
 
     try {
       final ok = await LocalAuthentication().authenticate(
@@ -227,6 +233,9 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
   void _restartMessagingAfterUnlock() {
     ref.invalidate(messagingStartProvider);
     ref.invalidate(pushInitProvider);
+    // Seznam chatů drží stav z doby před zámkem; zprávy stažené mezitím
+    // na pozadí by bez přenačtení ukázal až vstup do konverzace a zpět.
+    ref.invalidate(conversationsProvider);
     // Zabezpečení obrazovky se čte z DB — před odemčením provider nic
     // neaplikoval, teď má skutečnou hodnotu.
     ref.invalidate(screenSecurityProvider);

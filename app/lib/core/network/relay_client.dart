@@ -16,6 +16,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:sepot/core/crypto/sepot_crypto.dart';
+import 'package:sepot/core/network/register_pow.dart';
 import 'package:sepot/core/network/relay_transport.dart';
 import 'package:sepot/proto/sepot.pb.dart' as pb;
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -102,11 +103,30 @@ class RelayClient {
 
   // ── REST ────────────────────────────────────────────────────────────
 
+  /// GET /v1/register/challenge — výzva proof-of-work pro registraci.
+  /// `null` = relay PoW nevydává (starší verze nebo režim off, 404);
+  /// registrace pak jde bez něj.
+  Future<RegisterPowChallenge?> fetchRegisterChallenge() async {
+    final resp = await _transport
+        .httpClient()
+        .get(Uri.parse('$baseUrl/v1/register/challenge'));
+    if (resp.statusCode == 404) return null;
+    if (resp.statusCode != 200) {
+      throw RelayException('challenge failed', resp.statusCode, resp.body);
+    }
+    return RegisterPowChallenge.fromJson(
+      jsonDecode(resp.body) as Map<String, dynamic>,
+    );
+  }
+
   /// POST /v1/register — nahraje identitu + prekey bundle + dávku OTP.
+  /// [pow] = hodnota hlavičky `X-Sepot-Pow` ([powHeader]); bez ní relay
+  /// v režimu optional registruje s přísnějším limitem per IP.
   Future<RelayRegistration> register({
     required SepotPreKeyBundle bundle,
     required List<SepotOneTimePreKey> oneTimePreKeys,
     required Uint8List deliveryAddress,
+    String? pow,
   }) async {
     // Důkaz držení identity klíče: obnova ze 24 slov na novém telefonu
     // narazí na relayi na už existující identitu (409) a bez tohohle
@@ -119,6 +139,7 @@ class RelayClient {
       headers: {
         'content-type': 'application/json',
         'x-sepot-identity-proof': '$proofTs.${base64Encode(proof)}',
+        'x-sepot-pow': ?pow,
       },
       body: jsonEncode({
         'identity_key': base64Encode(_crypto.identityPublicKey),

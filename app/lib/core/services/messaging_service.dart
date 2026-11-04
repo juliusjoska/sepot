@@ -25,7 +25,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show ValueNotifier, visibleForTesting;
 import 'package:libsignal/libsignal.dart'
     show IdentityKeyPair, PrivateKey, ProtocolAddress;
 import 'package:mime/mime.dart' show lookupMimeType;
@@ -34,6 +34,7 @@ import 'package:sepot/core/crypto/attachment_cipher.dart';
 import 'package:sepot/core/crypto/group_admin.dart';
 import 'package:sepot/core/errors.dart';
 import 'package:sepot/core/crypto/sepot_crypto.dart';
+import 'package:sepot/core/network/register_pow.dart';
 import 'package:sepot/core/network/relay_client.dart';
 import 'package:sepot/core/network/relay_transport.dart';
 import 'package:sepot/core/safety/lookalike_names.dart';
@@ -127,6 +128,16 @@ class MessagingService {
   /// relay bez převzetí identity po obnově ze 24 slov. UI může vysvětlit.
   bool _registrationConflict = false;
   bool get registrationConflict => _registrationConflict;
+
+  /// Postup výpočtu proof-of-work před registrací (0..1), `null` = nepočítá
+  /// se. Zvlášť od [onUpdate]: postup se mění několikrát za sekundu a
+  /// [onUpdate] invaliduje konverzace i kontakty.
+  final registrationPowProgress = ValueNotifier<double?>(null);
+
+  /// Kolikrát zkusit novou výzvu, když výpočet nestihne její platnost
+  /// (pomalý telefon, appka uspaná na pozadí). Pak registrace bez PoW —
+  /// relay v režimu optional ji vezme s přísnějším limitem per IP.
+  static const _powAttempts = 2;
 
   /// Rozpracované dodávky: `stop()` (auto-lock) na ně počká, jinak by DB
   /// zmizela mezi dešifrováním (ratchet už postoupil) a zápisem a zpráva
@@ -548,6 +559,7 @@ class MessagingService {
     // bundle nese OTP id 1; dalších 99 do zásoby
     final otps = await crypto.generateOneTimePreKeys(startId: 2, count: 99);
     final deliveryAddress = RelayClient.randomBytes(32);
+    final pow = await _solveRegisterPow(crypto.identityPublicKey);
 
     final reg = await _relay!.register(
       bundle: bundle,
@@ -556,6 +568,7 @@ class MessagingService {
         ...otps,
       ],
       deliveryAddress: deliveryAddress,
+      pow: pow,
     );
 
     final stamp = utf8.encode('$nowMs');
@@ -571,6 +584,37 @@ class MessagingService {
       db.kvPut('kyber_rotated_at', stamp);
     });
     onUpdate?.call();
+  }
+
+  /// Hlavička `X-Sepot-Pow` pro registraci, nebo `null` = registrovat bez
+  /// PoW (relay ho nevydává, síť selhala, výpočet nestihl platnost výzvy).
+  /// Výpočet běží v isolate, UI se nezasekne.
+  Future<String?> _solveRegisterPow(Uint8List identityKey) async {
+    try {
+      for (var attempt = 0; attempt < _powAttempts; attempt++) {
+        final challenge = await _relay!.fetchRegisterChallenge();
+        if (challenge == null) return null;
+        registrationPowProgress.value = 0;
+        try {
+          final counter = await solveRegisterPow(
+            challenge,
+            identityKey,
+            onProgress: (p) => registrationPowProgress.value = p,
+          );
+          return powHeader(challenge, counter);
+        } on PowExpiredError {
+          continue;
+        }
+      }
+      return null;
+    } on Object {
+      // Síť nebo neočekávaná odpověď relaye: registrace bez PoW. Při
+      // vynuceném PoW (required) vrátí relay 428 a [_registerWithRetry]
+      // to zkusí znovu s novou výzvou.
+      return null;
+    } finally {
+      registrationPowProgress.value = null;
+    }
   }
 
   Future<void> _refreshSenderCert() async {
@@ -1000,6 +1044,23 @@ class MessagingService {
         (await storage.getSetting<bool>('read_receipts_enabled')) ?? false;
     if (!enabled) return;
     await _sendControl(contact, {'t': 'rr', 'ids': messageIds, 'gid': ?gid});
+  }
+
+  /// Doručenka (✓✓) odesílateli zprávy. Ve skupině nese gid, aby ji
+  /// odesílatel spároval se skupinovou konverzací.
+  ///
+  /// Žádost o zprávu doručenku nedostane: ✓✓ by cizímu odesílateli
+  /// potvrdilo, že účet někdo aktivně používá a kdy byl telefon online.
+  /// Po přijetí žádosti se dodatečně neposílá — nesla by čas
+  /// přijetí místo doručení a prozradila by, kdy si uživatel žádost
+  /// prohlédl; další zprávy už doručenku dostanou běžně. Skupiny
+  /// stejně jako u potvrzení přečtení: členství je ověřené a ✓✓ se tam
+  /// počítá za všechny členy, přitom členy z rosteru, které si uživatel
+  /// sám nepřidal, appka vede jako nepřijaté — ✓✓ by se nikdy nedočkaly.
+  Future<void> _sendDeliveryReceipt(Contact contact, String messageId,
+      {String? gid}) async {
+    if (gid == null && !contact.accepted) return;
+    await _sendControl(contact, {'t': 'dlv', 'ref': messageId, 'gid': ?gid});
   }
 
   /// Smaže zprávu pro všechny (tombstone u obou stran).
@@ -2521,26 +2582,16 @@ class MessagingService {
       // Druhá bublina ani další stahování téhož blobu nemá vzniknout, ale
       // doručenku pošli — protistrana ji nejspíš právě proto nedostala.
       if (!isNew) {
-        unawaited(_sendControl(contact, {
-          't': 'dlv',
-          'ref': message.id,
-          'gid': ?gid,
-        }));
+        unawaited(_sendDeliveryReceipt(contact, message.id, gid: gid));
         return;
       }
 
       onUpdate?.call();
       onMessageReceived?.call(contact, message, convId);
 
-      // Pošli odesílateli doručenku (✓✓) — best-effort, nesmí blokovat
-      // příjem ani ACK. Jen pro skutečné zprávy (txt/att), ne pro control.
-      // Ve skupině nese gid, aby ji odesílatel spároval se skupinovou
-      // konverzací.
-      unawaited(_sendControl(contact, {
-        't': 'dlv',
-        'ref': message.id,
-        'gid': ?gid,
-      }));
+      // Doručenka (✓✓) best-effort — nesmí blokovat příjem ani ACK. Jen pro
+      // skutečné zprávy (txt/att), ne pro control.
+      unawaited(_sendDeliveryReceipt(contact, message.id, gid: gid));
 
       if (message.attachment != null) {
         unawaited(downloadAttachment(convId, message));

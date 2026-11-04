@@ -6,6 +6,44 @@ verzování dle [ajtak standardu](#verzování).
 
 ## [Nevydáno]
 
+## [1.2.4] – 2026-10-23
+
+### Soukromí
+- **Neznámý odesílatel se nedozví, že zprávu máte.** Na žádost o zprávu
+  appka neposílá doručenku (✓✓), dokud žádost nepřijmete — dřív tím
+  každému cizímu potvrzovala, že účet někdo používá a kdy byl telefon
+  online. Po přijetí chodí doručenky na další zprávy jako obvykle; na
+  zprávy z doby před přijetím se dodatečně neposílají.
+
+### Bezpečnost
+- **Ochrana registrace.** Při zakládání účtu telefon chvíli počítá
+  krátkou úlohu (obvykle pod sekundu, na slabém telefonu pár sekund,
+  obrazovka ukáže „Zabezpečuji registraci…“). Hromadné zakládání falešných
+  účtů se tím prodraží, a lidé za sdílenou IP adresou mobilního operátora
+  se proto nezaseknou na limitu registrací. Když server ochranu nevyžaduje
+  nebo výpočet selže, registrace proběhne jako dřív.
+- **Face ID a otisk prstu až na tlačítko.** Odemykací obrazovka už
+  biometrii nespouští sama. Automatická výzva odemkla skutečnou appku dřív,
+  než šlo zadat nátlakový PIN — stačilo telefon namířit na obličej.
+- **Registrace vždy skončí s PINem.** Když se telefon zamkl během
+  nastavování PINu a systém mezitím appku ukončil, další spuštění vedlo
+  rovnou do chatů a účet zůstal bez PINu. Teď appka nastavení PINu dokončí.
+
+### Opraveno
+- **Seznam chatů po návratu do appky.** Nové zprávy se v seznamu
+  ukázaly až po vstupu do některé konverzace a zpět; teď se seznam obnoví
+  při každém návratu i po odemčení.
+
+### Opraveno (iPhone)
+- **Nastavení push notifikací na iPhonu.** Nabízelo i UnifiedPush a Google
+  FCM, které na iOS nefungují, a zapnuté notifikace přes Apple ukazovalo
+  jako „Vypnuto“. Teď je na výběr jen Vypnuto / Apple (APNs). Vypnuté
+  notifikace zůstanou vypnuté i po restartu appky; zprávy se pak stáhnou
+  až po otevření a hovory nezazvoní.
+- **Sdílení na iPhonu nic neotevřelo.** Tlačítko Sdílet u vlastního kódu,
+  otevření dokumentu (PDF), sdílení fotky i export zálohy na iOS 26 a novějším
+  tiše selhaly — systémové okno sdílení teď potřebuje místo, odkud se vysune.
+
 ## [1.2.3] – 2026-10-23
 
 ### Opraveno (iOS, build 27)

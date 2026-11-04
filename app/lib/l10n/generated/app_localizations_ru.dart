@@ -1186,6 +1186,20 @@ class AppLocalizationsRu extends AppLocalizations {
   String get pushSubtitleFcm => 'Google (FCM)';
 
   @override
+  String get pushModeApns => 'Apple (APNs, по умолчанию)';
+
+  @override
+  String get pushModeApnsDesc =>
+      'Пробуждения доставляет Apple. Push-токен устройства передаётся Apple; содержимое сообщений — никогда.';
+
+  @override
+  String get pushSubtitleApns => 'Apple (APNs)';
+
+  @override
+  String get pushModeOffDescIos =>
+      'Сообщения загрузятся только после открытия приложения, а звонки не будут звонить.';
+
+  @override
   String get restoreErrorNameRequired => 'Введите отображаемое имя.';
 
   @override
@@ -1265,6 +1279,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get qrShareTitle => 'Мой Šepot ID';
 
   @override
+  String get qrIdentityNotFound => 'Идентичность не найдена';
+
+  @override
   String get qrShareConnectingTitle => 'Подключение к релею…';
 
   @override
@@ -1272,7 +1289,11 @@ class AppLocalizationsRu extends AppLocalizations {
       'Ваш QR-код и ссылка появятся, как только Šepot подключится в первый раз. Подождите пару секунд.';
 
   @override
-  String get qrIdentityNotFound => 'Идентичность не найдена';
+  String get qrShareSecuringTitle => 'Защищаю регистрацию…';
+
+  @override
+  String get qrShareSecuringBody =>
+      'Телефон решает короткую задачу, которая мешает массово создавать фальшивые аккаунты. Обычно это занимает несколько секунд.';
 
   @override
   String get commonCopiedToClipboard => 'Скопировано в буфер обмена';

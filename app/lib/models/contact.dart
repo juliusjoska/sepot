@@ -42,7 +42,7 @@ class Contact {
   /// ukládaly pod UUID, UI ale routovalo fingerprintem), takže konverzace
   /// otevřená z kontaktů neuměla odeslat zprávu a chat list nenašel jméno.
   /// Bez datové migrace (žádná produkční data; testovací zařízení se
-  /// re-párují — stejný precedens jako S9).
+  /// re-párují — stejně jako při přechodu na SQLCipher).
   String get id => publicIdentity.id;
 
   /// Vytvoř nový kontakt z veřejné identity
