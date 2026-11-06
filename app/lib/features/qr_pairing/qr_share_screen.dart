@@ -23,9 +23,7 @@ class QrShareScreen extends ConsumerWidget {
     final identityAsync = ref.watch(identityProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(context.l10n.qrShareTitle),
-      ),
+      appBar: AppBar(title: Text(context.l10n.qrShareTitle)),
       body: identityAsync.when(
         data: (identity) {
           if (identity == null) {
@@ -38,7 +36,8 @@ class QrShareScreen extends ConsumerWidget {
           ref.watch(relayConnectionProvider);
           final service = ref.watch(messagingServiceProvider);
           final shareable = service.shareableIdentity;
-          final hasRouting = shareable != null &&
+          final hasRouting =
+              shareable != null &&
               shareable.accountId != null &&
               shareable.deliveryAddress != null;
 
@@ -75,75 +74,78 @@ class QrShareScreen extends ConsumerWidget {
                       color: Color(0xFF030712),
                     ),
                     dataModuleStyle: const QrDataModuleStyle(
-                      dataModuleShape: QrDataModuleShape.circle,
+                      // Odkaz s routingem dává hustý QR (verze ~12); kolečka místo
+                      // čtverců ho slabším kamerám znečitelní.
+                      dataModuleShape: QrDataModuleShape.square,
                       color: Color(0xFF030712),
                     ),
                   ),
                 ),
-                const SizedBox(height: 32),
-                // Šepot ID
+                const SizedBox(height: 16),
                 Text(
-                  identity.sepotId,
-                  style: const TextStyle(
-                    fontFamily: kFontMono,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w600,
-                    color: SepotColors.ember,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  identity.displayName,
+                  context.l10n.qrShareHowTo,
+                  textAlign: TextAlign.center,
                   style: const TextStyle(
                     fontFamily: kFontSans,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 16,
                     color: SepotColors.textPrimary,
                   ),
                 ),
-                const SizedBox(height: 8),
-                // Fingerprint
-                Text(
-                  context.l10n.settingsFingerprint(identity.fingerprint.display),
-                  style: SepotTheme.cryptoText,
+                const SizedBox(height: 24),
+                // Pozvánka je jediná cesta k přidání; dřív tu dominovalo velké
+                // oranžové Šepot ID a lidé ho opisovali jako „kód“.
+                SizedBox(
+                  width: double.infinity,
+                  child: Builder(
+                    builder: (buttonContext) => ElevatedButton.icon(
+                      onPressed: () {
+                        ExterniObrazovka.behem(
+                          () => Share.share(
+                            context.l10n.qrShareInviteMessage(
+                              AppConstants.downloadUrl,
+                              shareString,
+                            ),
+                            sharePositionOrigin: shareOrigin(buttonContext),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.share),
+                      label: Text(context.l10n.qrShareSendInvite),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: shareString));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(context.l10n.commonCopiedToClipboard),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.copy),
+                    label: Text(context.l10n.qrShareCopyInvite),
+                  ),
                 ),
                 const SizedBox(height: 32),
-                // Akce
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: shareString));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content:
-                                  Text(context.l10n.commonCopiedToClipboard),
-                            ),
-                          );
-                        },
-                        icon: const Icon(Icons.copy),
-                        label: Text(context.l10n.commonCopy),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Builder(
-                        builder: (buttonContext) => ElevatedButton.icon(
-                          onPressed: () {
-                            ExterniObrazovka.behem(() => Share.share(
-                                  context.l10n.qrShareInviteMessage(
-                                      AppConstants.downloadUrl, shareString),
-                                  sharePositionOrigin:
-                                      shareOrigin(buttonContext),
-                                ));
-                          },
-                          icon: const Icon(Icons.share),
-                          label: Text(context.l10n.commonShare),
-                        ),
-                      ),
-                    ),
-                  ],
+                Text(
+                  context.l10n.qrShareSepotIdLabel,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: SepotColors.textMuted,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(identity.sepotId, style: SepotTheme.cryptoText),
+                const SizedBox(height: 4),
+                Text(
+                  context.l10n.settingsFingerprint(
+                    identity.fingerprint.display,
+                  ),
+                  style: SepotTheme.cryptoText.copyWith(fontSize: 11),
                 ),
                 const SizedBox(height: 24),
                 // Informace
@@ -156,7 +158,11 @@ class QrShareScreen extends ConsumerWidget {
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.info_outline, color: SepotColors.textMuted, size: 20),
+                      const Icon(
+                        Icons.info_outline,
+                        color: SepotColors.textMuted,
+                        size: 20,
+                      ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Text(
@@ -246,15 +252,7 @@ class QrConnectingPlaceholder extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 24),
-            Text(
-              identity.sepotId,
-              style: const TextStyle(
-                fontFamily: kFontMono,
-                fontSize: 20,
-                fontWeight: FontWeight.w600,
-                color: SepotColors.ember,
-              ),
-            ),
+            Text(identity.sepotId, style: SepotTheme.cryptoText),
           ],
         ),
       ),

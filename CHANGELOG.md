@@ -6,6 +6,23 @@ verzování dle [ajtak standardu](#verzování).
 
 ## [Nevydáno]
 
+## [1.2.6] – 2026-11-06
+
+### Opraveno
+- **Klávesnice přes zamykací obrazovku.** Když se Šepot zamkl z otevřeného
+  chatu, zůstala vysunutá systémová klávesnice a zakrývala zadání PINu;
+  pomohlo jen aplikaci zavřít. Při zamčení se teď klávesnice zavře.
+
+### Změněno
+- **Přidání kontaktu přes pozvánku je zřejmé.** Obrazovka sdílení se jmenuje
+  Pozvat kontakt a hlavní akce jsou Poslat pozvánku a Kopírovat pozvánku.
+  Šepot ID je malým písmem a označené jako „jen k ověření“ – lidé ho
+  opisovali jako kód, podle kterého ale přidat nejde (Šepot nemá adresář
+  uživatelů). Kdo ho přesto vloží do Přidat kontakt, dozví se to přímo
+  v dialogu, kde je i tlačítko pro naskenování QR kódu.
+- QR kód pozvánky má čtvercové body místo kulatých, slabší kamery ho
+  přečtou snáz.
+
 ## [1.2.5] – 2026-10-29
 
 ### Přidáno

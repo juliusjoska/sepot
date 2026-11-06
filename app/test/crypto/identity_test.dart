@@ -163,6 +163,16 @@ void main() {
       expect(parsed!.fingerprint, identity.fingerprint);
     });
 
+    test('vypadaJakoSepotId: opsané Šepot ID pozná, odkaz ne', () async {
+      // Lidé opisují výrazné SEP-… z obrazovky sdílení místo odkazu.
+      final identity = await LocalIdentity.create('Opsaná');
+      expect(PublicIdentity.vypadaJakoSepotId(identity.sepotId), isTrue);
+      expect(PublicIdentity.vypadaJakoSepotId(' sep-${identity.sepotId.substring(4).toLowerCase()} '), isTrue);
+      expect(PublicIdentity.vypadaJakoSepotId(
+          identity.publicIdentity.toShareString()), isFalse);
+      expect(PublicIdentity.fromShareString(identity.sepotId), isNull);
+    });
+
     test('fromShareString: da špatné délky → null (ne vadný kontakt)', () async {
       final base = await LocalIdentity.create('Krátká');
       final bad = base.publicIdentity.withRouting(

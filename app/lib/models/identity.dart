@@ -207,6 +207,14 @@ class PublicIdentity {
     return '$_linkPrefix$payload';
   }
 
+  static final _sepotIdTvar = RegExp(r'^SEP-?[0-9A-Z]{4,}$', caseSensitive: false);
+
+  /// Šepot ID (SEP-…) je na obrazovce sdílení nejvýraznější text, takže ho
+  /// lidé opisují místo odkazu. Adresář identit relay záměrně nemá, podle ID
+  /// tedy přidat nejde — dialog to musí říct jinak než „neplatný kód“.
+  static bool vypadaJakoSepotId(String s) =>
+      _sepotIdTvar.hasMatch(s.replaceAll(RegExp(r'\s'), ''));
+
   /// Import z odkazu / QR. Vrací null, pokud vstup není platný.
   static PublicIdentity? fromShareString(String s) {
     try {

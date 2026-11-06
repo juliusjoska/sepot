@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sepot/core/push/apns_ios.dart';
+import 'package:sepot/core/utils/klavesnice.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/core/utils/externi_obrazovka.dart';
@@ -339,6 +340,7 @@ class _AutoLockGateState extends ConsumerState<_AutoLockGate>
     // ref.invalidate(messagingStartProvider) až po úspěšném unlocku.
     await ref.read(messagingServiceProvider).stop();
     storage.lock();
+    zavritKlavesnici();
     _router.go('/pin-lock');
   }
 
@@ -380,6 +382,7 @@ class _LoadingScreenState extends ConsumerState<_LoadingScreen> {
       context.go('/onboarding');
     } else if (hasPin) {
       // Odemkne PIN obrazovka (Argon2id unwrap DEK)
+      zavritKlavesnici();
       context.go('/pin-lock');
     } else {
       // Bez PINu — DEK přímo z OS keystore. PIN je povinný a v appce nejde

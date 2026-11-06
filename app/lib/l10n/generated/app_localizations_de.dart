@@ -542,7 +542,8 @@ class AppLocalizationsDe extends AppLocalizations {
   String get commonClose => 'Schließen';
 
   @override
-  String get settingsIdCopied => 'ID kopiert';
+  String get settingsIdCopied =>
+      'Šepot-ID kopiert. Sie dient zur Prüfung; um einen Kontakt hinzuzufügen, schick eine Einladung.';
 
   @override
   String settingsFingerprint(String fingerprint) {
@@ -1008,13 +1009,18 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get contactsAddDialogPrompt =>
-      'Füge den Share-String des Kontakts ein:';
+      'Füge den Link oder die ganze Einladung deines Kontakts ein (beginnt mit sepot://add/):';
 
   @override
-  String get contactsShareStringHint => 'Share-String einfügen...';
+  String get contactsShareStringHint => 'sepot://add/…';
 
   @override
-  String get contactsInvalidShareString => 'Ungültiger Share-String';
+  String get contactsInvalidShareString =>
+      'Das ist keine gültige Einladung. Bitte deinen Kontakt um den Link oder scanne seinen QR-Code.';
+
+  @override
+  String get contactsSepotIdNotInvite =>
+      'Das ist eine Šepot-ID. Sie dient nur zur Überprüfung eines Kontakts, hinzufügen kann man damit niemanden. Bitte um den Link oder scanne den QR-Code.';
 
   @override
   String contactsAdded(String name) {
@@ -1274,7 +1280,7 @@ class AppLocalizationsDe extends AppLocalizations {
   String get chatListArchive => 'Archivieren';
 
   @override
-  String get qrShareTitle => 'Meine Šepot-ID';
+  String get qrShareTitle => 'Kontakt einladen';
 
   @override
   String get qrIdentityNotFound => 'Identität nicht gefunden';
@@ -1319,7 +1325,20 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get qrShareInfo =>
-      'Dein Kontakt scannt deinen QR-Code oder fügt den Share-String in die App ein.';
+      'Deine Šepot-ID dient nur zur Prüfung, dass du mit der richtigen Person schreibst. Niemand kann dich darüber hinzufügen, Šepot hat kein Nutzerverzeichnis.';
+
+  @override
+  String get qrShareHowTo =>
+      'Lass den Code scannen oder schick eine Einladung.';
+
+  @override
+  String get qrShareSepotIdLabel => 'Deine Šepot-ID (nur zur Prüfung)';
+
+  @override
+  String get qrShareSendInvite => 'Einladung senden';
+
+  @override
+  String get qrShareCopyInvite => 'Einladung kopieren';
 
   @override
   String get reportCategoryChildSafety => 'Gefährdung eines Kindes';

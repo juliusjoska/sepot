@@ -7,6 +7,7 @@ import 'package:sepot/core/crypto/dek_wrap.dart';
 import 'package:sepot/core/storage/secure_storage.dart' show PinLockedException;
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
+import 'package:sepot/core/utils/klavesnice.dart';
 import 'package:sepot/providers/conversations_provider.dart';
 import 'package:sepot/providers/messaging_provider.dart';
 import 'package:sepot/providers/push_provider.dart';
@@ -35,6 +36,9 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
     // automatická výzva odemkne skutečnou appku dřív, než člověk pod nátlakem
     // stihne zadat nátlakový PIN — stačí mu telefon namířit na obličej.
     _loadBiometricsAvailability();
+    // Pojistka pro cesty na zámek mimo _AutoLockGate: klávesnice z předchozí
+    // obrazovky se může vrátit až po prvním snímku.
+    WidgetsBinding.instance.addPostFrameCallback((_) => zavritKlavesnici());
   }
 
   Future<void> _loadBiometricsAvailability() async {

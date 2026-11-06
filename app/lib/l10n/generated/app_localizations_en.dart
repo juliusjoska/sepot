@@ -535,7 +535,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get commonClose => 'Close';
 
   @override
-  String get settingsIdCopied => 'ID copied';
+  String get settingsIdCopied =>
+      'Šepot ID copied. It\'s for verification; to add a contact, send an invite.';
 
   @override
   String settingsFingerprint(String fingerprint) {
@@ -994,13 +995,19 @@ class AppLocalizationsEn extends AppLocalizations {
   String get contactsShareCardSubtitle => 'Show your QR code or send a link';
 
   @override
-  String get contactsAddDialogPrompt => 'Paste the contact\'s share string:';
+  String get contactsAddDialogPrompt =>
+      'Paste the link or the whole invite your contact sent you (starts with sepot://add/):';
 
   @override
-  String get contactsShareStringHint => 'Paste share string…';
+  String get contactsShareStringHint => 'sepot://add/…';
 
   @override
-  String get contactsInvalidShareString => 'Invalid share string';
+  String get contactsInvalidShareString =>
+      'This isn\'t a valid invite. Ask your contact for their link or scan their QR code.';
+
+  @override
+  String get contactsSepotIdNotInvite =>
+      'That\'s a Šepot ID. It\'s only for verifying a contact; you can\'t add someone with it. Ask for their link or scan their QR code.';
 
   @override
   String contactsAdded(String name) {
@@ -1251,7 +1258,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get chatListArchive => 'Archive';
 
   @override
-  String get qrShareTitle => 'My Šepot ID';
+  String get qrShareTitle => 'Invite a contact';
 
   @override
   String get qrIdentityNotFound => 'Identity not found';
@@ -1296,7 +1303,19 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get qrShareInfo =>
-      'Your contact scans your QR code or pastes the share string into the app.';
+      'Your Šepot ID only lets you check you\'re talking to the right person. Nobody can add you by it, Šepot has no user directory.';
+
+  @override
+  String get qrShareHowTo => 'Let them scan the code, or send them an invite.';
+
+  @override
+  String get qrShareSepotIdLabel => 'Your Šepot ID (for verification only)';
+
+  @override
+  String get qrShareSendInvite => 'Send invite';
+
+  @override
+  String get qrShareCopyInvite => 'Copy invite';
 
   @override
   String get reportCategoryChildSafety => 'Child endangerment';

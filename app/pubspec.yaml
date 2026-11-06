@@ -1,7 +1,7 @@
 name: sepot
 description: "Šepot — Soukromý messenger s E2E šifrováním"
 publish_to: 'none'
-version: 1.2.5+31
+version: 1.2.6+33
 
 environment:
   sdk: ^3.10.8
@@ -71,6 +71,11 @@ dev_dependencies:
   flutter_native_splash: ^2.4.7
 
 flutter:
+  # iOS přes CocoaPods jako do 1.2.5: Flutter 3.47 sám přepíná na Swift Package
+  # Manager a file_picker tam přibalí DKCamera s CLLocationManager → Apple pak
+  # chce důvod přístupu k poloze, kterou Šepot nepoužívá (ITMS-90683, build 32).
+  config:
+    enable-swift-package-manager: false
   uses-material-design: true
   generate: true
   assets:

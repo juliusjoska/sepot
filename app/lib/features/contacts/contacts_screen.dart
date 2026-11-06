@@ -63,7 +63,10 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
               controller: _searchController,
               decoration: InputDecoration(
                 hintText: context.l10n.contactsSearchHint,
-                prefixIcon: const Icon(Icons.search, color: SepotColors.textMuted),
+                prefixIcon: const Icon(
+                  Icons.search,
+                  color: SepotColors.textMuted,
+                ),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                   borderSide: const BorderSide(color: SepotColors.border),
@@ -77,16 +80,23 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
           const Divider(height: 1),
           ListTile(
             leading: const NotesAvatar(size: 40),
-            title: Text(context.l10n.notesTitle,
-                style: const TextStyle(fontWeight: FontWeight.w500)),
-            subtitle: Text(context.l10n.notesSubtitle,
-                style: const TextStyle(
-                    fontSize: 12, color: SepotColors.textSecondary)),
+            title: Text(
+              context.l10n.notesTitle,
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
+            subtitle: Text(
+              context.l10n.notesSubtitle,
+              style: const TextStyle(
+                fontSize: 12,
+                color: SepotColors.textSecondary,
+              ),
+            ),
             onTap: () async {
               await ref.read(conversationsProvider.notifier).ensureNotes();
               if (context.mounted) {
                 context.push(
-                    '/conversation/${AppConstants.notesConversationId}');
+                  '/conversation/${AppConstants.notesConversationId}',
+                );
               }
             },
           ),
@@ -160,8 +170,10 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
                       ),
                       trailing: IconButton(
                         tooltip: context.l10n.chatOpenProfile,
-                        icon: const Icon(Icons.person_outline_rounded,
-                            color: SepotColors.textSecondary),
+                        icon: const Icon(
+                          Icons.person_outline_rounded,
+                          color: SepotColors.textSecondary,
+                        ),
                         onPressed: () => context.push('/contact/$id'),
                       ),
                       onTap: () => context.push('/conversation/$id'),
@@ -193,10 +205,7 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
             const CircleAvatar(
               radius: 24,
               backgroundColor: SepotColors.surfaceVariant,
-              child: Icon(
-                Icons.qr_code_rounded,
-                color: SepotColors.ember,
-              ),
+              child: Icon(Icons.qr_code_rounded, color: SepotColors.ember),
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -231,77 +240,98 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
   void _showAddContactDialog(BuildContext context) {
     final idController = TextEditingController();
 
+    // Chyba přímo pod polem: snackbar by se schoval za bariéru dialogu.
+    String? chyba;
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(context.l10n.contactsAddContact),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              context.l10n.contactsAddDialogPrompt,
-              style: const TextStyle(
-                  fontSize: 14, color: SepotColors.textSecondary),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: idController,
-              decoration: InputDecoration(
-                hintText: context.l10n.contactsShareStringHint,
-                prefixIcon: const Icon(Icons.link),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(context.l10n.contactsAddContact),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                context.l10n.contactsAddDialogPrompt,
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: SepotColors.textSecondary,
+                ),
               ),
-              maxLines: 3,
+              const SizedBox(height: 16),
+              TextField(
+                controller: idController,
+                decoration: InputDecoration(
+                  hintText: context.l10n.contactsShareStringHint,
+                  prefixIcon: const Icon(Icons.link),
+                  errorText: chyba,
+                  errorMaxLines: 4,
+                ),
+                maxLines: 3,
+                onChanged: (_) {
+                  if (chyba != null) setDialogState(() => chyba = null);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: Text(context.l10n.commonCancel),
+            ),
+            TextButton.icon(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                context.push('/qr-scan');
+              },
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+              label: Text(context.l10n.qrScanTitle),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final shareString = idController.text.trim();
+                if (shareString.isEmpty) return;
+
+                final identity = PublicIdentity.fromShareString(shareString);
+                if (identity == null) {
+                  setDialogState(
+                    () => chyba = PublicIdentity.vypadaJakoSepotId(shareString)
+                        ? context.l10n.contactsSepotIdNotInvite
+                        : context.l10n.contactsInvalidShareString,
+                  );
+                  return;
+                }
+
+                try {
+                  await ref
+                      .read(contactsProvider.notifier)
+                      .addContact(identity);
+                  if (ctx.mounted) Navigator.of(ctx).pop();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          context.l10n.contactsAdded(
+                            identity.displayName.isEmpty
+                                ? context.l10n.commonUnknownContact
+                                : identity.displayName,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(describeError(context.l10n, e))),
+                    );
+                  }
+                }
+              },
+              child: Text(context.l10n.commonAdd),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text(context.l10n.commonCancel),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final shareString = idController.text.trim();
-              if (shareString.isEmpty) return;
-
-              final identity = PublicIdentity.fromShareString(shareString);
-              if (identity == null) {
-                if (ctx.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                        content:
-                            Text(context.l10n.contactsInvalidShareString)),
-                  );
-                }
-                return;
-              }
-
-              try {
-                await ref
-                    .read(contactsProvider.notifier)
-                    .addContact(identity);
-                if (ctx.mounted) Navigator.of(ctx).pop();
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(context.l10n.contactsAdded(
-                          identity.displayName.isEmpty
-                              ? context.l10n.commonUnknownContact
-                              : identity.displayName)),
-                    ),
-                  );
-                }
-              } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(describeError(context.l10n, e))),
-                  );
-                }
-              }
-            },
-            child: Text(context.l10n.commonAdd),
-          ),
-        ],
       ),
     );
   }
@@ -318,7 +348,10 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.verified_outlined, color: SepotColors.ember),
+              leading: const Icon(
+                Icons.verified_outlined,
+                color: SepotColors.ember,
+              ),
               title: Text(context.l10n.chatMenuVerifyContact),
               subtitle: Text(context.l10n.verifyContactSubtitle),
               onTap: () {
@@ -328,9 +361,14 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete_outline, color: SepotColors.error),
-              title: Text(context.l10n.contactsDeleteContact,
-                  style: const TextStyle(color: SepotColors.error)),
+              leading: const Icon(
+                Icons.delete_outline,
+                color: SepotColors.error,
+              ),
+              title: Text(
+                context.l10n.contactsDeleteContact,
+                style: const TextStyle(color: SepotColors.error),
+              ),
               onTap: () {
                 ref.read(contactsProvider.notifier).removeContact(contactId);
                 Navigator.of(ctx).pop();

@@ -715,7 +715,7 @@
   "@commonClose": {
     "description": "Tlačítko zavření dialogu Licence; stejný text ř. 574 (seed fráze) a ř. 619 (about) — jeden common klíč | Tlačítko zavření dialogu seed fráze — společný klíč | Tlačítko zavření about dialogu — společný klíč"
   },
-  "settingsIdCopied": "ID zkopírováno",
+  "settingsIdCopied": "Šepot ID zkopírováno. Slouží k ověření, k přidání kontaktu pošli pozvánku.",
   "@settingsIdCopied": {
     "description": "SnackBar po tapnutí na Šepot ID v profilové kartě (kopie do schránky)"
   },
@@ -1340,15 +1340,16 @@
   "@contactsShareCardSubtitle": {
     "description": "Podtitulek karty sdílení vlastního Šepot ID"
   },
-  "contactsAddDialogPrompt": "Vlož sdílený řetězec (share string) kontaktu:",
+  "contactsAddDialogPrompt": "Vlož odkaz nebo celou pozvánku, kterou ti kontakt poslal (začíná sepot://add/):",
   "@contactsAddDialogPrompt": {
     "description": "Instrukční text v těle dialogu Přidat kontakt"
   },
-  "contactsShareStringHint": "Vložit share string...",
+  "contactsShareStringHint": "sepot://add/…",
   "@contactsShareStringHint": {
     "description": "hintText TextFieldu v dialogu Přidat kontakt (vkládá se share string)"
   },
-  "contactsInvalidShareString": "Neplatný share string",
+  "contactsInvalidShareString": "Tohle není platná pozvánka. Požádej kontakt o odkaz, nebo naskenuj jeho QR kód.",
+  "contactsSepotIdNotInvite": "Tohle je Šepot ID. Slouží jen k ověření kontaktu, přidat se podle něj nedá. Požádej o odkaz, nebo naskenuj QR kód.",
   "@contactsInvalidShareString": {
     "description": "SnackBar, když se vložený text nepodaří parsovat jako PublicIdentity share string"
   },
@@ -1683,7 +1684,7 @@
   "@chatListArchive": {
     "description": "Položka bottom sheetu akcí konverzace (long-press) — přesune konverzaci do archivu; kandidát na sdílení s archive feature (archiveAction)"
   },
-  "qrShareTitle": "Můj Šepot ID",
+  "qrShareTitle": "Pozvat kontakt",
   "@qrShareTitle": {
     "description": "AppBar titulek obrazovky sdílení vlastního QR/Šepot ID"
   },
@@ -1743,7 +1744,11 @@
   "@commonShare": {
     "description": "Popisek ElevatedButton.icon, který otevře systémový share sheet"
   },
-  "qrShareInfo": "Kontakt naskenuje tvůj QR kód nebo vloží sdílený řetězec do aplikace.",
+  "qrShareInfo": "Šepot ID slouží jen k ověření, že si píšete se správným člověkem. Přidat se podle něj nedá, Šepot nemá žádný adresář uživatelů.",
+  "qrShareHowTo": "Ať si kód naskenuje, nebo mu pošli pozvánku.",
+  "qrShareSepotIdLabel": "Tvoje Šepot ID (jen k ověření)",
+  "qrShareSendInvite": "Poslat pozvánku",
+  "qrShareCopyInvite": "Kopírovat pozvánku",
   "@qrShareInfo": {
     "description": "Informační box (ikona info) pod tlačítky — vysvětluje, jak protistrana kontakt přidá"
   },

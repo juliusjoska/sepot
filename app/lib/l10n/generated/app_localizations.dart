@@ -1007,7 +1007,7 @@ abstract class AppLocalizations {
   /// SnackBar po tapnutí na Šepot ID v profilové kartě (kopie do schránky)
   ///
   /// In cs, this message translates to:
-  /// **'ID zkopírováno'**
+  /// **'Šepot ID zkopírováno. Slouží k ověření, k přidání kontaktu pošli pozvánku.'**
   String get settingsIdCopied;
 
   /// Kryptografický otisk identity v profilové kartě nahoře | Řádek s bezpečnostním otiskem (fingerprint) identity v potvrzovacím dialogu nového kontaktu. | Popisek kryptografického otisku pod jménem uživatele (monospace styl)
@@ -1793,20 +1793,26 @@ abstract class AppLocalizations {
   /// Instrukční text v těle dialogu Přidat kontakt
   ///
   /// In cs, this message translates to:
-  /// **'Vlož sdílený řetězec (share string) kontaktu:'**
+  /// **'Vlož odkaz nebo celou pozvánku, kterou ti kontakt poslal (začíná sepot://add/):'**
   String get contactsAddDialogPrompt;
 
   /// hintText TextFieldu v dialogu Přidat kontakt (vkládá se share string)
   ///
   /// In cs, this message translates to:
-  /// **'Vložit share string...'**
+  /// **'sepot://add/…'**
   String get contactsShareStringHint;
 
   /// SnackBar, když se vložený text nepodaří parsovat jako PublicIdentity share string
   ///
   /// In cs, this message translates to:
-  /// **'Neplatný share string'**
+  /// **'Tohle není platná pozvánka. Požádej kontakt o odkaz, nebo naskenuj jeho QR kód.'**
   String get contactsInvalidShareString;
+
+  /// No description provided for @contactsSepotIdNotInvite.
+  ///
+  /// In cs, this message translates to:
+  /// **'Tohle je Šepot ID. Slouží jen k ověření kontaktu, přidat se podle něj nedá. Požádej o odkaz, nebo naskenuj QR kód.'**
+  String get contactsSepotIdNotInvite;
 
   /// SnackBar po úspěšném přidání kontaktu. Pozor pro překladatele: 'přidán' je mužský rod od slova kontakt (ne gender osoby) — v en/de/ru/it bez problému
   ///
@@ -2231,7 +2237,7 @@ abstract class AppLocalizations {
   /// AppBar titulek obrazovky sdílení vlastního QR/Šepot ID
   ///
   /// In cs, this message translates to:
-  /// **'Můj Šepot ID'**
+  /// **'Pozvat kontakt'**
   String get qrShareTitle;
 
   /// Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)
@@ -2309,8 +2315,32 @@ abstract class AppLocalizations {
   /// Informační box (ikona info) pod tlačítky — vysvětluje, jak protistrana kontakt přidá
   ///
   /// In cs, this message translates to:
-  /// **'Kontakt naskenuje tvůj QR kód nebo vloží sdílený řetězec do aplikace.'**
+  /// **'Šepot ID slouží jen k ověření, že si píšete se správným člověkem. Přidat se podle něj nedá, Šepot nemá žádný adresář uživatelů.'**
   String get qrShareInfo;
+
+  /// No description provided for @qrShareHowTo.
+  ///
+  /// In cs, this message translates to:
+  /// **'Ať si kód naskenuje, nebo mu pošli pozvánku.'**
+  String get qrShareHowTo;
+
+  /// No description provided for @qrShareSepotIdLabel.
+  ///
+  /// In cs, this message translates to:
+  /// **'Tvoje Šepot ID (jen k ověření)'**
+  String get qrShareSepotIdLabel;
+
+  /// No description provided for @qrShareSendInvite.
+  ///
+  /// In cs, this message translates to:
+  /// **'Poslat pozvánku'**
+  String get qrShareSendInvite;
+
+  /// No description provided for @qrShareCopyInvite.
+  ///
+  /// In cs, this message translates to:
+  /// **'Kopírovat pozvánku'**
+  String get qrShareCopyInvite;
 
   /// Label kategorie nahlášení — zobrazuje report screen ve výběru kategorií (ReportCategory.label)
   ///

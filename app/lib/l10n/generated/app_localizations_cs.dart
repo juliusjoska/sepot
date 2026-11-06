@@ -537,7 +537,8 @@ class AppLocalizationsCs extends AppLocalizations {
   String get commonClose => 'Zavřít';
 
   @override
-  String get settingsIdCopied => 'ID zkopírováno';
+  String get settingsIdCopied =>
+      'Šepot ID zkopírováno. Slouží k ověření, k přidání kontaktu pošli pozvánku.';
 
   @override
   String settingsFingerprint(String fingerprint) {
@@ -997,13 +998,18 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get contactsAddDialogPrompt =>
-      'Vlož sdílený řetězec (share string) kontaktu:';
+      'Vlož odkaz nebo celou pozvánku, kterou ti kontakt poslal (začíná sepot://add/):';
 
   @override
-  String get contactsShareStringHint => 'Vložit share string...';
+  String get contactsShareStringHint => 'sepot://add/…';
 
   @override
-  String get contactsInvalidShareString => 'Neplatný share string';
+  String get contactsInvalidShareString =>
+      'Tohle není platná pozvánka. Požádej kontakt o odkaz, nebo naskenuj jeho QR kód.';
+
+  @override
+  String get contactsSepotIdNotInvite =>
+      'Tohle je Šepot ID. Slouží jen k ověření kontaktu, přidat se podle něj nedá. Požádej o odkaz, nebo naskenuj QR kód.';
 
   @override
   String contactsAdded(String name) {
@@ -1254,7 +1260,7 @@ class AppLocalizationsCs extends AppLocalizations {
   String get chatListArchive => 'Archivovat';
 
   @override
-  String get qrShareTitle => 'Můj Šepot ID';
+  String get qrShareTitle => 'Pozvat kontakt';
 
   @override
   String get qrIdentityNotFound => 'Identita nebyla nalezena';
@@ -1299,7 +1305,19 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get qrShareInfo =>
-      'Kontakt naskenuje tvůj QR kód nebo vloží sdílený řetězec do aplikace.';
+      'Šepot ID slouží jen k ověření, že si píšete se správným člověkem. Přidat se podle něj nedá, Šepot nemá žádný adresář uživatelů.';
+
+  @override
+  String get qrShareHowTo => 'Ať si kód naskenuje, nebo mu pošli pozvánku.';
+
+  @override
+  String get qrShareSepotIdLabel => 'Tvoje Šepot ID (jen k ověření)';
+
+  @override
+  String get qrShareSendInvite => 'Poslat pozvánku';
+
+  @override
+  String get qrShareCopyInvite => 'Kopírovat pozvánku';
 
   @override
   String get reportCategoryChildSafety => 'Ohrožení dítěte';
