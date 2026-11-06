@@ -13,19 +13,83 @@ use libsignal_protocol::PublicKey;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
+use crate::blocking::{self, AddressError, Retire};
+use crate::fingerprint::Fingerprint;
 use crate::limits::RegisterLimits;
 use crate::pow::{Mode as PowMode, Verdict};
 use crate::state::AppState;
 
-type ApiResult<T> = Result<T, (StatusCode, String)>;
+/// Hlavička se strojovou značkou chyby. Appka podle ní rozliší třeba 403
+/// relaye (zablokovaná identita) od 403 bezpečnostní vrstvy na edgi.
+const ERROR_TAG_HEADER: &str = "x-sepot-error";
+pub(crate) const TAG_IDENTITY_PROOF: &str = "identity-proof";
+pub(crate) const TAG_IDENTITY_BLOCKED: &str = "identity-blocked";
+pub(crate) const TAG_ADDRESS_TAKEN: &str = "address-taken";
+pub(crate) const TAG_RETRY: &str = "retry";
+pub(crate) const TAG_DEVICE_GONE: &str = "device-gone";
+const TEXT_INVALID_IDENTITY_KEY: &str = "neplatný identity klíč";
 
-fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
-    tracing::warn!("interní chyba: {e}");
-    (StatusCode::INTERNAL_SERVER_ERROR, "interní chyba".into())
+/// Chybová odpověď REST: stav, text pro člověka a volitelná značka.
+#[derive(Debug)]
+pub(crate) struct ApiError {
+    pub status: StatusCode,
+    pub message: String,
+    pub tag: Option<&'static str>,
 }
 
-fn bad(msg: &str) -> (StatusCode, String) {
-    (StatusCode::BAD_REQUEST, msg.into())
+impl ApiError {
+    fn tagged(status: StatusCode, message: &str, tag: &'static str) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            tag: Some(tag),
+        }
+    }
+}
+
+impl From<(StatusCode, String)> for ApiError {
+    fn from((status, message): (StatusCode, String)) -> Self {
+        Self {
+            status,
+            message,
+            tag: None,
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let mut response = (self.status, self.message).into_response();
+        if let Some(tag) = self.tag {
+            response
+                .headers_mut()
+                .insert(ERROR_TAG_HEADER, HeaderValue::from_static(tag));
+        }
+        response
+    }
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
+fn internal<E: std::fmt::Display>(e: E) -> ApiError {
+    tracing::warn!("interní chyba: {e}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "interní chyba".to_string(),
+    )
+        .into()
+}
+
+fn bad(msg: &str) -> ApiError {
+    (StatusCode::BAD_REQUEST, msg.to_string()).into()
+}
+
+fn address_taken() -> ApiError {
+    ApiError::tagged(
+        StatusCode::CONFLICT,
+        "doručovací adresa není k dispozici",
+        TAG_ADDRESS_TAKEN,
+    )
 }
 
 fn b64(name: &str, value: &str, expect_len: Option<usize>) -> ApiResult<Vec<u8>> {
@@ -54,22 +118,35 @@ pub async fn ready(State(state): State<Arc<AppState>>) -> ApiResult<Json<serde_j
     .await;
     match probe {
         Ok(Ok(_)) => Ok(Json(serde_json::json!({ "status": "ready" }))),
-        _ => Err((StatusCode::SERVICE_UNAVAILABLE, "databáze neodpovídá".into())),
+        _ => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "databáze neodpovídá".to_string(),
+        )
+            .into()),
     }
 }
 
 /// Veřejné informace o relayi. `source` + `revision` plní AGPL §13 — kdo
-/// s relayem mluví, má vědět, který zdroj právě běží.
+/// s relayem mluví, má vědět, který zdroj právě běží. `identity-block`:
+/// relay vynucuje blokace a vrací 403/410 se značkou, appka podle toho
+/// volí texty. `inactive_registration_days` je lhůta úklidu neaktivních
+/// registrací, null = úklid vypnutý.
 pub async fn server_info(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let mut capabilities = vec!["pqxdh", "sealed-sender", "prekey-upload", "identity-reclaim"];
     if state.pow.mode() != PowMode::Off {
         capabilities.push("register-pow");
     }
+    capabilities.push("identity-block");
+    let inactive_registration_days = state
+        .limits
+        .inactive_cleanup
+        .then_some(crate::cleanup::INACTIVE_REGISTRATION_DAYS);
     Json(serde_json::json!({
         "frame_version": 1,
         "trust_root": BASE64_STANDARD.encode(&state.certs.trust_root_public),
         "capabilities": capabilities,
         "register_pow": state.pow.mode().as_str(),
+        "inactive_registration_days": inactive_registration_days,
         "source": state.source_url,
         "revision": state.revision,
     }))
@@ -225,7 +302,7 @@ pub async fn register(
     }
 }
 
-async fn register_device(
+pub(crate) async fn register_device(
     state: &AppState,
     headers: &HeaderMap,
     identity_key: Vec<u8>,
@@ -254,13 +331,32 @@ async fn register_device(
     )?;
 
     // Hygiena: podpisy prekeys musí sedět k identity klíči už při uploadu.
-    let identity = PublicKey::deserialize(&identity_key).map_err(|_| bad("neplatný identity klíč"))?;
+    let identity =
+        PublicKey::deserialize(&identity_key).map_err(|_| bad(TEXT_INVALID_IDENTITY_KEY))?;
+    // Tentýž soukromý klíč má víc zápisů veřejného klíče (horní bit
+    // u-souřadnice, přičtený bod malého řádu) a libsignal k nim podpisy
+    // ověří. Každý zápis má jiný otisk, takže jen kanonický zápis drží
+    // blokaci: jinak by se zablokovaná identita vrátila pod aliasem.
+    if !identity.is_canonical() {
+        return Err(bad(TEXT_INVALID_IDENTITY_KEY));
+    }
     if !identity.verify_signature(&spk_pub, &spk_sig) {
         return Err(bad("podpis signed prekey nesedí"));
     }
     if !identity.verify_signature(&kyber_pub, &kyber_sig) {
         return Err(bad("podpis kyber prekey nesedí"));
     }
+    // Důkaz držení klíče u každé registrace: SPK a Kyber jdou z veřejného
+    // bundlu opsat, takže bez důkazu by šlo zaregistrovat cizí klíč, obsadit
+    // jeho vyřazenou adresu nebo zjistit, zda je identita zablokovaná.
+    if !identity_proof_valid(headers, &identity, "POST /v1/register") {
+        return Err(ApiError::tagged(
+            StatusCode::UNAUTHORIZED,
+            "chybí nebo neplatí důkaz držení klíče",
+            TAG_IDENTITY_PROOF,
+        ));
+    }
+    let fingerprint = Fingerprint::of_identity_key(&identity_key);
 
     // ThreadRng je !Send — nesmí přežít přes await, proto vlastní scope.
     let (account_id, device_uuid) = {
@@ -273,6 +369,29 @@ async fn register_device(
     };
 
     let mut tx = state.pool.begin().await.map_err(internal)?;
+    // Zámek otisku jako první příkaz: blokace téže identity (jiný proces)
+    // čeká na commit registrace a najde ji, nebo registrace po jejím commitu
+    // uvidí seznam blokací.
+    blocking::lock(&mut tx, &fingerprint)
+        .await
+        .map_err(internal)?;
+    if blocking::is_blocked(&mut *tx, &fingerprint)
+        .await
+        .map_err(internal)?
+    {
+        tracing::info!("registrace zablokované identity odmítnuta");
+        return Err(ApiError::tagged(
+            StatusCode::FORBIDDEN,
+            blocking::TEXT_BLOCKED,
+            TAG_IDENTITY_BLOCKED,
+        ));
+    }
+    #[cfg(test)]
+    state
+        .test_hooks
+        .after_block_check(&mut tx)
+        .await
+        .map_err(internal)?;
 
     let inserted = sqlx::query(
         "INSERT INTO identities (account_id, identity_key) VALUES ($1, $2)
@@ -284,51 +403,79 @@ async fn register_device(
     .await
     .map_err(internal)?;
     // Identita už existuje = obnova ze 24 slov na novém telefonu (nebo
-    // reinstalace). Bez důkazu držení klíče zůstává 409 (anti-squatting);
-    // s důkazem účet převezme nové zařízení: stará zařízení, jejich
-    // prekeys, push tokeny i nedoručená fronta pryč (nové zařízení staré
-    // ratchet relace stejně nemá), account_id zůstává — kontakty ho znají.
+    // reinstalace). Důkaz držení klíče je ověřený výše, účet tedy převezme
+    // nové zařízení: stará zařízení, jejich prekeys, push tokeny i nedoručená
+    // fronta pryč (nové zařízení staré ratchet relace stejně nemá),
+    // account_id zůstává — kontakty ho znají. Ostatní adresy se vyřadí.
+    let mut replaced = blocking::Removed::default();
     let account_id = if inserted.rows_affected() == 0 {
-        if !identity_proof_valid(headers, &identity, "POST /v1/register") {
-            return Err((StatusCode::CONFLICT, "identita už existuje".into()));
-        }
-        let (existing,): (Vec<u8>,) =
-            sqlx::query_as("SELECT account_id FROM identities WHERE identity_key = $1")
-                .bind(&identity_key)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(internal)?;
-        sqlx::query(
-            "DELETE FROM message_queue WHERE dst_address IN (
-                 SELECT delivery_address FROM devices WHERE account_id = $1)",
+        #[cfg(test)]
+        state.test_hooks.before_takeover_lock.pass().await;
+        let existing: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT account_id FROM identities WHERE identity_key = $1 FOR UPDATE",
         )
-        .bind(&existing)
-        .execute(&mut *tx)
+        .bind(&identity_key)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(internal)?;
-        sqlx::query("DELETE FROM devices WHERE account_id = $1")
-            .bind(&existing)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal)?;
+        #[cfg(test)]
+        state.test_hooks.after_takeover_lock.pass().await;
+        // Mezi INSERT a zámkem řádku ji smazat nejde: všechna mazání drží
+        // zámek otisku, nebo identitu přeskočí (úklid). Pojistka, kdyby
+        // nějaké mazání zámek obešlo: klient to zkusí znovu.
+        let Some(existing) = existing else {
+            return Err(ApiError::tagged(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "registrace se právě mění, zkus to znovu",
+                TAG_RETRY,
+            ));
+        };
+        replaced = blocking::delete_devices(
+            &mut tx,
+            &existing,
+            &fingerprint,
+            Retire::Standard,
+            Some(&delivery_address),
+        )
+        .await
+        .map_err(internal)?;
         tracing::info!("identita převzata novým zařízením (obnova)");
         existing
     } else {
         account_id
     };
 
-    sqlx::query(
+    match blocking::check_address(
+        &mut tx,
+        &delivery_address,
+        &fingerprint,
+        &replaced.addresses,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(AddressError::Taken) => return Err(address_taken()),
+        Err(AddressError::Db(e)) => return Err(internal(e)),
+    }
+    // ON CONFLICT: souběžná registrace jiné identity se stejnou adresou
+    // (jiný zámek) dostane 409 místo 500 z unikátního indexu.
+    let device_inserted: Option<Vec<u8>> = sqlx::query_scalar(
         "INSERT INTO devices (device_uuid, account_id, device_id, registration_id, delivery_address)
-         VALUES ($1, $2, $3, $4, $5)",
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (delivery_address) DO NOTHING
+         RETURNING device_uuid",
     )
     .bind(&device_uuid)
     .bind(&account_id)
     .bind(body.device_id)
     .bind(body.registration_id)
     .bind(&delivery_address)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(internal)?;
+    if device_inserted.is_none() {
+        return Err(address_taken());
+    }
 
     sqlx::query(
         "INSERT INTO signed_prekeys (device_uuid, key_id, public_key, signature)
@@ -369,6 +516,9 @@ async fn register_device(
     }
 
     tx.commit().await.map_err(internal)?;
+    // Stará zařízení odpojit hned, ne až kontrolou spojení: jinak by po
+    // převzetí chvíli poslouchala dvě zařízení na téže adrese.
+    state.conns.kick_devices(&replaced.device_uuids, 410);
 
     Ok((
         StatusCode::CREATED,
@@ -421,7 +571,7 @@ pub async fn fetch_bundle(
     .await
     .map_err(internal)?;
     let Some((account_id, identity_key)) = account else {
-        return Err((StatusCode::NOT_FOUND, "adresa neznámá".into()));
+        return Err((StatusCode::NOT_FOUND, "adresa neznámá".to_string()).into());
     };
 
     // Multi-device fanout: bundle pro všechna zařízení identity.
@@ -513,12 +663,15 @@ pub(crate) struct AuthedDevice {
 /// Ověří hlavičku `X-Sepot-Auth: <device_uuid_hex>.<ts_ms>.<sig_b64>`,
 /// kde sig = XEdDSA identity klíčem zařízení nad `"<method_path>\n<ts_ms>"`.
 /// Sdílí ji sender certificate a upload příloh; do logů nejde nic.
+/// Zařízení, které v DB není: 403, smazala-li ho blokace, jinak 410
+/// (registrace skončila). device_uuid zná jen zařízení samo, takže ani
+/// jedna odpověď nikomu jinému nic neprozradí.
 pub(crate) async fn authenticate_device(
     state: &AppState,
     headers: &HeaderMap,
     method_path: &str,
-) -> Result<AuthedDevice, (StatusCode, String)> {
-    let unauthorized = || (StatusCode::UNAUTHORIZED, "neautorizováno".to_string());
+) -> Result<AuthedDevice, ApiError> {
+    let unauthorized = || ApiError::from((StatusCode::UNAUTHORIZED, "neautorizováno".to_string()));
 
     let header = headers
         .get("x-sepot-auth")
@@ -532,6 +685,9 @@ pub(crate) async fn authenticate_device(
     );
 
     let device_uuid = hex::decode(device_hex).map_err(|_| unauthorized())?;
+    if device_uuid.len() != 16 {
+        return Err(unauthorized());
+    }
     let ts: i64 = ts_str.parse().map_err(|_| unauthorized())?;
     let signature = BASE64_STANDARD.decode(sig_b64).map_err(|_| unauthorized())?;
 
@@ -551,13 +707,43 @@ pub(crate) async fn authenticate_device(
     .await
     .map_err(internal)?;
     let Some((account_id, identity_key, device_id)) = row else {
-        return Err(unauthorized());
+        return Err(
+            if blocking::blocked_device(&state.pool, &device_uuid)
+                .await
+                .map_err(internal)?
+            {
+                ApiError::tagged(
+                    StatusCode::FORBIDDEN,
+                    blocking::TEXT_BLOCKED,
+                    TAG_IDENTITY_BLOCKED,
+                )
+            } else {
+                ApiError::tagged(
+                    StatusCode::GONE,
+                    blocking::TEXT_DEVICE_GONE,
+                    TAG_DEVICE_GONE,
+                )
+            },
+        );
     };
 
     let message = format!("{method_path}\n{ts}");
     let identity = PublicKey::deserialize(&identity_key).map_err(|_| unauthorized())?;
     if !identity.verify_signature(message.as_bytes(), &signature) {
         return Err(unauthorized());
+    }
+    // Registrace zablokované identity vznikne jen obejitím blokace (starší
+    // image během návratu). Dorovnání ji smaže až v hodinové údržbě; do té
+    // doby nesmí dostat certifikát odesílatele ani nic jiného.
+    if blocking::is_blocked(&state.pool, &Fingerprint::of_identity_key(&identity_key))
+        .await
+        .map_err(internal)?
+    {
+        return Err(ApiError::tagged(
+            StatusCode::FORBIDDEN,
+            blocking::TEXT_BLOCKED,
+            TAG_IDENTITY_BLOCKED,
+        ));
     }
 
     Ok(AuthedDevice {
@@ -603,7 +789,7 @@ pub async fn upload_keys(
         return Err(bad("příliš mnoho one-time prekeys"));
     }
     let identity =
-        PublicKey::deserialize(&authed.identity_key).map_err(|_| bad("neplatný identity klíč"))?;
+        PublicKey::deserialize(&authed.identity_key).map_err(|_| bad(TEXT_INVALID_IDENTITY_KEY))?;
 
     let mut tx = state.pool.begin().await.map_err(internal)?;
 
@@ -727,11 +913,14 @@ pub async fn delete_identity(
     headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
     let authed = authenticate_device(&state, &headers, "DELETE /v1/identity").await?;
-    state
+    let removed = state
         .delete_identity(&authed.account_id)
         .await
         .map_err(internal)?;
     tracing::info!("identita smazána na žádost zařízení");
+    // Registrace skončila: spojení smazaných zařízení odpojit hned, další
+    // AUTH by stejně dostal 410.
+    state.conns.kick_devices(&removed, 410);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -770,4 +959,583 @@ pub async fn certificate_delivery(
         sender_uuid,
         expires_at_ms,
     }))
+}
+
+#[cfg(test)]
+mod db_tests {
+    //! Registrace, převzetí a autentizace nad reálným Postgresem (testkit).
+    //! #[ignore] — spouštět s DB: `cargo test -p sepot-relay -- --ignored`.
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::blocking::{addr_hash, owner_tag, BlockOptions};
+    use crate::testkit::{self, rand_bytes, TestIdentity};
+
+    async fn identities_with_key(state: &AppState, key: &[u8]) -> i64 {
+        testkit::count(
+            &state.pool,
+            "SELECT count(*) FROM identities WHERE identity_key = $1",
+            key,
+        )
+        .await
+    }
+
+    async fn retired(state: &AppState, address: &[u8]) -> i64 {
+        testkit::count(
+            &state.pool,
+            "SELECT count(*) FROM retired_addresses WHERE addr_hash = $1",
+            &addr_hash(address),
+        )
+        .await
+    }
+
+    fn assert_error(error: &ApiError, status: StatusCode, tag: Option<&str>) {
+        assert_eq!(error.status, status, "{error:?}");
+        assert_eq!(error.tag, tag, "{error:?}");
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn registrace_bez_dukazu_vrati_401() {
+        let state = testkit::state().await;
+        let identity = TestIdentity::new();
+        let impostor = TestIdentity::new();
+        let stale_ts = chrono::Utc::now().timestamp_millis() - 2 * AUTH_WINDOW_MS;
+        let stale_signature = identity.sign(format!("POST /v1/register\n{stale_ts}").as_bytes());
+        let mut stale = HeaderMap::new();
+        stale.insert(
+            "x-sepot-identity-proof",
+            HeaderValue::from_str(&format!(
+                "{stale_ts}.{}",
+                BASE64_STANDARD.encode(stale_signature)
+            ))
+            .unwrap(),
+        );
+
+        for headers in [HeaderMap::new(), impostor.proof_headers(), stale] {
+            let result = register_device(
+                &state,
+                &headers,
+                identity.key.clone(),
+                identity.register_body(&rand_bytes(32)),
+            )
+            .await;
+            let Err(error) = result else {
+                panic!("bez platného důkazu registrace neprojde");
+            };
+            assert_error(&error, StatusCode::UNAUTHORIZED, Some(TAG_IDENTITY_PROOF));
+        }
+        assert_eq!(identities_with_key(&state, &identity.key).await, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn registrace_zablokovaneho_klice_vrati_403() {
+        let state = testkit::state().await;
+        let identity = TestIdentity::new();
+        let address = rand_bytes(32);
+        blocking::block(&state.pool, &identity.fingerprint, BlockOptions::default())
+            .await
+            .expect("blokace");
+
+        let error = testkit::register(&state, &identity, &address)
+            .await
+            .expect_err("zablokovaná identita");
+        assert_error(&error, StatusCode::FORBIDDEN, Some(TAG_IDENTITY_BLOCKED));
+        assert_eq!(identities_with_key(&state, &identity.key).await, 0);
+        let devices = testkit::count(
+            &state.pool,
+            "SELECT count(*) FROM devices WHERE delivery_address = $1",
+            &address,
+        )
+        .await;
+        assert_eq!(devices, 0);
+        testkit::forget(&state.pool, &identity, &[&address]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn prevzeti_zablokovaneho_klice_vrati_403() {
+        let state = testkit::state().await;
+        let identity = TestIdentity::new();
+        let (address, new_address) = (rand_bytes(32), rand_bytes(32));
+        let first = testkit::register(&state, &identity, &address)
+            .await
+            .expect("registrace");
+        // Blokace bez smazání registrace: tak ji převzetí najde po návratu
+        // ze starší verze relaye, než proběhne dorovnání.
+        sqlx::query(
+            "INSERT INTO blocked_identities (fingerprint, expires_on)
+             VALUES ($1, current_date + 30)",
+        )
+        .bind(identity.fingerprint.0)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let error = testkit::register(&state, &identity, &new_address)
+            .await
+            .expect_err("převzetí zablokované identity");
+        assert_error(&error, StatusCode::FORBIDDEN, Some(TAG_IDENTITY_BLOCKED));
+        let devices = testkit::count(
+            &state.pool,
+            "SELECT count(*) FROM devices WHERE device_uuid = $1",
+            &first.device_uuid,
+        )
+        .await;
+        assert_eq!(devices, 1, "zařízení zůstávají");
+        testkit::forget(&state.pool, &identity, &[&address, &new_address]).await;
+    }
+
+    /// Bez zámku otisku v registraci padá: blokace se vejde mezi kontrolu
+    /// blokace a zápis identity (háček tam spí 50 ms) a registrace pak
+    /// přežije.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn soubeh_blokace_a_registrace() {
+        const ROUNDS: usize = 200;
+        const WAVE: usize = 10;
+        /// Blokace startuje, až registrace spí v háčku.
+        const BLOCK_DELAY: Duration = Duration::from_millis(10);
+
+        let pool = testkit::shared_pool(2 * WAVE as u32 + 2).await;
+        let state = Arc::new(testkit::state_with_pool(pool).await);
+        state
+            .test_hooks
+            .sleep_after_block_check
+            .store(true, Ordering::Relaxed);
+
+        let mut registered_first = 0;
+        for _ in 0..ROUNDS / WAVE {
+            let mut rounds = Vec::new();
+            for _ in 0..WAVE {
+                let identity = Arc::new(TestIdentity::new());
+                let address = rand_bytes(32);
+                let registration = {
+                    let (state, identity, address) =
+                        (state.clone(), identity.clone(), address.clone());
+                    tokio::spawn(
+                        async move { testkit::register(&state, &identity, &address).await },
+                    )
+                };
+                let block = {
+                    let (state, identity) = (state.clone(), identity.clone());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(BLOCK_DELAY).await;
+                        blocking::block(&state.pool, &identity.fingerprint, BlockOptions::default())
+                            .await
+                    })
+                };
+                rounds.push((identity, address, registration, block));
+            }
+            for (identity, address, registration, block) in rounds {
+                let registration = registration.await.unwrap();
+                block.await.unwrap().expect("blokace");
+                match registration {
+                    Ok(_) => registered_first += 1,
+                    Err(error) => {
+                        assert_error(&error, StatusCode::FORBIDDEN, Some(TAG_IDENTITY_BLOCKED))
+                    }
+                }
+                assert_eq!(
+                    identities_with_key(&state, &identity.key).await,
+                    0,
+                    "registrace zablokovaného otisku přežila"
+                );
+                testkit::forget(&state.pool, &identity, &[&address]).await;
+            }
+        }
+        assert!(
+            registered_first > 0,
+            "souběh nenastal: blokace vždy předběhla registraci"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn adresa_ziveho_zarizeni_vrati_409() {
+        let state = testkit::state().await;
+        let (owner, intruder) = (TestIdentity::new(), TestIdentity::new());
+        let address = rand_bytes(32);
+        testkit::register(&state, &owner, &address)
+            .await
+            .expect("registrace");
+
+        let error = testkit::register(&state, &intruder, &address)
+            .await
+            .expect_err("adresa je obsazená");
+        assert_error(&error, StatusCode::CONFLICT, Some(TAG_ADDRESS_TAKEN));
+        assert_eq!(identities_with_key(&state, &intruder.key).await, 0);
+        testkit::forget(&state.pool, &owner, &[&address]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn vyrazena_adresa_jine_identity_vrati_409() {
+        let state = testkit::state().await;
+        let (owner, intruder) = (TestIdentity::new(), TestIdentity::new());
+        let address = rand_bytes(32);
+        let registered = testkit::register(&state, &owner, &address)
+            .await
+            .expect("registrace");
+        state
+            .delete_identity(&registered.account_id)
+            .await
+            .expect("smazání účtu");
+        assert_eq!(retired(&state, &address).await, 1);
+
+        let error = testkit::register(&state, &intruder, &address)
+            .await
+            .expect_err("vyřazená adresa cizí identity");
+        assert_error(&error, StatusCode::CONFLICT, Some(TAG_ADDRESS_TAKEN));
+        assert_eq!(retired(&state, &address).await, 1, "výluka trvá");
+        testkit::forget(&state.pool, &owner, &[&address]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn vyrazena_adresa_stejne_identity_se_vrati() {
+        let state = testkit::state().await;
+        let owner = TestIdentity::new();
+        let address = rand_bytes(32);
+        let registered = testkit::register(&state, &owner, &address)
+            .await
+            .expect("registrace");
+        state
+            .delete_identity(&registered.account_id)
+            .await
+            .expect("smazání účtu");
+
+        testkit::register(&state, &owner, &address)
+            .await
+            .expect("vlastník si adresu vezme zpět");
+        assert_eq!(retired(&state, &address).await, 0, "řádek výluky smazán");
+        testkit::forget(&state.pool, &owner, &[&address]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn smazani_uctu_vyradi_adresy_na_rok() {
+        let state = Arc::new(testkit::state().await);
+        let owner = TestIdentity::new();
+        let address = rand_bytes(32);
+        let registered = testkit::register(&state, &owner, &address)
+            .await
+            .expect("registrace");
+
+        let headers = owner.auth_headers(&registered.device_uuid, "DELETE /v1/identity");
+        let status = delete_identity(State(state.clone()), headers)
+            .await
+            .expect("smazání účtu");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let hash = addr_hash(&address);
+        let (year, tag): (bool, [u8; 32]) = sqlx::query_as(
+            "SELECT expires_on = current_date + $2, owner_tag
+               FROM retired_addresses WHERE addr_hash = $1",
+        )
+        .bind(hash)
+        .bind(blocking::RETIRED_ADDRESS_DAYS)
+        .fetch_one(&state.pool)
+        .await
+        .expect("adresa vyřazená");
+        assert!(year, "výluka na rok");
+        assert_eq!(tag, owner_tag(&hash, &owner.fingerprint));
+        testkit::forget(&state.pool, &owner, &[&address]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn prevzeti_vyradi_stare_adresy_krome_nove() {
+        let state = testkit::state().await;
+        let owner = TestIdentity::new();
+        let (kept, other) = (rand_bytes(32), rand_bytes(32));
+        let first = testkit::register(&state, &owner, &kept)
+            .await
+            .expect("registrace");
+        // Druhé zařízení téže identity s vlastní adresou.
+        sqlx::query(
+            "INSERT INTO devices (device_uuid, account_id, device_id, registration_id, delivery_address)
+             VALUES ($1, $2, 2, 2, $3)",
+        )
+        .bind(rand_bytes(16))
+        .bind(&first.account_id)
+        .bind(&other)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let again = testkit::register(&state, &owner, &kept)
+            .await
+            .expect("převzetí stejnou adresou");
+        assert_eq!(again.account_id, first.account_id, "account_id zůstává");
+        assert_eq!(retired(&state, &kept).await, 0, "nová adresa se nevyřazuje");
+        assert_eq!(retired(&state, &other).await, 1, "ostatní adresy ano");
+        let addresses: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT delivery_address FROM devices WHERE account_id = $1")
+                .bind(&first.account_id)
+                .fetch_all(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(addresses, vec![kept.clone()]);
+        testkit::forget(&state.pool, &owner, &[&kept, &other]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn authenticate_device_vraci_403_410_401() {
+        let state = testkit::state().await;
+        let path = "GET /v1/certificate/delivery";
+        let rejection = |result: Result<AuthedDevice, ApiError>| match result {
+            Ok(_) => panic!("autentizace neměla projít"),
+            Err(error) => error,
+        };
+
+        let blocked = TestIdentity::new();
+        let blocked_address = rand_bytes(32);
+        let device = testkit::register(&state, &blocked, &blocked_address)
+            .await
+            .expect("registrace")
+            .device_uuid;
+        blocking::block(&state.pool, &blocked.fingerprint, BlockOptions::default())
+            .await
+            .expect("blokace");
+        let error = rejection(
+            authenticate_device(&state, &blocked.auth_headers(&device, path), path).await,
+        );
+        assert_error(&error, StatusCode::FORBIDDEN, Some(TAG_IDENTITY_BLOCKED));
+
+        let unknown = TestIdentity::new();
+        let error = rejection(
+            authenticate_device(&state, &unknown.auth_headers(&rand_bytes(16), path), path).await,
+        );
+        assert_error(&error, StatusCode::GONE, Some(TAG_DEVICE_GONE));
+
+        let owner = TestIdentity::new();
+        let owner_address = rand_bytes(32);
+        let device = testkit::register(&state, &owner, &owner_address)
+            .await
+            .expect("registrace")
+            .device_uuid;
+        let impostor = TestIdentity::new();
+        let error = rejection(
+            authenticate_device(&state, &impostor.auth_headers(&device, path), path).await,
+        );
+        assert_error(&error, StatusCode::UNAUTHORIZED, None);
+        assert!(
+            authenticate_device(&state, &owner.auth_headers(&device, path), path)
+                .await
+                .is_ok(),
+            "vlastník projde"
+        );
+
+        testkit::forget(&state.pool, &blocked, &[&blocked_address]).await;
+        testkit::forget(&state.pool, &owner, &[&owner_address]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn server_info_hlasi_blokaci_a_lhutu() {
+        let Json(info) = server_info(State(Arc::new(testkit::state().await))).await;
+        let capabilities = info["capabilities"].as_array().expect("capabilities");
+        assert!(capabilities.iter().any(|c| c == "identity-block"), "{info}");
+        assert!(info["inactive_registration_days"].is_null(), "{info}");
+
+        let mut state = testkit::state().await;
+        state.limits.inactive_cleanup = true;
+        let Json(info) = server_info(State(Arc::new(state))).await;
+        assert_eq!(
+            info["inactive_registration_days"],
+            serde_json::json!(crate::cleanup::INACTIVE_REGISTRATION_DAYS)
+        );
+    }
+
+    /// Podepíše zprávu tak, aby podpis sedl k aliasu klíče.
+    type AliasSigner = Box<dyn Fn(&[u8]) -> Vec<u8>>;
+
+    /// Zápis téhož klíče, který libsignal přijme a podpisy k němu ověří,
+    /// s jiným otiskem než původní klíč.
+    struct KeyAlias {
+        family: &'static str,
+        key: Vec<u8>,
+        sign: AliasSigner,
+    }
+
+    /// Horní bit posledního bajtu: dekódování u-souřadnice ho maskuje,
+    /// podpis původním klíčem tedy sedí beze změny.
+    fn high_bit_alias(identity: &TestIdentity) -> KeyAlias {
+        let mut key = identity.key.clone();
+        key[32] |= 0x80;
+        let keys = identity.keys;
+        KeyAlias {
+            family: "horní bit",
+            key,
+            sign: Box::new(move |message| {
+                keys.private_key
+                    .calculate_signature(message, &mut rand::rng())
+                    .expect("podpis")
+                    .to_vec()
+            }),
+        }
+    }
+
+    /// Veřejný bod + bod řádu 8; horní bit zůstává čistý. libsignal ověřuje
+    /// XEdDSA bez kofaktoru, podpis k aliasu tedy projde, když h ≡ 0 (mod 8):
+    /// podepisovač zkouší náhodná r, v průměru osmkrát.
+    fn torsion_alias(identity: &TestIdentity) -> KeyAlias {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        use curve25519_dalek::edwards::CompressedEdwardsY;
+        use curve25519_dalek::scalar::Scalar;
+        use sha2::{Digest, Sha512};
+
+        /// Bod řádu 8 (seznam bodů malého řádu z libsodium).
+        const ORDER_8_POINT: &str =
+            "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05";
+        /// Pravděpodobnost neúspěchu jednoho pokusu je 7/8; tolik pokusů
+        /// selže jen s pravděpodobností pod 10^-14.
+        const MAX_ATTEMPTS: usize = 256;
+
+        let torsion = CompressedEdwardsY(
+            hex::decode(ORDER_8_POINT)
+                .expect("hex")
+                .try_into()
+                .expect("32 B"),
+        )
+        .decompress()
+        .expect("bod");
+        let secret: [u8; 32] = identity
+            .keys
+            .private_key
+            .serialize()
+            .try_into()
+            .expect("32 B");
+        let scalar = Scalar::from_bytes_mod_order(secret);
+        let public_point = &scalar * ED25519_BASEPOINT_TABLE;
+        assert_eq!(
+            &public_point.to_montgomery().to_bytes()[..],
+            &identity.key[1..],
+            "veřejný klíč = a·B"
+        );
+        let alias_point = public_point + torsion;
+        let mut key = vec![0x05];
+        key.extend_from_slice(&alias_point.to_montgomery().to_bytes());
+        let parsed = PublicKey::deserialize(&key).expect("libsignal alias přijme");
+        let compressed = alias_point.compress();
+        let sign_bit = compressed.as_bytes()[31] & 0x80;
+        KeyAlias {
+            family: "torzní bod",
+            key,
+            sign: Box::new(move |message| {
+                for _ in 0..MAX_ATTEMPTS {
+                    let mut wide = [0u8; 64];
+                    rand::rng().fill_bytes(&mut wide);
+                    let r = Scalar::from_bytes_mod_order_wide(&wide);
+                    let r_point = (&r * ED25519_BASEPOINT_TABLE).compress();
+                    let digest: [u8; 64] = Sha512::new()
+                        .chain_update(r_point.as_bytes())
+                        .chain_update(compressed.as_bytes())
+                        .chain_update(message)
+                        .finalize()
+                        .into();
+                    let s = Scalar::from_bytes_mod_order_wide(&digest) * scalar + r;
+                    let mut signature = [0u8; 64];
+                    signature[..32].copy_from_slice(r_point.as_bytes());
+                    signature[32..].copy_from_slice(s.as_bytes());
+                    signature[63] = (signature[63] & 0x7f) | sign_bit;
+                    if parsed.verify_signature(message, &signature) {
+                        return signature.to_vec();
+                    }
+                }
+                panic!("podpis k aliasu neprošel ani na {MAX_ATTEMPTS} pokusů");
+            }),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn nekanonicky_zapis_klice_neobejde_blokaci() {
+        let state = testkit::state().await;
+        let identity = TestIdentity::new();
+        let address = rand_bytes(32);
+        testkit::register(&state, &identity, &address)
+            .await
+            .expect("registrace");
+        blocking::block(&state.pool, &identity.fingerprint, BlockOptions::default())
+            .await
+            .expect("blokace");
+
+        for alias in [high_bit_alias(&identity), torsion_alias(&identity)] {
+            let family = alias.family;
+            let parsed = PublicKey::deserialize(&alias.key).expect("libsignal alias přijme");
+            assert!(!parsed.is_canonical(), "{family}");
+            assert_ne!(
+                Fingerprint::of_identity_key(&alias.key),
+                identity.fingerprint,
+                "{family}: jiný otisk"
+            );
+
+            // Tělo i důkaz podepsané k aliasu: bez kontroly kanoničnosti
+            // by registrace prošla (201).
+            let mut body = identity.register_body(&rand_bytes(32));
+            body.identity_key = BASE64_STANDARD.encode(&alias.key);
+            for prekey in [&mut body.signed_prekey, &mut body.kyber_prekey] {
+                let public_key = BASE64_STANDARD.decode(&prekey.public_key).unwrap();
+                let signature = (alias.sign)(&public_key);
+                assert!(parsed.verify_signature(&public_key, &signature), "{family}");
+                prekey.signature = Some(BASE64_STANDARD.encode(signature));
+            }
+            let ts = chrono::Utc::now().timestamp_millis();
+            let proof = (alias.sign)(format!("POST /v1/register\n{ts}").as_bytes());
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-sepot-identity-proof",
+                HeaderValue::from_str(&format!("{ts}.{}", BASE64_STANDARD.encode(proof))).unwrap(),
+            );
+
+            let result = register_device(&state, &headers, alias.key.clone(), body).await;
+            let Err(error) = result else {
+                sqlx::query("DELETE FROM identities WHERE identity_key = $1")
+                    .bind(&alias.key)
+                    .execute(&state.pool)
+                    .await
+                    .unwrap();
+                panic!("{family}: alias zablokovaného klíče se zaregistroval");
+            };
+            assert_error(&error, StatusCode::BAD_REQUEST, None);
+            assert_eq!(error.message, TEXT_INVALID_IDENTITY_KEY, "{family}");
+            assert_eq!(identities_with_key(&state, &alias.key).await, 0, "{family}");
+        }
+
+        testkit::forget(&state.pool, &identity, &[&address]).await;
+    }
+
+    /// Registrace zablokované identity (vzniklá obejitím blokace, třeba na
+    /// starém image) nesmí do dorovnání dostat certifikát odesílatele.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn zablokovana_registrace_nedostane_certifikat() {
+        let state = Arc::new(testkit::state().await);
+        let identity = TestIdentity::new();
+        let address = rand_bytes(32);
+        let registered = testkit::register(&state, &identity, &address)
+            .await
+            .expect("registrace");
+        sqlx::query(
+            "INSERT INTO blocked_identities (fingerprint, expires_on) VALUES ($1, current_date + 30)",
+        )
+        .bind(identity.fingerprint.0)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let path = "GET /v1/certificate/delivery";
+        let headers = identity.auth_headers(&registered.device_uuid, path);
+        let Err(error) = certificate_delivery(State(state.clone()), headers).await else {
+            panic!("zablokovaná identita dostala certifikát");
+        };
+        assert_error(&error, StatusCode::FORBIDDEN, Some(TAG_IDENTITY_BLOCKED));
+
+        testkit::forget(&state.pool, &identity, &[&address]).await;
+    }
 }

@@ -110,7 +110,7 @@ pub async fn upload(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Body,
-) -> ApiResult<(StatusCode, Json<UploadOut>)> {
+) -> Result<(StatusCode, Json<UploadOut>), crate::rest::ApiError> {
     let authed =
         crate::rest::authenticate_device(&state, &headers, "POST /v1/attachments").await?;
 
@@ -124,8 +124,9 @@ pub async fn upload(
     if declared.is_some_and(|len| len > cfg.max_bytes) {
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
-            "příloha je příliš velká".into(),
-        ));
+            "příloha je příliš velká".to_string(),
+        )
+            .into());
     }
 
     // Místo na disku dřív než cokoli dalšího: přílohy a DB sdílí filesystém
@@ -136,8 +137,9 @@ pub async fn upload(
     {
         return Err((
             StatusCode::INSUFFICIENT_STORAGE,
-            "úložiště příloh je plné, zkus to později".into(),
-        ));
+            "úložiště příloh je plné, zkus to později".to_string(),
+        )
+            .into());
     }
 
     // Kvóta účtu: rezervuje se ohlášená velikost (bez Content-Length strop
@@ -148,15 +150,17 @@ pub async fn upload(
     if !state.attachment_budget.try_take(&account, reserved) {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
-            "denní limit příloh vyčerpán, zkus to později".into(),
-        ));
+            "denní limit příloh vyčerpán, zkus to později".to_string(),
+        )
+            .into());
     }
     if !state.attachment_stored.try_reserve(&account, reserved) {
         state.attachment_budget.refund(&account, reserved);
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
-            "příliš mnoho uložených příloh, počkej, až je příjemci stáhnou".into(),
-        ));
+            "příliš mnoho uložených příloh, počkej, až je příjemci stáhnou".to_string(),
+        )
+            .into());
     }
     let refund = |unused: u64| {
         state.attachment_budget.refund(&account, unused);
@@ -167,7 +171,9 @@ pub async fn upload(
         Ok(stored) => refund(reserved.saturating_sub(stored.size_bytes)),
         Err(_) => refund(reserved),
     }
-    result.map(|stored| (StatusCode::CREATED, Json(stored.into())))
+    result
+        .map(|stored| (StatusCode::CREATED, Json(stored.into())))
+        .map_err(Into::into)
 }
 
 /// Výsledek zápisu včetně skutečné velikosti (pro vyúčtování kvóty).
@@ -383,13 +389,7 @@ mod db_tests {
     use super::*;
 
     async fn test_state() -> AppState {
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://sepot:sepot_dev@127.0.0.1/sepot_relay".into());
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("dev DB");
+        let pool = crate::testkit::shared_pool(2).await;
         let certs = crate::certs::CertAuthority::init(&pool).await.unwrap();
         let dir = std::env::temp_dir().join(format!("sepot-att-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("tmp")).unwrap();

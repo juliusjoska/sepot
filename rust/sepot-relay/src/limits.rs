@@ -149,6 +149,39 @@ pub struct Limits {
     /// nechá místo na WAL a na všechno, co už přijal.
     pub disk_min_free_pct_attachments: f64,
     pub disk_min_free_pct_queue: f64,
+
+    /// `SEPOT_INACTIVE_CLEANUP=1`: hodinová údržba maže registrace bez
+    /// připojení `cleanup::INACTIVE_REGISTRATION_DAYS` dní. Výchozí vypnuto:
+    /// zapnout ho smí až podmínky služby, které úklid uvádějí, a appka,
+    /// která po úklidu nabídne obnovu registrace.
+    pub inactive_cleanup: bool,
+}
+
+/// Neplatná hodnota vypínače úklidu.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvalidSwitch;
+
+/// `SEPOT_INACTIVE_CLEANUP`: přesně "1" zapne, chybějící nebo "0" vypne.
+/// Cokoli jiného ("true", "180") je chyba a úklid zůstane vypnutý: maže
+/// registrace, takže překlep ho nesmí zapnout.
+pub fn parse_inactive_cleanup(raw: Option<&str>) -> Result<bool, InvalidSwitch> {
+    match raw {
+        None | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(_) => Err(InvalidSwitch),
+    }
+}
+
+/// Vypínač úklidu z prostředí; podpříkazy ho čtou stejně jako server.
+pub fn inactive_cleanup_from_env() -> Result<bool, InvalidSwitch> {
+    parse_inactive_cleanup(std::env::var("SEPOT_INACTIVE_CLEANUP").ok().as_deref())
+}
+
+fn inactive_cleanup_or_off(setting: Result<bool, InvalidSwitch>) -> bool {
+    setting.unwrap_or_else(|InvalidSwitch| {
+        tracing::error!("SEPOT_INACTIVE_CLEANUP: neplatná hodnota, úklid vypnut");
+        false
+    })
 }
 
 impl Limits {
@@ -209,6 +242,7 @@ impl Limits {
             att_account_stored_bytes: env_parse("SEPOT_ATT_ACCOUNT_STORED_BYTES", 250 * MIB),
             disk_min_free_pct_attachments: env_parse("SEPOT_DISK_MIN_FREE_PCT_ATTACHMENTS", 15.0),
             disk_min_free_pct_queue: env_parse("SEPOT_DISK_MIN_FREE_PCT_QUEUE", 8.0),
+            inactive_cleanup: inactive_cleanup_or_off(inactive_cleanup_from_env()),
         }
     }
 }
@@ -390,6 +424,36 @@ mod tests {
         assert!(pow.check(proxy, &xff("198.51.100.1")).is_ok(), "s PoW vlastní bucket");
         assert!(pow.check(proxy, &xff("198.51.100.1")).is_ok());
         assert!(pow.check(proxy, &xff("198.51.100.1")).is_err(), "globální strop 3 společný");
+    }
+
+    #[test]
+    fn limity_vypinac_uklidu() {
+        assert_eq!(parse_inactive_cleanup(None), Ok(false));
+        assert_eq!(parse_inactive_cleanup(Some("0")), Ok(false));
+        assert_eq!(parse_inactive_cleanup(Some("1")), Ok(true));
+        for typo in ["true", "180", " 1", ""] {
+            assert_eq!(
+                parse_inactive_cleanup(Some(typo)),
+                Err(InvalidSwitch),
+                "{typo:?}"
+            );
+            assert!(!inactive_cleanup_or_off(parse_inactive_cleanup(Some(typo))));
+        }
+        assert!(inactive_cleanup_or_off(Ok(true)));
+    }
+
+    /// Neplatná hodnota vypínače: úklid vypnutý a chyba v logu, ať si
+    /// provozovatel překlepu všimne.
+    #[test]
+    fn limity_vypinac_uklidu_neplatna_hodnota_zaloguje_chybu() {
+        let log = crate::testkit::LogCapture::default();
+        let guard = log.start();
+        let setting = parse_inactive_cleanup(Some("true"));
+        assert!(!inactive_cleanup_or_off(setting));
+        drop(guard);
+        let text = log.text();
+        assert!(text.contains("ERROR"), "{text}");
+        assert!(text.contains("SEPOT_INACTIVE_CLEANUP"), "{text}");
     }
 
     #[test]

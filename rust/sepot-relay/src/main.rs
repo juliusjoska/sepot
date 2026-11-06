@@ -5,11 +5,15 @@
 //! payload. Jediná krypto role: certifikační autorita sealed senderu
 //! (vydává SenderCertificate) + ověření XEdDSA podpisu při AUTH.
 
+mod admin;
 mod apns;
 mod attachments;
+mod blocking;
 mod certs;
+mod cleanup;
 mod disk;
 mod fcm;
+mod fingerprint;
 mod limits;
 mod net;
 mod pow;
@@ -17,6 +21,8 @@ mod push;
 mod quota;
 mod rest;
 mod state;
+#[cfg(test)]
+mod testkit;
 mod turn;
 mod ws;
 
@@ -40,8 +46,30 @@ use tracing_subscriber::EnvFilter;
 /// Max velikost request body (registrace se 100 OTP klíči má ~15 KB).
 const MAX_BODY_BYTES: usize = 64 * 1024;
 
+/// Vývojová DB, když `DATABASE_URL` chybí (produkce ji má vždy v env).
+const DEFAULT_DATABASE_URL: &str = "postgres://sepot:sepot_dev@127.0.0.1/sepot_relay";
+
+/// Kontrola živých spojení proti DB. Texty slibují odpojení zablokované
+/// identity do minuty; blokaci zapisuje jiný proces a relay se o ní
+/// dozví jen takhle.
+const LIVE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+/// Údržba blokací a úklid neaktivních registrací běží á hodinu.
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(3600);
+/// První údržba blokací krátce po startu: s odkladem o celý interval by
+/// ji časté restarty odsouvaly donekonečna a prošlá zajištění i blokace
+/// by zůstávaly v DB po lhůtě. Úklid naopak čeká celý interval: po
+/// nasazení zbývá hodina na vypnutí, kdyby se zapnul omylem.
+const BLOCK_MAINTENANCE_FIRST_RUN: Duration = Duration::from_secs(60);
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Podpříkazy provozovatele (admin.rs) běží bez tracingu, migrací a CA:
+    // na prázdné nebo cizí DB by CertAuthority::init vyrobil nový trust root.
+    // Server argumenty nedostává (Dockerfile CMD ani compose žádné nepředávají).
+    if std::env::args_os().len() > 1 {
+        std::process::exit(admin::run().await);
+    }
+
     // Log formát bez IP adres a bez identifikátorů klientů — relay nesmí nic z toho uchovávat.
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -49,8 +77,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://sepot:sepot_dev@127.0.0.1/sepot_relay".into());
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.into());
     let bind = std::env::var("SEPOT_BIND").unwrap_or_else(|_| "127.0.0.1:8470".into());
 
     let limits = Limits::from_env();
@@ -101,6 +129,48 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tick.tick().await;
                 state.prune_marks();
+            }
+        });
+    }
+
+    // Zařízení, která mezitím zablokoval provozovatel (jiný proces) nebo
+    // smazal úklid, dostanou 403/410 a spojení se zavře (state.rs).
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(LIVE_CHECK_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                if let Err(e) = state.check_live_connections().await {
+                    tracing::warn!("kontrola spojení: {e}");
+                }
+            }
+        });
+    }
+
+    // Konce blokací a zajištění, dorovnání; úklid neaktivních registrací.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let first = tokio::time::Instant::now() + BLOCK_MAINTENANCE_FIRST_RUN;
+            let mut tick = tokio::time::interval_at(first, MAINTENANCE_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                state.maintain_blocks().await;
+            }
+        });
+    }
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let first = tokio::time::Instant::now() + MAINTENANCE_INTERVAL;
+            let mut tick = tokio::time::interval_at(first, MAINTENANCE_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                state.clean_inactive().await;
             }
         });
     }

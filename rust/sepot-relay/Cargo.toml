@@ -31,6 +31,9 @@ base64 = "0.22"
 hmac = "0.12"
 # Proof-of-work registrace (pow.rs); už v grafu závislostí přes libsignal
 sha2 = "0.10"
+# Otisk identity (fingerprint.rs): BLAKE2b-256 jako v aplikaci, blokace se
+# eviduje podle téhož čísla, které uživatel vidí a nese hlášení
+blake2 = "0.10"
 sha1 = "0.10"
 hex = "0.4"
 chrono = "0.4"
@@ -60,3 +63,6 @@ libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+# Testy kanoničnosti identity klíče: alias s přičteným bodem malého řádu
+# a podpis k němu (fork Signalu přes [patch.crates-io] ve workspace).
+curve25519-dalek = "4.1.3"

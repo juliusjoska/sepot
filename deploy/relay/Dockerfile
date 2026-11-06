@@ -17,7 +17,7 @@ WORKDIR /src/rust
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/rust/target \
-    cargo build --release -p sepot-relay \
+    cargo build --release --locked -p sepot-relay \
     && cp target/release/sepot-relay /sepot-relay
 
 FROM debian:bookworm-slim

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -7,9 +9,11 @@ use prost::Message;
 use sepot_proto::v1;
 use sepot_proto::MAX_ENVELOPE_PAYLOAD;
 use sqlx::PgPool;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
+use crate::blocking::{self, Registration, Retire};
 use crate::certs::CertAuthority;
+use crate::fingerprint::Fingerprint;
 use crate::net::TrustedProxies;
 
 /// TTL offline fronty.
@@ -65,6 +69,9 @@ const CALL_WAKE_WINDOW: std::time::Duration = std::time::Duration::from_secs(600
 /// sto GET /v1/keys za dvacet sekund je vyčerpání zásoby cizím. Nad strop
 /// jde bundle bez OTP.
 const OTP_ISSUE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Kolik zařízení z registru živých spojení ověří kontrola jedním dotazem.
+const LIVE_CHECK_BATCH: usize = 10_000;
 
 /// Okno kvóty odesílatele (`Limits::send_*_per_hour`).
 const SEND_BUDGET_PERIOD: std::time::Duration = std::time::Duration::from_secs(3600);
@@ -178,12 +185,113 @@ impl OnlineDevices {
     }
 }
 
+/// Ověřené WS spojení v registru: čí je a kudy mu poslat kód odpojení.
+struct AuthedConn {
+    device_uuid: Vec<u8>,
+    fingerprint: [u8; 32],
+    kick: oneshot::Sender<u32>,
+}
+
+/// Registr všech ověřených WS spojení, i těch, která online mapa už nevidí
+/// (starší spojení téhož zařízení po reconnectu přepíše `attach`). Přes něj
+/// jde kontrola proti DB i okamžité odpojení po smazání účtu nebo převzetí.
+#[derive(Default)]
+pub struct AuthedConns {
+    next_id: AtomicU64,
+    conns: Arc<DashMap<u64, AuthedConn>>,
+}
+
+/// Záznam v registru žije, dokud žije spojení: guard ho smaže v `Drop`,
+/// i když handler spadne.
+pub struct AuthedConnGuard {
+    id: u64,
+    conns: Arc<DashMap<u64, AuthedConn>>,
+}
+
+impl Drop for AuthedConnGuard {
+    fn drop(&mut self) {
+        self.conns.remove(&self.id);
+    }
+}
+
+impl AuthedConns {
+    /// Zapíše ověřené spojení. Přijímač dostane kód (403/410), až relay
+    /// rozhodne spojení odpojit.
+    pub fn add(
+        &self,
+        device_uuid: Vec<u8>,
+        fingerprint: [u8; 32],
+    ) -> (AuthedConnGuard, oneshot::Receiver<u32>) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (kick, kicked) = oneshot::channel();
+        self.conns.insert(
+            id,
+            AuthedConn {
+                device_uuid,
+                fingerprint,
+                kick,
+            },
+        );
+        let guard = AuthedConnGuard {
+            id,
+            conns: self.conns.clone(),
+        };
+        (guard, kicked)
+    }
+
+    /// Zařízení s živým spojením a jejich otisky, každé zařízení jednou.
+    pub fn snapshot(&self) -> Vec<(Vec<u8>, [u8; 32])> {
+        let mut seen = HashSet::new();
+        self.conns
+            .iter()
+            .filter(|conn| seen.insert(conn.device_uuid.clone()))
+            .map(|conn| (conn.device_uuid.clone(), conn.fingerprint))
+            .collect()
+    }
+
+    pub fn live_devices(&self) -> Vec<Vec<u8>> {
+        self.snapshot()
+            .into_iter()
+            .map(|(device, _)| device)
+            .collect()
+    }
+
+    /// Odpojí všechna spojení daných zařízení kódem `code`. Vrací počet
+    /// odpojených spojení.
+    pub fn kick_devices(&self, device_uuids: &[Vec<u8>], code: u32) -> usize {
+        if device_uuids.is_empty() {
+            return 0;
+        }
+        let wanted: HashSet<&[u8]> = device_uuids.iter().map(Vec::as_slice).collect();
+        // Nejdřív id, pak odebrat: mazat z DashMap během iterace by zamklo
+        // vlastní shard.
+        let ids: Vec<u64> = self
+            .conns
+            .iter()
+            .filter(|conn| wanted.contains(conn.device_uuid.as_slice()))
+            .map(|conn| *conn.key())
+            .collect();
+        let mut kicked = 0;
+        for id in ids {
+            if let Some((_, conn)) = self.conns.remove(&id) {
+                // Přijímač zaniká jen s koncem spojení; pak už není koho
+                // odpojit a neúspěšné odeslání nic neznamená.
+                let _ = conn.kick.send(code);
+                kicked += 1;
+            }
+        }
+        kicked
+    }
+}
+
 pub struct AppState {
     pub pool: PgPool,
     /// Kdy proces nastartoval — základ monotónních značek v [`OnlineDevice`].
     pub started: std::time::Instant,
     /// delivery_address → živé WS spojení zařízení.
     pub online: OnlineDevices,
+    /// Registr ověřených WS spojení: kontrola proti DB a odpojení.
+    pub conns: AuthedConns,
     /// klientská IP → počet souběžných WS spojení (anti-flood cap).
     /// Jen v paměti, nikam se neloguje ani neukládá.
     pub ws_conns: DashMap<std::net::IpAddr, u32>,
@@ -219,6 +327,8 @@ pub struct AppState {
     /// Odkaz na zdroj a revize běžící binárky (AGPL §13, /v1/server-info).
     pub source_url: String,
     pub revision: String,
+    #[cfg(test)]
+    pub test_hooks: crate::testkit::Hooks,
 }
 
 impl AppState {
@@ -233,6 +343,7 @@ impl AppState {
             pool,
             started: std::time::Instant::now(),
             online: OnlineDevices::default(),
+            conns: AuthedConns::default(),
             ws_conns: DashMap::new(),
             certs,
             trusted_proxies,
@@ -263,6 +374,105 @@ impl AppState {
             source_url: std::env::var("SEPOT_SOURCE_URL")
                 .unwrap_or_else(|_| "https://github.com/juliusjoska/sepot".into()),
             revision: std::env::var("SEPOT_REVISION").unwrap_or_else(|_| "dev".into()),
+            #[cfg(test)]
+            test_hooks: crate::testkit::Hooks::default(),
+        }
+    }
+
+    /// Kontrola živých spojení proti DB (main.rs, á 30 s). Odpojí s 403
+    /// každé spojení zablokované identity (blokaci zapsal provozovatel
+    /// jiným procesem), i když její registrace ještě existuje: vzniká jen
+    /// obejitím blokace a dorovnání ji smaže až v hodinové údržbě. Zařízení,
+    /// které jinak zmizelo (úklid, smazání účtu), odpojí s 410. Při chybě DB
+    /// nikoho neodpojí: výpadek databáze nesmí shodit všechna spojení.
+    pub async fn check_live_connections(&self) -> sqlx::Result<()> {
+        let live = self.conns.snapshot();
+        if live.is_empty() {
+            return Ok(());
+        }
+        let mut gone = Vec::new();
+        let mut blocked = HashSet::new();
+        for chunk in live.chunks(LIVE_CHECK_BATCH) {
+            let devices: Vec<&[u8]> = chunk.iter().map(|(device, _)| device.as_slice()).collect();
+            let present: Vec<Vec<u8>> =
+                sqlx::query_scalar("SELECT device_uuid FROM devices WHERE device_uuid = ANY($1)")
+                    .bind(&devices)
+                    .fetch_all(&self.pool)
+                    .await?;
+            let present: HashSet<Vec<u8>> = present.into_iter().collect();
+            gone.extend(chunk.iter().filter(|(device, _)| !present.contains(device)));
+            let fingerprints: Vec<[u8; 32]> =
+                chunk.iter().map(|(_, fingerprint)| *fingerprint).collect();
+            blocked.extend(blocking::blocked_among(&self.pool, &fingerprints).await?);
+        }
+        let devices = |conns: Vec<&(Vec<u8>, [u8; 32])>| -> Vec<Vec<u8>> {
+            conns
+                .into_iter()
+                .map(|(device, _)| device.clone())
+                .collect()
+        };
+        let blocked_devices: Vec<_> = live
+            .iter()
+            .filter(|(_, fingerprint)| blocked.contains(fingerprint))
+            .collect();
+        let gone_devices: Vec<_> = gone
+            .into_iter()
+            .filter(|(_, fingerprint)| !blocked.contains(fingerprint))
+            .collect();
+        let kicked_403 = self.conns.kick_devices(&devices(blocked_devices), 403);
+        let kicked_410 = self.conns.kick_devices(&devices(gone_devices), 410);
+        if kicked_403 + kicked_410 > 0 {
+            tracing::info!(
+                odpojeno_403 = kicked_403,
+                odpojeno_410 = kicked_410,
+                "kontrola spojení"
+            );
+        }
+        Ok(())
+    }
+
+    /// Údržba blokací (main.rs, á hodinu): konce blokací a zajištění,
+    /// dorovnání registrací zablokovaných identit. Dorovnání běží, i když
+    /// konce selhaly.
+    pub async fn maintain_blocks(&self) {
+        match blocking::expire(&self.pool).await {
+            Ok(expired) if !expired.is_empty() => tracing::info!(
+                blokace_vyprsely = expired.blocks,
+                zajisteni_smazana = expired.holds,
+                adresy_uvolnene = expired.addresses_released,
+                adresy_smazane = expired.addresses_freed,
+                "údržba blokací"
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("údržba blokací: {e}"),
+        }
+        match blocking::reconcile(&self.pool).await {
+            Ok(reconciled) if reconciled.identities > 0 => {
+                // Registrace zablokované identity vzniká jen obejitím
+                // blokace; počet je signál pro provozovatele.
+                tracing::warn!(
+                    dorovnano = reconciled.identities,
+                    "zablokovaná identita byla registrovaná"
+                );
+                self.conns.kick_devices(&reconciled.device_uuids, 403);
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("dorovnání blokací: {e}"),
+        }
+    }
+
+    /// Úklid neaktivních registrací (main.rs, á hodinu), jen se
+    /// `SEPOT_INACTIVE_CLEANUP=1`.
+    pub async fn clean_inactive(&self) {
+        if !self.limits.inactive_cleanup {
+            return;
+        }
+        match crate::cleanup::run(&self.pool, &self.conns).await {
+            Ok(sweep) if sweep.registrations > 0 => {
+                tracing::info!(uklid = sweep.registrations, "neaktivní registrace smazány")
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("úklid neaktivních registrací: {e}"),
         }
     }
 
@@ -641,14 +851,16 @@ impl AppState {
                 .await?;
             return Ok(());
         }
+        // updated_at po hodinách jako devices.last_seen_at: přesný čas by
+        // prozradil okamžik připojení, který relay jinde zaokrouhluje.
         sqlx::query(
             "INSERT INTO push_tokens (device_uuid, platform, token, voip_token, updated_at)
-             VALUES ($1, $2, $3, $4, now())
+             VALUES ($1, $2, $3, $4, date_trunc('hour', now()))
              ON CONFLICT (device_uuid)
              DO UPDATE SET platform = excluded.platform,
                            token = excluded.token,
                            voip_token = excluded.voip_token,
-                           updated_at = now()",
+                           updated_at = date_trunc('hour', now())",
         )
         .bind(device_uuid)
         .bind(platform)
@@ -662,22 +874,33 @@ impl AppState {
     /// Deregistrace účtu (GDPR čl. 17). Kaskáda v DB odnese devices →
     /// prekeys + push_tokens; fronta zpráv je vázaná na delivery_address
     /// bez FK, maže se explicitně v téže transakci. Přílohy vazbu na účet
-    /// nemají (bearer capability) — dožijí TTL sweep.
-    pub async fn delete_identity(&self, account_id: &[u8]) -> anyhow::Result<()> {
+    /// nemají (bearer capability) — dožijí TTL sweep. Adresy se vyřadí na
+    /// rok se značkou vlastníka: obsadit je smí jen tatáž identita.
+    ///
+    /// Pod zámkem otisku, aby se smazání nepotkalo s blokací téže identity.
+    /// Vrací device_uuid smazaných zařízení; jejich spojení odpojí volající
+    /// až po commitu.
+    pub async fn delete_identity(&self, account_id: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "DELETE FROM message_queue WHERE dst_address IN (
-                 SELECT delivery_address FROM devices WHERE account_id = $1)",
-        )
-        .bind(account_id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query("DELETE FROM identities WHERE account_id = $1")
-            .bind(account_id)
-            .execute(&mut *tx)
-            .await?;
+        let identity_key: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT identity_key FROM identities WHERE account_id = $1")
+                .bind(account_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(identity_key) = identity_key else {
+            return Ok(Vec::new());
+        };
+        let fingerprint = Fingerprint::of_identity_key(&identity_key);
+        blocking::lock(&mut tx, &fingerprint).await?;
+        let registration = Registration {
+            account_id: account_id.to_vec(),
+            identity_key,
+        };
+        let removed =
+            blocking::delete_registration(&mut tx, &registration, &fingerprint, Retire::Standard)
+                .await?;
         tx.commit().await?;
-        Ok(())
+        Ok(removed.device_uuids)
     }
 
     /// Po AUTH: vyleje nedoručenou frontu zařízení (DELIVER stream). Čte po
@@ -843,6 +1066,49 @@ mod online_tests {
         assert!(online.detach(&adresa, &nove));
         assert!(online.get(&adresa).is_none());
     }
+
+    #[test]
+    fn registr_kick_zasahne_vsechna_spojeni_zarizeni() {
+        let conns = AuthedConns::default();
+        let (zarizeni, cizi) = (vec![1u8; 16], vec![2u8; 16]);
+        let (_g1, mut prvni) = conns.add(zarizeni.clone(), [1u8; 32]);
+        let (_g2, mut druhe) = conns.add(zarizeni.clone(), [1u8; 32]);
+        let (_g3, mut cizi_spojeni) = conns.add(cizi.clone(), [2u8; 32]);
+
+        let mut snimek = conns.live_devices();
+        snimek.sort();
+        assert_eq!(snimek, vec![zarizeni.clone(), cizi], "snímek bez duplicit");
+
+        assert_eq!(conns.kick_devices(std::slice::from_ref(&zarizeni), 403), 2);
+        assert_eq!(prvni.try_recv(), Ok(403));
+        assert_eq!(druhe.try_recv(), Ok(403));
+        assert!(
+            cizi_spojeni.try_recv().is_err(),
+            "cizí spojení nic nedostane"
+        );
+        assert_eq!(
+            conns.kick_devices(&[zarizeni], 410),
+            0,
+            "odpojené už v registru nejsou"
+        );
+    }
+
+    #[test]
+    fn registr_guard_uklidi_pri_dropu() {
+        let conns = AuthedConns::default();
+        let zarizeni = vec![3u8; 16];
+        let (guard, _rx) = conns.add(zarizeni.clone(), [3u8; 32]);
+        assert_eq!(conns.snapshot().len(), 1);
+        drop(guard);
+        assert!(conns.snapshot().is_empty(), "drop guardu záznam odebere");
+
+        // Kick záznam odebere dřív než guard; pozdější drop nesmí spadnout.
+        let (guard, mut rx) = conns.add(zarizeni.clone(), [3u8; 32]);
+        assert_eq!(conns.kick_devices(&[zarizeni], 410), 1);
+        assert_eq!(rx.try_recv(), Ok(410));
+        drop(guard);
+        assert!(conns.snapshot().is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -856,23 +1122,9 @@ mod db_tests {
     /// Účet odesílatele v testech — kvóta je jen v paměti, DB ho nezná.
     const SENDER: &[u8] = b"test-odesilatel";
 
+    /// Testovací DB s aktuálním schématem (migrace spouští testkit).
     async fn test_state() -> AppState {
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://sepot:sepot_dev@127.0.0.1/sepot_relay".into());
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("dev DB");
-        let certs = crate::certs::CertAuthority::init(&pool).await.unwrap();
-        let trusted = Arc::new(crate::net::TrustedProxies::from_env());
-        AppState::new(
-            pool,
-            certs,
-            crate::attachments::Config::from_env(),
-            trusted,
-            crate::limits::Limits::from_env(),
-        )
+        crate::testkit::state().await
     }
 
     fn rand_bytes(n: usize) -> Vec<u8> {
@@ -1663,5 +1915,90 @@ mod db_tests {
         assert!(matches!(err, RouteError::Invalid), "{err:?}");
         assert_eq!(queued(&state, &dst).await, 0);
         cleanup(&state, &account_id, &dst).await;
+    }
+
+    /// Blokaci i smazání zapsal jiný proces: kontrola pozná, kdo dostane
+    /// 403 a kdo 410, a živé zařízení nechá.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn kontrola_spojeni_odpoji_403_a_410() {
+        let state = test_state().await;
+        let blocked: [u8; 32] = rand_bytes(32).try_into().unwrap();
+        sqlx::query(
+            "INSERT INTO blocked_identities (fingerprint, expires_on) VALUES ($1, current_date + 30)",
+        )
+        .bind(blocked)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        let (_g1, mut blocked_conn) = state.conns.add(rand_bytes(16), blocked);
+        let (_g2, mut gone_conn) = state
+            .conns
+            .add(rand_bytes(16), rand_bytes(32).try_into().unwrap());
+        let (account_id, device_uuid, delivery_address) = seed_device(&state).await;
+        let (_g3, mut live_conn) = state
+            .conns
+            .add(device_uuid, rand_bytes(32).try_into().unwrap());
+
+        state.check_live_connections().await.expect("kontrola");
+        assert_eq!(blocked_conn.try_recv(), Ok(403));
+        assert_eq!(gone_conn.try_recv(), Ok(410));
+        assert!(live_conn.try_recv().is_err(), "živé zařízení zůstává");
+        assert_eq!(state.conns.snapshot().len(), 1);
+
+        sqlx::query("DELETE FROM blocked_identities WHERE fingerprint = $1")
+            .bind(blocked)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        cleanup(&state, &account_id, &delivery_address).await;
+    }
+
+    /// Registrace zablokované identity (vzniklá obejitím blokace) v DB je,
+    /// přesto ji kontrola odpojí s 403: dorovnání by ji smazalo až v hodinové
+    /// údržbě.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn kontrola_spojeni_odpoji_zablokovanou_registraci() {
+        let state = test_state().await;
+        let fingerprint: [u8; 32] = rand_bytes(32).try_into().unwrap();
+        sqlx::query(
+            "INSERT INTO blocked_identities (fingerprint, expires_on) VALUES ($1, current_date + 30)",
+        )
+        .bind(fingerprint)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        let (account_id, device_uuid, delivery_address) = seed_device(&state).await;
+        let (_guard, mut kick) = state.conns.add(device_uuid, fingerprint);
+
+        state.check_live_connections().await.expect("kontrola");
+        assert_eq!(kick.try_recv(), Ok(403));
+        assert!(state.conns.snapshot().is_empty());
+
+        sqlx::query("DELETE FROM blocked_identities WHERE fingerprint = $1")
+            .bind(fingerprint)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        cleanup(&state, &account_id, &delivery_address).await;
+    }
+
+    /// Výpadek DB nesmí odpojit všechna spojení: zařízení, které v DB není,
+    /// by jinak dostalo 410.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn kontrola_spojeni_pri_chybe_db_nikoho_neodpoji() {
+        let state = test_state().await;
+        let (_guard, mut kick) = state.conns.add(rand_bytes(16), [9u8; 32]);
+        state.pool.close().await;
+
+        assert!(state.check_live_connections().await.is_err());
+        assert!(kick.try_recv().is_err(), "žádný kick");
+        assert_eq!(
+            state.conns.snapshot().len(),
+            1,
+            "spojení zůstává v registru"
+        );
     }
 }
