@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/l10n.dart';
+import 'package:sepot/core/review/review_prompt.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/core/utils/text_fold.dart';
 import 'package:sepot/features/chat_list/chat_list_tile.dart';
@@ -40,6 +41,24 @@ class ChatListScreen extends ConsumerStatefulWidget {
 
 class _ChatListScreenState extends ConsumerState<ChatListScreen> {
   var _tab = 0;
+
+  /// Prodleva, ať dotaz na hodnocení nevyskočí dřív než seznam chatů.
+  static const _reviewDelay = Duration(seconds: 2);
+
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(_reviewDelay, () async {
+      if (!mounted) return;
+      try {
+        await ref.read(reviewPromptProvider).maybeAsk(context);
+      } on Object catch (e) {
+        // Hodnocení je bonus; selhání (zamčená DB, chybějící obchod) nesmí
+        // uživatele obtěžovat chybou.
+        debugPrint('Dotaz na hodnocení selhal: $e');
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -681,6 +700,14 @@ class _EmptyState extends StatelessWidget {
             context.l10n.chatListEmptySubtitle,
             textAlign: TextAlign.center,
             style: const TextStyle(color: SepotColors.textSecondary),
+          ),
+          const SizedBox(height: 24),
+          // Prázdný messenger je k ničemu — nejrychlejší cesta k první
+          // konverzaci je poslat pozvánku tomu, s kým chci psát.
+          FilledButton.icon(
+            onPressed: () => context.push('/qr-share'),
+            icon: const Icon(Icons.person_add_alt_1_outlined),
+            label: Text(context.l10n.chatListInviteFriend),
           ),
           const SizedBox(height: 32),
           const E2EBadge(),

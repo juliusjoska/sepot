@@ -1,6 +1,7 @@
 import CallKit
 import Flutter
 import PushKit
+import StoreKit
 import UIKit
 import UserNotifications
 import WebRTC
@@ -17,6 +18,7 @@ import flutter_callkit_incoming
   // PushKit registry musí žít po celou dobu běhu appky, jinak VoIP pushe nechodí.
   private var voipRegistry: PKPushRegistry?
   private var apnsChannel: FlutterMethodChannel?
+  private var reviewChannel: FlutterMethodChannel?
   // Token dorazí asynchronně z APNs; když si o něj Dart řekne dřív, podržíme ho.
   private var pendingToken: String?
 
@@ -54,6 +56,28 @@ import flutter_callkit_incoming
       }
     }
     apnsChannel = channel
+
+    let review = FlutterMethodChannel(
+      name: "cz.sepot.sepot/review", binaryMessenger: flutterEngine.binaryMessenger)
+    review.setMethodCallHandler { call, result in
+      guard call.method == "requestReview" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      // Jestli se dialog opravdu ukáže, rozhoduje iOS (strop 3× ročně);
+      // appka se výsledek nedozví a nemá ho jak obejít.
+      if let scene = UIApplication.shared.connectedScenes
+        .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene
+      {
+        if #available(iOS 16.0, *) {
+          Task { @MainActor in AppStore.requestReview(in: scene) }
+        } else {
+          SKStoreReviewController.requestReview(in: scene)
+        }
+      }
+      result(nil)
+    }
+    reviewChannel = review
 
     // Hovory: VoIP push z relaye → CallKit.
     let registry = PKPushRegistry(queue: DispatchQueue.main)

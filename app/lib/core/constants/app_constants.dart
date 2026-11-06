@@ -68,4 +68,13 @@ class AppConstants {
   static const String deletionUrl = 'https://sepot.cz/smazani-dat';
 
   static const String supportEmail = 'podpora@sepot.cz';
+
+  /// Odkaz v pozvánce. Příjemce Šepot většinou ještě nemá a holý
+  /// `sepot://add/…` mu nic neotevře; web podle telefonu přesměruje do
+  /// App Storu nebo Google Play.
+  static const String downloadUrl = 'https://sepot.cz/pozvanka';
+
+  static const String playStoreMarketUrl = 'market://details?id=cz.sepot.sepot';
+  static const String playStoreWebUrl =
+      'https://play.google.com/store/apps/details?id=cz.sepot.sepot';
 }

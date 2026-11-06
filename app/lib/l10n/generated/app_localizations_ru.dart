@@ -1,5 +1,6 @@
 // ignore: unused_import
 import 'package:intl/intl.dart' as intl;
+
 import 'app_localizations.dart';
 
 // ignore_for_file: type=lint
@@ -1267,6 +1268,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get chatListEmptySubtitle => 'Добавьте контакт и начните шептаться!';
 
   @override
+  String get chatListInviteFriend => 'Пригласить друга';
+
+  @override
   String get chatListUnmute => 'Включить звук';
 
   @override
@@ -1299,9 +1303,22 @@ class AppLocalizationsRu extends AppLocalizations {
   String get commonCopiedToClipboard => 'Скопировано в буфер обмена';
 
   @override
-  String qrShareInviteMessage(String shareString) {
-    return 'Добавьте меня в Šepot!\n\n$shareString';
+  String qrShareInviteMessage(String downloadUrl, String shareString) {
+    return 'Пишите мне в Šepot – зашифрованном мессенджере без номера телефона.\n\n1. Скачайте здесь: $downloadUrl\n2. В приложении нажмите «Добавить контакт» и вставьте этот код:\n\n$shareString';
   }
+
+  @override
+  String get reviewAskTitle => 'Оцените Šepot?';
+
+  @override
+  String get reviewAskBody =>
+      'В Šepot нет рекламы и инвесторов. Ваша оценка в Google Play поможет большему числу людей узнать о нём.';
+
+  @override
+  String get reviewAskLater => 'Не сейчас';
+
+  @override
+  String get reviewAskRate => 'Оценить';
 
   @override
   String get commonShare => 'Поделиться';

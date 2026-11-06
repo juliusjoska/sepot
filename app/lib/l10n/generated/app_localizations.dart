@@ -2204,6 +2204,12 @@ abstract class AppLocalizations {
   /// **'Přidej kontakt a začni šeptat!'**
   String get chatListEmptySubtitle;
 
+  /// Tlačítko v prázdném seznamu chatů — otevře sdílení vlastní pozvánky
+  ///
+  /// In cs, this message translates to:
+  /// **'Pozvat kamaráda'**
+  String get chatListInviteFriend;
+
   /// Položka bottom sheetu akcí konverzace (long-press), zobrazí se když je konverzace ztlumená. Ternár na jednom řádku se 'Ztlumit'.
   ///
   /// In cs, this message translates to:
@@ -2264,11 +2270,35 @@ abstract class AppLocalizations {
   /// **'Zkopírováno do schránky'**
   String get commonCopiedToClipboard;
 
-  /// Text sdílený přes share_plus (Share.share) — pozvánka s identitním řetězcem; obsahuje dva \n
+  /// Text pozvánky sdílený přes share_plus — příjemce Šepot většinou ještě nemá, proto nejdřív odkaz ke stažení, pak kód. Obsahuje \n a číslované kroky.
   ///
   /// In cs, this message translates to:
-  /// **'Přidej mě na Šepotu!\n\n{shareString}'**
-  String qrShareInviteMessage(String shareString);
+  /// **'Piš mi na Šepotu – šifrovaném messengeru bez telefonního čísla.\n\n1. Stáhni si ho: {downloadUrl}\n2. V appce dej Přidat kontakt a vlož tenhle kód:\n\n{shareString}'**
+  String qrShareInviteMessage(String downloadUrl, String shareString);
+
+  /// Nadpis dotazu na hodnocení (jen Android; iOS má systémový dialog)
+  ///
+  /// In cs, this message translates to:
+  /// **'Ohodnotíš Šepot?'**
+  String get reviewAskTitle;
+
+  /// Text dotazu na hodnocení v Google Play — neptat se, jestli se appka líbí (Play zakazuje filtrovat hodnotitele)
+  ///
+  /// In cs, this message translates to:
+  /// **'Šepot je bez reklam a bez investorů. Tvoje hodnocení v Google Play pomůže, aby se o něm dozvědělo víc lidí.'**
+  String get reviewAskBody;
+
+  /// Odmítnutí dotazu na hodnocení
+  ///
+  /// In cs, this message translates to:
+  /// **'Teď ne'**
+  String get reviewAskLater;
+
+  /// Otevře stránku Šepotu v Google Play
+  ///
+  /// In cs, this message translates to:
+  /// **'Ohodnotit'**
+  String get reviewAskRate;
 
   /// Popisek ElevatedButton.icon, který otevře systémový share sheet
   ///

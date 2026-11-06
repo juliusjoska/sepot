@@ -18,6 +18,7 @@ import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
 import 'package:sepot/core/l10n/disappearing_text.dart';
 import 'package:sepot/core/l10n/l10n.dart';
+import 'package:sepot/core/review/review_prompt.dart';
 import 'package:sepot/core/services/image_processor.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/core/utils/text_fold.dart';
@@ -2104,6 +2105,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
       } else {
         await notifier.sendMessage(widget.contactId, text,
             replyToId: replyToId, mentions: _mentionsIn(text));
+        unawaited(ref.read(reviewPromptProvider).noteMessageSent());
       }
       if (mounted) {
         setState(() {

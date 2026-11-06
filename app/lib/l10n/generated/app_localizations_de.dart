@@ -1,5 +1,6 @@
 // ignore: unused_import
 import 'package:intl/intl.dart' as intl;
+
 import 'app_localizations.dart';
 
 // ignore_for_file: type=lint
@@ -1262,6 +1263,9 @@ class AppLocalizationsDe extends AppLocalizations {
       'Füge einen Kontakt hinzu und fang an zu flüstern!';
 
   @override
+  String get chatListInviteFriend => 'Freund einladen';
+
+  @override
   String get chatListUnmute => 'Stummschaltung aufheben';
 
   @override
@@ -1294,9 +1298,22 @@ class AppLocalizationsDe extends AppLocalizations {
   String get commonCopiedToClipboard => 'In die Zwischenablage kopiert';
 
   @override
-  String qrShareInviteMessage(String shareString) {
-    return 'Füg mich auf Šepot hinzu!\n\n$shareString';
+  String qrShareInviteMessage(String downloadUrl, String shareString) {
+    return 'Schreib mir auf Šepot – ein verschlüsselter Messenger ohne Telefonnummer.\n\n1. Hier herunterladen: $downloadUrl\n2. In der App auf Kontakt hinzufügen tippen und diesen Code einfügen:\n\n$shareString';
   }
+
+  @override
+  String get reviewAskTitle => 'Šepot bewerten?';
+
+  @override
+  String get reviewAskBody =>
+      'Šepot kommt ohne Werbung und ohne Investoren aus. Deine Bewertung bei Google Play hilft, dass mehr Menschen davon erfahren.';
+
+  @override
+  String get reviewAskLater => 'Nicht jetzt';
+
+  @override
+  String get reviewAskRate => 'Bewerten';
 
   @override
   String get commonShare => 'Teilen';

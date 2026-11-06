@@ -1,5 +1,6 @@
 // ignore: unused_import
 import 'package:intl/intl.dart' as intl;
+
 import 'app_localizations.dart';
 
 // ignore_for_file: type=lint
@@ -1242,6 +1243,9 @@ class AppLocalizationsCs extends AppLocalizations {
   String get chatListEmptySubtitle => 'Přidej kontakt a začni šeptat!';
 
   @override
+  String get chatListInviteFriend => 'Pozvat kamaráda';
+
+  @override
   String get chatListUnmute => 'Zrušit ztlumení';
 
   @override
@@ -1274,9 +1278,22 @@ class AppLocalizationsCs extends AppLocalizations {
   String get commonCopiedToClipboard => 'Zkopírováno do schránky';
 
   @override
-  String qrShareInviteMessage(String shareString) {
-    return 'Přidej mě na Šepotu!\n\n$shareString';
+  String qrShareInviteMessage(String downloadUrl, String shareString) {
+    return 'Piš mi na Šepotu – šifrovaném messengeru bez telefonního čísla.\n\n1. Stáhni si ho: $downloadUrl\n2. V appce dej Přidat kontakt a vlož tenhle kód:\n\n$shareString';
   }
+
+  @override
+  String get reviewAskTitle => 'Ohodnotíš Šepot?';
+
+  @override
+  String get reviewAskBody =>
+      'Šepot je bez reklam a bez investorů. Tvoje hodnocení v Google Play pomůže, aby se o něm dozvědělo víc lidí.';
+
+  @override
+  String get reviewAskLater => 'Teď ne';
+
+  @override
+  String get reviewAskRate => 'Ohodnotit';
 
   @override
   String get commonShare => 'Sdílet';

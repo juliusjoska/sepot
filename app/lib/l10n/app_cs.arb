@@ -1667,6 +1667,10 @@
   "@chatListEmptySubtitle": {
     "description": "Podnadpis empty state — 'šeptat' je slovní hříčka s názvem appky, v překladu volit ekvivalent (whisper/flüstern…)"
   },
+  "chatListInviteFriend": "Pozvat kamaráda",
+  "@chatListInviteFriend": {
+    "description": "Tlačítko v prázdném seznamu chatů — otevře sdílení vlastní pozvánky"
+  },
   "chatListUnmute": "Zrušit ztlumení",
   "@chatListUnmute": {
     "description": "Položka bottom sheetu akcí konverzace (long-press), zobrazí se když je konverzace ztlumená. Ternár na jednom řádku se 'Ztlumit'."
@@ -1707,14 +1711,33 @@
   "@commonCopiedToClipboard": {
     "description": "SnackBar po stisku tlačítka Kopírovat (zkopírování share stringu) — pravděpodobně sdílené i jinde v appce"
   },
-  "qrShareInviteMessage": "Přidej mě na Šepotu!\n\n{shareString}",
+  "qrShareInviteMessage": "Piš mi na Šepotu – šifrovaném messengeru bez telefonního čísla.\n\n1. Stáhni si ho: {downloadUrl}\n2. V appce dej Přidat kontakt a vlož tenhle kód:\n\n{shareString}",
   "@qrShareInviteMessage": {
-    "description": "Text sdílený přes share_plus (Share.share) — pozvánka s identitním řetězcem; obsahuje dva \\n",
+    "description": "Text pozvánky sdílený přes share_plus — příjemce Šepot většinou ještě nemá, proto nejdřív odkaz ke stažení, pak kód. Obsahuje \\n a číslované kroky.",
     "placeholders": {
+      "downloadUrl": {
+        "type": "String"
+      },
       "shareString": {
         "type": "String"
       }
     }
+  },
+  "reviewAskTitle": "Ohodnotíš Šepot?",
+  "@reviewAskTitle": {
+    "description": "Nadpis dotazu na hodnocení (jen Android; iOS má systémový dialog)"
+  },
+  "reviewAskBody": "Šepot je bez reklam a bez investorů. Tvoje hodnocení v Google Play pomůže, aby se o něm dozvědělo víc lidí.",
+  "@reviewAskBody": {
+    "description": "Text dotazu na hodnocení v Google Play — neptat se, jestli se appka líbí (Play zakazuje filtrovat hodnotitele)"
+  },
+  "reviewAskLater": "Teď ne",
+  "@reviewAskLater": {
+    "description": "Odmítnutí dotazu na hodnocení"
+  },
+  "reviewAskRate": "Ohodnotit",
+  "@reviewAskRate": {
+    "description": "Otevře stránku Šepotu v Google Play"
   },
   "commonShare": "Sdílet",
   "@commonShare": {
