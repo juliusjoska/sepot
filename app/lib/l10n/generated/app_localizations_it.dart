@@ -1249,14 +1249,14 @@ class AppLocalizationsIt extends AppLocalizations {
   String get qrShareTitle => 'Il mio Šepot ID';
 
   @override
+  String get qrIdentityNotFound => 'Identità non trovata';
+
+  @override
   String get qrShareConnectingTitle => 'Connessione al relay…';
 
   @override
   String get qrShareConnectingBody =>
       'Il tuo codice QR e il link appariranno appena Šepot si connette per la prima volta. Un istante — bastano pochi secondi.';
-
-  @override
-  String get qrIdentityNotFound => 'Identità non trovata';
 
   @override
   String get commonCopiedToClipboard => 'Copiato negli appunti';

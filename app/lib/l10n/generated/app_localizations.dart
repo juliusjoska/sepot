@@ -2204,6 +2204,12 @@ abstract class AppLocalizations {
   /// **'Můj Šepot ID'**
   String get qrShareTitle;
 
+  /// Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)
+  ///
+  /// In cs, this message translates to:
+  /// **'Identita nebyla nalezena'**
+  String get qrIdentityNotFound;
+
   /// Titulek na QR obrazovce, když vlastní registrace na relay ještě nedoběhla — routing (aid+da) není hotový, QR by byl neúplný.
   ///
   /// In cs, this message translates to:
@@ -2215,12 +2221,6 @@ abstract class AppLocalizations {
   /// In cs, this message translates to:
   /// **'Až se Šepot poprvé připojí, objeví se tvůj QR kód a odkaz. Chvilku strpení — stačí pár sekund.'**
   String get qrShareConnectingBody;
-
-  /// Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)
-  ///
-  /// In cs, this message translates to:
-  /// **'Identita nebyla nalezena'**
-  String get qrIdentityNotFound;
 
   /// SnackBar po stisku tlačítka Kopírovat (zkopírování share stringu) — pravděpodobně sdílené i jinde v appce
   ///
