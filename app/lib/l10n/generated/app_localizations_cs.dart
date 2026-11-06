@@ -1240,14 +1240,14 @@ class AppLocalizationsCs extends AppLocalizations {
   String get qrShareTitle => 'Můj Šepot ID';
 
   @override
+  String get qrIdentityNotFound => 'Identita nebyla nalezena';
+
+  @override
   String get qrShareConnectingTitle => 'Připojuji k relayi…';
 
   @override
   String get qrShareConnectingBody =>
       'Až se Šepot poprvé připojí, objeví se tvůj QR kód a odkaz. Chvilku strpení — stačí pár sekund.';
-
-  @override
-  String get qrIdentityNotFound => 'Identita nebyla nalezena';
 
   @override
   String get commonCopiedToClipboard => 'Zkopírováno do schránky';

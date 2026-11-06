@@ -1265,14 +1265,14 @@ class AppLocalizationsRu extends AppLocalizations {
   String get qrShareTitle => 'Мой Šepot ID';
 
   @override
+  String get qrIdentityNotFound => 'Идентичность не найдена';
+
+  @override
   String get qrShareConnectingTitle => 'Подключение к релею…';
 
   @override
   String get qrShareConnectingBody =>
       'Ваш QR-код и ссылка появятся, как только Šepot подключится в первый раз. Подождите пару секунд.';
-
-  @override
-  String get qrIdentityNotFound => 'Идентичность не найдена';
 
   @override
   String get commonCopiedToClipboard => 'Скопировано в буфер обмена';

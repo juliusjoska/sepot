@@ -7,6 +7,12 @@ import flutter_callkit_incoming
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, PKPushRegistryDelegate, CallkitIncomingAppDelegate {
+  // Engine startuje s procesem, ne se scénou. VoIP push umí appku spustit na
+  // pozadí, aniž by iOS připojil scénu (a tím vytvořil FlutterViewController).
+  // CallKit plugin musí být zaregistrovaný dřív, než push dorazí, a Dart musí
+  // běžet, aby vyzvedl nabídku hovoru z relaye. SceneDelegate tenhle engine
+  // jen zobrazí.
+  let flutterEngine = FlutterEngine(name: "sepot")
   // PushKit registry musí žít po celou dobu běhu appky, jinak VoIP pushe nechodí.
   private var voipRegistry: PKPushRegistry?
   private var apnsChannel: FlutterMethodChannel?
@@ -17,31 +23,24 @@ import flutter_callkit_incoming
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    // Bez force-castu: kdyby root nebyl FlutterViewController (jiný storyboard,
-    // budoucí scény), appka by spadla hned při startu. Registrar dá messenger
-    // enginu i tak.
-    let messenger =
-      (window?.rootViewController as? FlutterViewController)?.binaryMessenger
-      ?? registrar(forPlugin: "SepotApns")?.messenger()
-    if let messenger {
-      let channel = FlutterMethodChannel(
-        name: "cz.sepot.sepot/apns", binaryMessenger: messenger)
-      channel.setMethodCallHandler { [weak self] call, result in
-        switch call.method {
-        case "register":
-          // Nativní APNs registrace (bez Firebase) — token přijde v callbacku
-          application.registerForRemoteNotifications()
-          result(nil)
-        case "getToken":
-          result(self?.pendingToken)
-        default:
-          result(FlutterMethodNotImplemented)
-        }
-      }
-      apnsChannel = channel
-    }
+    flutterEngine.run()
+    GeneratedPluginRegistrant.register(with: flutterEngine)
 
-    GeneratedPluginRegistrant.register(with: self)
+    let channel = FlutterMethodChannel(
+      name: "cz.sepot.sepot/apns", binaryMessenger: flutterEngine.binaryMessenger)
+    channel.setMethodCallHandler { [weak self] call, result in
+      switch call.method {
+      case "register":
+        // Nativní APNs registrace (bez Firebase) — token přijde v callbacku
+        UIApplication.shared.registerForRemoteNotifications()
+        result(nil)
+      case "getToken":
+        result(self?.pendingToken)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+    apnsChannel = channel
 
     // Hovory: VoIP push z relaye → CallKit.
     let registry = PKPushRegistry(queue: DispatchQueue.main)

@@ -1667,6 +1667,10 @@
   "@qrShareTitle": {
     "description": "AppBar titulek obrazovky sdílení vlastního QR/Šepot ID"
   },
+  "qrIdentityNotFound": "Identita nebyla nalezena",
+  "@qrIdentityNotFound": {
+    "description": "Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)"
+  },
   "qrShareConnectingTitle": "Připojuji k relayi…",
   "@qrShareConnectingTitle": {
     "description": "Titulek na QR obrazovce, když vlastní registrace na relay ještě nedoběhla — routing (aid+da) není hotový, QR by byl neúplný."
@@ -1674,10 +1678,6 @@
   "qrShareConnectingBody": "Až se Šepot poprvé připojí, objeví se tvůj QR kód a odkaz. Chvilku strpení — stačí pár sekund.",
   "@qrShareConnectingBody": {
     "description": "Vysvětlení pod titulkem qrShareConnectingTitle. 'Šepot' je značka, nepřekládat."
-  },
-  "qrIdentityNotFound": "Identita nebyla nalezena",
-  "@qrIdentityNotFound": {
-    "description": "Text uprostřed obrazovky, když identityProvider vrátí null (nemělo by běžně nastat)"
   },
   "commonCopiedToClipboard": "Zkopírováno do schránky",
   "@commonCopiedToClipboard": {

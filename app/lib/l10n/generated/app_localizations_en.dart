@@ -1237,14 +1237,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get qrShareTitle => 'My Šepot ID';
 
   @override
+  String get qrIdentityNotFound => 'Identity not found';
+
+  @override
   String get qrShareConnectingTitle => 'Connecting to the relay…';
 
   @override
   String get qrShareConnectingBody =>
       'Your QR code and link will appear once Šepot connects for the first time. Just a moment — it only takes a few seconds.';
-
-  @override
-  String get qrIdentityNotFound => 'Identity not found';
 
   @override
   String get commonCopiedToClipboard => 'Copied to clipboard';

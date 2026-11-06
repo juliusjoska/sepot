@@ -44,6 +44,9 @@ post_install do |installer|
       # staví jen pro arm64 (Apple Silicon Mac). Bez tohoto Xcode linkuje
       # i x86_64 slice, který dylib nemá → „Undefined symbols for x86_64".
       config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'x86_64'
+      # Xcode se SDK 27 odmítá pody s deployment targetem pod 15.0 (archive
+      # skončí chybou místo varování); appka sama minimum 15.0 má.
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
     end
   end
 end
