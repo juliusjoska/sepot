@@ -334,7 +334,7 @@
   "pushNoDistributorFallback": "no distributor",
   "pushSubtitleFcm": "Google (FCM)",
   "pushModeApns": "Apple (APNs, default)",
-  "pushModeApnsDesc": "Wake-ups are delivered by Apple. The device push token goes to Apple; message content never does.",
+  "pushModeApnsDesc": "Apple delivers notifications right away, only as “New message”. Apple gets the device push token; never the content or the sender.",
   "pushSubtitleApns": "Apple (APNs)",
   "pushModeOffDescIos": "Messages arrive only after you open the app, and calls won't ring.",
   "restoreErrorNameRequired": "Enter a display name.",
@@ -518,5 +518,8 @@
   "noticeIdentityChanged": "The safety code of {name} has changed. A different key showed up at their address: a new phone, a reinstall, or an impostor. Verification has been removed. Compare the code again before you send anything sensitive.",
   "noticeLookalikeRequest": "An unknown sender named themselves “{claimed}”, which looks like your contact {name}. It is not this contact, the message came from a different key. You'll find it in your chats as a message request.",
   "noticeVerifyAction": "Verify code",
-  "noticePreview": "Security notice"
+  "noticePreview": "Security notice",
+  "chatDisappearingAdminOnly": "Only an admin can change disappearing messages in this group.",
+  "noticeTimerChanged": "{name} changed disappearing messages: {duration}",
+  "noticeTimerChangedByMe": "You changed disappearing messages: {duration}"
 }

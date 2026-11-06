@@ -334,7 +334,7 @@
   "pushNoDistributorFallback": "nessun distributore",
   "pushSubtitleFcm": "Google (FCM)",
   "pushModeApns": "Apple (APNs, predefinito)",
-  "pushModeApnsDesc": "Le notifiche di risveglio le consegna Apple. Il token push del dispositivo va ad Apple; il contenuto dei messaggi mai.",
+  "pushModeApnsDesc": "Apple consegna subito le notifiche, solo come «Nuovo messaggio». Ad Apple va il token push del dispositivo, mai il contenuto né il mittente.",
   "pushSubtitleApns": "Apple (APNs)",
   "pushModeOffDescIos": "I messaggi verranno scaricati solo all'apertura dell'app e le chiamate non squilleranno.",
   "restoreErrorNameRequired": "Inserisci il nome visualizzato.",
@@ -518,5 +518,8 @@
   "noticeIdentityChanged": "Il codice di sicurezza di {name} è cambiato. Al suo indirizzo si è presentata una chiave diversa: nuovo telefono, reinstallazione o un impostore. La verifica è stata annullata. Confrontate di nuovo il codice prima di inviare qualcosa di sensibile.",
   "noticeLookalikeRequest": "Un mittente sconosciuto si è chiamato «{claimed}», un nome che si confonde con il tuo contatto {name}. Non è questo contatto, il messaggio è arrivato da una chiave diversa. Lo trovi nelle chat come richiesta di messaggio.",
   "noticeVerifyAction": "Verifica codice",
-  "noticePreview": "Avviso di sicurezza"
+  "noticePreview": "Avviso di sicurezza",
+  "chatDisappearingAdminOnly": "In questo gruppo solo un amministratore può modificare i messaggi a tempo.",
+  "noticeTimerChanged": "{name} ha modificato i messaggi a tempo: {duration}",
+  "noticeTimerChangedByMe": "Hai modificato i messaggi a tempo: {duration}"
 }

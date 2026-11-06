@@ -9,7 +9,7 @@ void main() {
   test('všechny odesílané typy obsahu umí přijímací cesta zpracovat', () {
     const sent = {
       'txt', 'att', 'rx', 'edit', 'del', 'dlv', 'rr', 'typ', 'vote', 'call',
-      'ginv', 'gleave', 'gmeta', 'gop', 'gsync',
+      'tmr', 'ginv', 'gleave', 'gmeta', 'gop', 'gsync',
     };
     expect(MessagingService.knownContentTypes, containsAll(sent));
   });

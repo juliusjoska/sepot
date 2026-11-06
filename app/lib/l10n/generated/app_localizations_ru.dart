@@ -1190,7 +1190,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get pushModeApnsDesc =>
-      'Пробуждения доставляет Apple. Push-токен устройства передаётся Apple; содержимое сообщений — никогда.';
+      'Apple доставляет уведомления сразу, только с текстом «Новое сообщение». Apple получает push-токен устройства, но никогда не содержимое и не отправителя.';
 
   @override
   String get pushSubtitleApns => 'Apple (APNs)';
@@ -1874,4 +1874,18 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get noticePreview => 'Предупреждение безопасности';
+
+  @override
+  String get chatDisappearingAdminOnly =>
+      'В этой группе исчезающие сообщения может менять только администратор.';
+
+  @override
+  String noticeTimerChanged(String name, String duration) {
+    return '$name изменил(а) исчезающие сообщения: $duration';
+  }
+
+  @override
+  String noticeTimerChangedByMe(String duration) {
+    return 'Вы изменили исчезающие сообщения: $duration';
+  }
 }

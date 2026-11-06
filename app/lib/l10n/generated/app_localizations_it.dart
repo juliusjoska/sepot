@@ -1183,7 +1183,7 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get pushModeApnsDesc =>
-      'Le notifiche di risveglio le consegna Apple. Il token push del dispositivo va ad Apple; il contenuto dei messaggi mai.';
+      'Apple consegna subito le notifiche, solo come «Nuovo messaggio». Ad Apple va il token push del dispositivo, mai il contenuto né il mittente.';
 
   @override
   String get pushSubtitleApns => 'Apple (APNs)';
@@ -1848,4 +1848,18 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get noticePreview => 'Avviso di sicurezza';
+
+  @override
+  String get chatDisappearingAdminOnly =>
+      'In questo gruppo solo un amministratore può modificare i messaggi a tempo.';
+
+  @override
+  String noticeTimerChanged(String name, String duration) {
+    return '$name ha modificato i messaggi a tempo: $duration';
+  }
+
+  @override
+  String noticeTimerChangedByMe(String duration) {
+    return 'Hai modificato i messaggi a tempo: $duration';
+  }
 }

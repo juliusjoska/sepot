@@ -14,6 +14,10 @@ enum MessageNotice {
   /// Neznámý odesílatel si zvolil jméno, které se plete s tímhle
   /// kontaktem. [Message.content] nese jméno, které si zvolil.
   lookalikeRequest,
+
+  /// Někdo v konverzaci změnil časovač mizících zpráv. Odesílatel = kdo
+  /// změnil, [Message.content] = nové sekundy ('0' = vypnuto).
+  timerChanged,
 }
 
 /// Typy zpráv — odpovídá Rust: MessageType

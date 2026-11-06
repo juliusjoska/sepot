@@ -32,6 +32,8 @@ class SafetyNoticeRow extends StatelessWidget {
       MessageNotice.identityChanged => l10n.noticeIdentityChanged(contactName),
       MessageNotice.lookalikeRequest =>
         l10n.noticeLookalikeRequest(claimedName ?? '', contactName),
+      MessageNotice.timerChanged =>
+        throw StateError('timerChanged kreslí TimerNoticeRow'),
     };
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),

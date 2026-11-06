@@ -1193,7 +1193,7 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get pushModeApnsDesc =>
-      'Weckrufe stellt Apple zu. Der Push-Token des Geräts geht an Apple; der Inhalt der Nachrichten nie.';
+      'Apple stellt Benachrichtigungen sofort zu, nur als „Neue Nachricht“. Apple erhält das Push-Token des Geräts, nie Inhalt oder Absender.';
 
   @override
   String get pushSubtitleApns => 'Apple (APNs)';
@@ -1861,4 +1861,18 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get noticePreview => 'Sicherheitshinweis';
+
+  @override
+  String get chatDisappearingAdminOnly =>
+      'In dieser Gruppe kann nur ein Admin verschwindende Nachrichten ändern.';
+
+  @override
+  String noticeTimerChanged(String name, String duration) {
+    return '$name hat verschwindende Nachrichten geändert: $duration';
+  }
+
+  @override
+  String noticeTimerChangedByMe(String duration) {
+    return 'Du hast verschwindende Nachrichten geändert: $duration';
+  }
 }

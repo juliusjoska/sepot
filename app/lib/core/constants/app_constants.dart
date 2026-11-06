@@ -39,6 +39,10 @@ class AppConstants {
   static const int maxMessageLength = 4096;
   static const int defaultDisappearingSeconds = 86400; // 24 hodin
 
+  /// Volby časovače mizících zpráv. Sdílená změna (`tmr`) přijme jen
+  /// tyhle hodnoty: novou volbu starší klient stejně neumí pojmenovat.
+  static const Set<int> disappearingChoices = {30, 300, 3600, 86400, 604800};
+
   // Přílohy — musí sedět s relayem (SEPOT_MAX_ATTACHMENT_BYTES, default
   // 25 MiB na ŠIFROVANÝ blob; plaintext strop držíme kousek pod tím)
   static const int maxAttachmentBytes = 25 * 1024 * 1024 - 64 * 1024;

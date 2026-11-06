@@ -334,7 +334,7 @@
   "pushNoDistributorFallback": "kein Distributor",
   "pushSubtitleFcm": "Google (FCM)",
   "pushModeApns": "Apple (APNs, Standard)",
-  "pushModeApnsDesc": "Weckrufe stellt Apple zu. Der Push-Token des Geräts geht an Apple; der Inhalt der Nachrichten nie.",
+  "pushModeApnsDesc": "Apple stellt Benachrichtigungen sofort zu, nur als „Neue Nachricht“. Apple erhält das Push-Token des Geräts, nie Inhalt oder Absender.",
   "pushSubtitleApns": "Apple (APNs)",
   "pushModeOffDescIos": "Nachrichten werden erst beim Öffnen der App abgerufen, und Anrufe klingeln nicht.",
   "restoreErrorNameRequired": "Gib einen Anzeigenamen ein.",
@@ -518,5 +518,8 @@
   "noticeIdentityChanged": "Der Sicherheitscode von {name} hat sich geändert. Unter dieser Adresse meldet sich ein anderer Schlüssel: neues Telefon, Neuinstallation oder Fälschung. Die Verifizierung wurde aufgehoben. Vergleicht den Code erneut, bevor du etwas Sensibles sendest.",
   "noticeLookalikeRequest": "Ein unbekannter Absender nennt sich „{claimed}“, was nach deinem Kontakt {name} aussieht. Es ist nicht dieser Kontakt, die Nachricht kam von einem anderen Schlüssel. Du findest sie in den Chats als Nachrichtenanfrage.",
   "noticeVerifyAction": "Code prüfen",
-  "noticePreview": "Sicherheitshinweis"
+  "noticePreview": "Sicherheitshinweis",
+  "chatDisappearingAdminOnly": "In dieser Gruppe kann nur ein Admin verschwindende Nachrichten ändern.",
+  "noticeTimerChanged": "{name} hat verschwindende Nachrichten geändert: {duration}",
+  "noticeTimerChangedByMe": "Du hast verschwindende Nachrichten geändert: {duration}"
 }

@@ -2111,7 +2111,7 @@ abstract class AppLocalizations {
   /// Popisek volby Apple (APNs) v dialogu výběru režimu pushů — jen na iOS
   ///
   /// In cs, this message translates to:
-  /// **'Budíčky doručí Apple. Push token zařízení jde Applu; obsah zpráv nikdy.'**
+  /// **'Upozornění doručí Apple hned, jen s textem „Nová zpráva“. Applu jde push token zařízení; obsah zpráv ani odesílatel nikdy.'**
   String get pushModeApnsDesc;
 
   /// Subtitle ListTile v nastavení, když je aktivní režim APNs (iOS)
@@ -3217,6 +3217,24 @@ abstract class AppLocalizations {
   /// In cs, this message translates to:
   /// **'Bezpečnostní upozornění'**
   String get noticePreview;
+
+  /// Hláška, když člen bez správcovské role zkusí měnit časovač ve skupině
+  ///
+  /// In cs, this message translates to:
+  /// **'Ve skupině mění mizení zpráv jen správce.'**
+  String get chatDisappearingAdminOnly;
+
+  /// Oznámení v chatu: někdo jiný změnil časovač mizících zpráv
+  ///
+  /// In cs, this message translates to:
+  /// **'{name} změnil(a) mizení zpráv: {duration}'**
+  String noticeTimerChanged(String name, String duration);
+
+  /// Oznámení v chatu: časovač mizících zpráv jsem změnil já
+  ///
+  /// In cs, this message translates to:
+  /// **'Změnil(a) jsi mizení zpráv: {duration}'**
+  String noticeTimerChangedByMe(String duration);
 }
 
 class _AppLocalizationsDelegate

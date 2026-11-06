@@ -48,6 +48,7 @@ import 'package:sepot/core/storage/secure_storage.dart';
 import 'package:sepot/models/attachment.dart';
 import 'package:sepot/models/avatar_ref.dart';
 import 'package:sepot/models/contact.dart';
+import 'package:sepot/models/conversation.dart';
 import 'package:sepot/models/group.dart';
 import 'package:sepot/models/identity.dart';
 import 'package:sepot/models/message.dart';
@@ -117,7 +118,7 @@ class MessagingService {
   /// hovoru se tiše zahodila — hovory vůbec nešly přijmout.
   static const knownContentTypes = {
     'txt', 'att', 'rx', 'edit', 'del', 'dlv', 'rr', 'typ', 'vote', 'call',
-    ..._groupControlTypes,
+    'tmr', ..._groupControlTypes,
   };
 
   /// Prodleva dalšího pokusu o registraci; roste do [_registerRetryMax].
@@ -1070,11 +1071,13 @@ class MessagingService {
     await _sendControl(contact, {'t': 'del', 'ref': targetId});
   }
 
-  /// Odešle control zprávu (best-effort; lokální změna už proběhla).
+  /// Odešle control zprávu; lokální změna už proběhla. Co shodí síť,
+  /// počká ve frontě na další připojení.
   Future<void> _sendControl(
       Contact contact, Map<String, dynamic> extra) async {
+    Map<String, dynamic>? content;
     try {
-      await _sendContent(contact, {
+      content = {
         'v': 1,
         'id': const Uuid().v4(),
         // Čas vzniku, ne doručení — potvrzení přečtení z offline telefonu
@@ -1082,12 +1085,121 @@ class MessagingService {
         'ts': DateTime.now().millisecondsSinceEpoch,
         ...extra,
         'p': _profile(),
-      });
-    } catch (_) {
-      // síť selhala — lokální stav zůstává, protistrana se dozví později
-      // jen když znovu odešleme (v1: bez retry fronty pro control zprávy)
+      };
+      await _sendContent(contact, content);
+    } on Object catch (e) {
+      // Bez obsahu (služba ještě nemá identitu) není co dosílat.
+      if (content != null && !_recipientBroken(e)) {
+        await _queueControls([(to: contact.id, content: content)]);
+      }
     }
   }
+
+  /// Chyba, kterou opakování nespraví: příjemce nemá doručovací adresu nebo
+  /// pod jeho adresou sedí cizí klíč. Výpadek relaye a nedoběhlá vlastní
+  /// registrace jsou taky SepotUserError, ale přejdou — ty se opakují.
+  static bool _recipientBroken(Object e) =>
+      e is ContactNoDeliveryAddressError ||
+      e is MemberNoDeliveryAddressError ||
+      e is IdentityKeyMismatchError;
+
+  // ── Fronta řídicích zpráv ───────────────────────────────────────────
+  //
+  // Smazání pro všechny, úprava, časovač nebo hlas, které shodila síť, se
+  // nesmí tiše ztratit: u appky o soukromí je „smazal jsem to, a u adresáta
+  // to zůstalo“ ztráta důvěry. Fronta leží v šifrované DB (přežije restart)
+  // a dosílá se po každém připojení spolu s [_flushOutbox].
+
+  static const _pendingControlsKey = 'pending_controls';
+
+  /// Strop fronty: po dlouhém výpadku drží jen nejnovější položky, aby
+  /// jeden JSON v nastavení nerostl bez omezení.
+  static const _pendingControlsMax = 500;
+
+  /// Zápisy do fronty jdou postupně — read-modify-write z několika
+  /// souběžných odeslání by si položky přepsaly.
+  Future<void> _queueChain = Future.value();
+
+  Future<T> _withQueue<T>(Future<T> Function() op) {
+    final next = _queueChain.then((_) => op());
+    _queueChain = next.then((_) {}, onError: (_) {});
+    return next;
+  }
+
+  Future<List<Map<String, dynamic>>> _loadPendingControls() async =>
+      ((await storage.getSetting<List<dynamic>>(_pendingControlsKey)) ??
+              const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+  Future<void> _queueControls(
+      List<({String to, Map<String, dynamic> content})> items) {
+    if (items.isEmpty) return Future.value();
+    return _withQueue(() async {
+      final queue = await _loadPendingControls();
+      final at = DateTime.now().millisecondsSinceEpoch;
+      queue.addAll([
+        for (final i in items) {'to': i.to, 'at': at, 'c': i.content},
+      ]);
+      final kept = queue.length > _pendingControlsMax
+          ? queue.sublist(queue.length - _pendingControlsMax)
+          : queue;
+      await storage.setSetting(_pendingControlsKey, kept);
+    });
+  }
+
+  /// Došle frontu. Položky starší než [_outboxMaxAge], pro zablokovaný
+  /// nebo smazaný kontakt nebo pro skupinu, ve které už adresát není,
+  /// zahodí. Při síťové chybě skončí a zbytek nechá na další připojení.
+  Future<void> _flushPendingControls() => _withQueue(() async {
+        final queue = await _loadPendingControls();
+        if (queue.isEmpty) return;
+        final cutoff = DateTime.now().subtract(_outboxMaxAge);
+        final contacts = {
+          for (final c in await storage.loadContacts()) c.id: c,
+        };
+        final rest = <Map<String, dynamic>>[];
+        var offline = false;
+        for (final item in queue) {
+          if (offline) {
+            rest.add(item);
+            continue;
+          }
+          final at = DateTime.fromMillisecondsSinceEpoch(
+              item['at'] as int? ?? 0);
+          final contact = contacts[item['to']];
+          final content = item['c'];
+          if (at.isBefore(cutoff) ||
+              contact == null ||
+              contact.blocked ||
+              content is! Map<String, dynamic> ||
+              !await _stillMember(content['gid'], contact.id)) {
+            continue;
+          }
+          try {
+            await _sendContent(contact, content);
+          } on Object catch (e) {
+            if (!_recipientBroken(e)) {
+              offline = true;
+              rest.add(item);
+            }
+          }
+        }
+        await storage.setSetting(_pendingControlsKey, rest);
+      });
+
+  Future<bool> _stillMember(Object? gid, String fp) async {
+    if (gid is! String) return true;
+    final group = await storage.loadGroup(gid);
+    return group != null && !group.left && group.isMember(fp);
+  }
+
+  @visibleForTesting
+  Future<List<Map<String, dynamic>>> debugPendingControls() =>
+      _loadPendingControls();
+
+  @visibleForTesting
+  Future<void> debugFlushPendingControls() => _flushPendingControls();
 
   /// Signalizace hovoru (`t:'call'`). Na rozdíl od ostatních
   /// řídicích zpráv chybu nepolyká — hovor, který neodešel, musí UI ukončit.
@@ -1432,6 +1544,89 @@ class MessagingService {
     }
   }
 
+  /// Časovač mizících zpráv pro celou konverzaci (null = vypnuto). Platí
+  /// u všech: protistraně / členům jde řídicí zpráva `tmr` a každý si
+  /// zapíše oznámení. Starší verze `tmr` zahodí a drží si svůj časovač.
+  Future<void> setDisappearing(String convId, int? seconds,
+      {Group? group, Contact? contact}) async {
+    final now = DateTime.now();
+    final conv = await storage.loadConversation(convId) ??
+        Conversation(contactId: convId);
+    conv
+      ..disappearAfterSeconds = seconds
+      ..disappearingSetAt = now;
+    await storage.saveConversation(conv);
+    await _addTimerNotice(convId, _identity!.id, seconds);
+
+    final control = {'t': 'tmr', 's': seconds ?? 0};
+    if (group != null) {
+      await _fanoutToGroup(group, {
+        'v': 1,
+        'id': const Uuid().v4(),
+        'ts': now.millisecondsSinceEpoch,
+        'gid': group.id,
+        ...control,
+        'p': _profile(),
+      });
+    } else if (contact != null) {
+      await _sendControl(contact, control);
+    }
+  }
+
+  /// Převezme cizí změnu časovače. Ve skupině s podepsanými správci smí
+  /// časovač měnit jen správce (stejně jako název), jinak kdokoli z členů.
+  Future<void> _applyIncomingTimer(String convId, String senderFp,
+      Map<String, dynamic> content, Group? group) async {
+    final raw = content['s'];
+    if (raw is! int) return;
+    if (raw != 0 && !AppConstants.disappearingChoices.contains(raw)) return;
+    if (group != null &&
+        !group.isAdmin(senderFp) &&
+        group.isEnforced(_myFingerprint)) {
+      return;
+    }
+    final at = wireSentAt(content['ts']);
+    final conv = await storage.loadConversation(convId) ??
+        Conversation(contactId: convId);
+    final previous = conv.disappearingSetAt;
+    if (previous != null && !at.isAfter(previous)) return;
+    final seconds = raw == 0 ? null : raw;
+    final changed = conv.disappearAfterSeconds != seconds;
+    conv
+      ..disappearAfterSeconds = seconds
+      ..disappearingSetAt = at;
+    await storage.saveConversation(conv);
+    if (changed) await _addTimerNotice(convId, senderFp, seconds);
+    onUpdate?.call();
+  }
+
+  /// Platný časovač konverzace pro pozvánku; null = nikdo ho nenastavil.
+  Future<Map<String, dynamic>?> _timerWire(String convId) async {
+    final conv = await storage.loadConversation(convId);
+    final at = conv?.disappearingSetAt;
+    if (conv == null || at == null) return null;
+    return {
+      's': conv.disappearAfterSeconds ?? 0,
+      'ts': at.millisecondsSinceEpoch,
+    };
+  }
+
+  Future<void> _addTimerNotice(
+      String convId, String changedBy, int? seconds) async {
+    final me = _identity;
+    if (me == null) return;
+    await storage.addMessage(
+      convId,
+      Message.notice(
+        contactId: changedBy,
+        myId: me.id,
+        notice: MessageNotice.timerChanged,
+        content: '${seconds ?? 0}',
+      ),
+    );
+    onUpdate?.call();
+  }
+
   /// Reakce ve skupině (emoji == null = odebrat).
   Future<void> sendGroupReaction(
       Group group, String targetId, String? emoji) async {
@@ -1497,6 +1692,7 @@ class MessagingService {
       'gname': group.name,
       'roster': roster,
       'gop': ?op?.toWire(),
+      'tmr': ?await _timerWire(group.id),
       'p': _profile(),
     });
   }
@@ -1562,6 +1758,7 @@ class MessagingService {
         'gname': group.name,
         'roster': roster,
         'gop': _signOp(op).toWire(),
+        'tmr': ?await _timerWire(group.id),
         'p': _profile(),
       };
     }
@@ -1585,6 +1782,16 @@ class MessagingService {
   Future<void> debugHandleGroupControl(
           String senderFp, Map<String, dynamic> content) =>
       _handleGroupControl(senderFp, content['t'] as String?, content);
+
+  /// Příchozí `tmr` bez sealed obálky; stejná brána členství jako na drátu.
+  @visibleForTesting
+  Future<void> debugHandleTimer(
+      String senderFp, Map<String, dynamic> content) async {
+    final gid = content['gid'] as String?;
+    final group = gid == null ? null : await _groupForIncoming(gid, senderFp);
+    if (gid != null && group == null) return;
+    await _applyIncomingTimer(gid ?? senderFp, senderFp, content, group);
+  }
 
   @visibleForTesting
   Future<Group?> debugGroupForIncoming(String gid, String senderFp) =>
@@ -1651,6 +1858,7 @@ class MessagingService {
     final byFp = {for (final c in contacts) c.id: c};
     final payload = {...content, 'gv': groupProtocolVersion};
     var anyOk = false;
+    final failed = <({String to, Map<String, dynamic> content})>[];
     for (final fp in recipients ?? group.memberIds) {
       if (fp == _myFingerprint) continue;
       final c = byFp[fp];
@@ -1658,10 +1866,16 @@ class MessagingService {
       try {
         await _sendContent(c, payload);
         anyOk = true;
-      } catch (_) {
-        // člen offline/bez routingu — v1 bez per-member retry fronty
+      } on Object catch (e) {
+        if (!_recipientBroken(e)) failed.add((to: fp, content: payload));
       }
     }
+    // Zprávu (txt/att), která neodešla nikomu, došle celou outbox podle
+    // stavu `failed`; do fronty jdou jen členové, kterým chybí, zatímco
+    // ostatní ji mají. Jinak by odešla dvakrát.
+    final type = content['t'];
+    final outboxCovers = !anyOk && (type == 'txt' || type == 'att');
+    if (!outboxCovers) await _queueControls(failed);
     return anyOk;
   }
 
@@ -1701,6 +1915,19 @@ class MessagingService {
   final _groupSyncAnsweredAt = <String, DateTime>{};
 
   Future<void> _handleGroupControl(
+      String senderFp, String? type, Map<String, dynamic> content) async {
+    await _applyGroupControl(senderFp, type, content);
+    // Pozvánka nese i časovač mizících zpráv — nový člen by se ho jinak
+    // dozvěděl až při další změně. Po aplikaci rosteru, ať je už členem.
+    final gid = content['gid'];
+    final tmr = content['tmr'];
+    if (type == 'ginv' && gid is String && tmr is Map<String, dynamic>) {
+      final group = await _groupForIncoming(gid, senderFp);
+      if (group != null) await _applyIncomingTimer(gid, senderFp, tmr, group);
+    }
+  }
+
+  Future<void> _applyGroupControl(
       String senderFp, String? type, Map<String, dynamic> content) async {
     final gid = content['gid'];
     if (gid is! String || gid.isEmpty || gid.length > 64) return;
@@ -2151,6 +2378,7 @@ class MessagingService {
     try {
       final identity = _identity;
       if (identity == null) return;
+      await _flushPendingControls();
       final cutoff = DateTime.now().subtract(_outboxMaxAge);
 
       final stuck = <(String convId, Message message)>[];
@@ -2313,10 +2541,18 @@ class MessagingService {
           ? pb.ContentHint.CONTENT_HINT_EPHEMERAL
           : ring
               ? pb.ContentHint.CONTENT_HINT_CALL
-              : pb.ContentHint.CONTENT_HINT_DEFAULT,
+              : _visibleTypes.contains(content['t'])
+                  ? pb.ContentHint.CONTENT_HINT_VISIBLE
+                  : pb.ContentHint.CONTENT_HINT_DEFAULT,
     );
     return receipt.status;
   }
+
+  /// Obsah, který příjemce uvidí jako novou zprávu. Jen u něj iPhone
+  /// offline příjemce dostane hned viditelnou notifikaci; doručenky,
+  /// reakce a správa skupin zůstávají u tichého budíčku, jinak by telefon
+  /// hlásil „Nová zpráva“ u každého ✓✓.
+  static const _visibleTypes = {'txt', 'att'};
 
   /// libsignal 5.0.9 nad prázdným paměťovým storem identit důvěřuje
   /// čemukoli (TOFU bez paměti): příchozí PreKey zpráva s cizím klíčem pod
@@ -2492,6 +2728,16 @@ class MessagingService {
         }
         _relay?.ack(msgUuid);
         onUpdate?.call();
+        return;
+      }
+
+      // Žádost o zprávu (nepřijatý kontakt) časovač neřídí — cizí klíč by
+      // jinak plnil konverzaci oznámeními.
+      if (type == 'tmr') {
+        if (group != null || contact.accepted) {
+          await _applyIncomingTimer(convId, senderFp, content, group);
+        }
+        _relay?.ack(msgUuid);
         return;
       }
 

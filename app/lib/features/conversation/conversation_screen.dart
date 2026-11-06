@@ -16,6 +16,7 @@ import 'package:sepot/core/l10n/contact_name.dart';
 import 'package:sepot/core/calls/call_controller.dart';
 import 'package:sepot/core/constants/app_constants.dart';
 import 'package:sepot/core/l10n/error_messages.dart';
+import 'package:sepot/core/l10n/disappearing_text.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/services/image_processor.dart';
 import 'package:sepot/core/theme/app_theme.dart';
@@ -24,6 +25,7 @@ import 'package:sepot/features/calls/call_log_text.dart';
 import 'package:sepot/features/conversation/chat_actions.dart';
 import 'package:sepot/features/conversation/message_request_panel.dart';
 import 'package:sepot/features/conversation/widgets/safety_notice_row.dart';
+import 'package:sepot/features/conversation/widgets/timer_notice_row.dart';
 import 'package:sepot/features/conversation/forward_sheet.dart';
 import 'package:sepot/features/conversation/widgets/attachment_content.dart';
 import 'package:sepot/features/conversation/widgets/create_poll_sheet.dart';
@@ -843,14 +845,21 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen>
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 if (showDate) _buildDateDivider(msg.timestamp),
-                SafetyNoticeRow(
-                  notice: notice,
-                  contactName: autorJmeno(widget.contactId),
-                  claimedName: msg.content,
-                  onVerify: group == null
-                      ? () => context.push('/verify/${widget.contactId}')
-                      : null,
-                ),
+                if (notice == MessageNotice.timerChanged)
+                  TimerNoticeRow(
+                    seconds: timerNoticeSeconds(msg),
+                    changedBy: autorJmeno(msg.senderId),
+                    byMe: isMine,
+                  )
+                else
+                  SafetyNoticeRow(
+                    notice: notice,
+                    contactName: autorJmeno(widget.contactId),
+                    claimedName: msg.content,
+                    onVerify: group == null
+                        ? () => context.push('/verify/${widget.contactId}')
+                        : null,
+                  ),
               ],
             ),
           );

@@ -2,6 +2,7 @@ import CallKit
 import Flutter
 import PushKit
 import UIKit
+import UserNotifications
 import WebRTC
 import flutter_callkit_incoming
 
@@ -36,6 +37,18 @@ import flutter_callkit_incoming
         result(nil)
       case "getToken":
         result(self?.pendingToken)
+      case "clearMessageAlerts":
+        // Obecné „Nová zpráva“ z relaye (k=msg) po otevření appky jen
+        // straší — zprávy jsou vidět v ní. Vlastní lokální notifikace appky
+        // s odesílatelem zůstávají.
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { delivered in
+          let ids = delivered
+            .filter { $0.request.content.userInfo["k"] as? String == "msg" }
+            .map { $0.request.identifier }
+          center.removeDeliveredNotifications(withIdentifiers: ids)
+        }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sepot/core/push/apns_ios.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/core/calls/call_controller.dart';
@@ -200,6 +201,8 @@ class _AutoLockGateState extends ConsumerState<_AutoLockGate>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Spuštění klepnutím na notifikaci není návrat z pozadí (resumed).
+    unawaited(ApnsBridge.clearMessageAlerts());
   }
 
   @override
@@ -216,6 +219,7 @@ class _AutoLockGateState extends ConsumerState<_AutoLockGate>
       case AppLifecycleState.detached:
         _naPozadiOd ??= DateTime.now();
       case AppLifecycleState.resumed:
+        unawaited(ApnsBridge.clearMessageAlerts());
         final od = _naPozadiOd;
         _naPozadiOd = null;
         if (od == null) break;

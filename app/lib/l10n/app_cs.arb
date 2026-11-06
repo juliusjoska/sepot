@@ -1572,7 +1572,7 @@
   "@pushModeApns": {
     "description": "Label volby 'apns' v dialogu výběru režimu pushů — jen na iOS (vlastní název)"
   },
-  "pushModeApnsDesc": "Budíčky doručí Apple. Push token zařízení jde Applu; obsah zpráv nikdy.",
+  "pushModeApnsDesc": "Upozornění doručí Apple hned, jen s textem „Nová zpráva“. Applu jde push token zařízení; obsah zpráv ani odesílatel nikdy.",
   "@pushModeApnsDesc": {
     "description": "Popisek volby Apple (APNs) v dialogu výběru režimu pushů — jen na iOS"
   },
@@ -2495,5 +2495,30 @@
   "noticePreview": "Bezpečnostní upozornění",
   "@noticePreview": {
     "description": "Náhled v seznamu chatů, když je poslední položkou bezpečnostní upozornění"
+  },
+  "chatDisappearingAdminOnly": "Ve skupině mění mizení zpráv jen správce.",
+  "@chatDisappearingAdminOnly": {
+    "description": "Hláška, když člen bez správcovské role zkusí měnit časovač ve skupině"
+  },
+  "noticeTimerChanged": "{name} změnil(a) mizení zpráv: {duration}",
+  "@noticeTimerChanged": {
+    "description": "Oznámení v chatu: někdo jiný změnil časovač mizících zpráv",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "noticeTimerChangedByMe": "Změnil(a) jsi mizení zpráv: {duration}",
+  "@noticeTimerChangedByMe": {
+    "description": "Oznámení v chatu: časovač mizících zpráv jsem změnil já",
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
   }
 }

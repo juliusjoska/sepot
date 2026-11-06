@@ -1,0 +1,3 @@
+/* Šepot — text obecné notifikace z relaye (loc-key v APNs). Relay jazyk
+   nezná a obsah zprávy nevidí, proto text bez jména a obsahu. */
+"PUSH_NEW_MESSAGE" = "Nuovo messaggio";

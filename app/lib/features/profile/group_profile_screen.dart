@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:sepot/core/l10n/disappearing_text.dart';
 import 'package:sepot/core/l10n/l10n.dart';
 import 'package:sepot/core/theme/app_theme.dart';
 import 'package:sepot/features/conversation/chat_actions.dart';
@@ -205,7 +206,7 @@ class GroupProfileScreen extends ConsumerWidget {
                     ProfileRow(
                       label: l10n.chatDisappearingMessages,
                       value: disappearingLabel(
-                          context, conv?.disappearAfterSeconds),
+                          l10n, conv?.disappearAfterSeconds),
                       onTap: group.left
                           ? null
                           : () => configureDisappearing(context, ref, groupId),

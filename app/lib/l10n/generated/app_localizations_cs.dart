@@ -1173,7 +1173,7 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get pushModeApnsDesc =>
-      'Budíčky doručí Apple. Push token zařízení jde Applu; obsah zpráv nikdy.';
+      'Upozornění doručí Apple hned, jen s textem „Nová zpráva“. Applu jde push token zařízení; obsah zpráv ani odesílatel nikdy.';
 
   @override
   String get pushSubtitleApns => 'Apple (APNs)';
@@ -1838,4 +1838,18 @@ class AppLocalizationsCs extends AppLocalizations {
 
   @override
   String get noticePreview => 'Bezpečnostní upozornění';
+
+  @override
+  String get chatDisappearingAdminOnly =>
+      'Ve skupině mění mizení zpráv jen správce.';
+
+  @override
+  String noticeTimerChanged(String name, String duration) {
+    return '$name změnil(a) mizení zpráv: $duration';
+  }
+
+  @override
+  String noticeTimerChangedByMe(String duration) {
+    return 'Změnil(a) jsi mizení zpráv: $duration';
+  }
 }

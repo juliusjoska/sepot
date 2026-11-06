@@ -641,7 +641,7 @@ class AuthOk extends $pb.GeneratedMessage {
   static AuthOk? _defaultInstance;
 }
 
-/// ── Push registrace (§4) ───────────────────────────────────────────────
+/// ── Push registrace ───────────────────────────────────────────────
 /// Posílá se JEN přes autentizovaný WS (endpoint se nikdy neposílá
 /// neautentizovaně a jde stejnou cestou jako provoz — klidně přes Tor).
 /// Relay endpoint NIKDY neloguje. Budíček je vždy prázdný „ťuk" — žádný
@@ -1219,7 +1219,7 @@ class PreKeyBundle extends $pb.GeneratedMessage {
   OneTimePreKey ensureOneTimePrekey() => $_ensure(5);
 }
 
-/// Bundle pro všechna zařízení identity (multi-device fanout, §4.4).
+/// Bundle pro všechna zařízení identity (multi-device fanout).
 class PreKeyBundles extends $pb.GeneratedMessage {
   factory PreKeyBundles({
     $core.Iterable<PreKeyBundle>? devices,

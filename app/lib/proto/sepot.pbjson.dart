@@ -24,6 +24,7 @@ const ContentHint$json = {
     {'1': 'CONTENT_HINT_SUPPLEMENTARY', '2': 2},
     {'1': 'CONTENT_HINT_EPHEMERAL', '2': 3},
     {'1': 'CONTENT_HINT_CALL', '2': 4},
+    {'1': 'CONTENT_HINT_VISIBLE', '2': 5},
   ],
 };
 
@@ -31,7 +32,8 @@ const ContentHint$json = {
 final $typed_data.Uint8List contentHintDescriptor = $convert.base64Decode(
     'CgtDb250ZW50SGludBIYChRDT05URU5UX0hJTlRfREVGQVVMVBAAEhcKE0NPTlRFTlRfSElOVF'
     '9SRVNZTkMQARIeChpDT05URU5UX0hJTlRfU1VQUExFTUVOVEFSWRACEhoKFkNPTlRFTlRfSElO'
-    'VF9FUEhFTUVSQUwQAxIVChFDT05URU5UX0hJTlRfQ0FMTBAE');
+    'VF9FUEhFTUVSQUwQAxIVChFDT05URU5UX0hJTlRfQ0FMTBAEEhgKFENPTlRFTlRfSElOVF9WSV'
+    'NJQkxFEAU=');
 
 @$core.Deprecated('Use envelopeDescriptor instead')
 const Envelope$json = {

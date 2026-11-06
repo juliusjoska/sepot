@@ -1172,7 +1172,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get pushModeApnsDesc =>
-      'Wake-ups are delivered by Apple. The device push token goes to Apple; message content never does.';
+      'Apple delivers notifications right away, only as “New message”. Apple gets the device push token; never the content or the sender.';
 
   @override
   String get pushSubtitleApns => 'Apple (APNs)';
@@ -1831,4 +1831,18 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get noticePreview => 'Security notice';
+
+  @override
+  String get chatDisappearingAdminOnly =>
+      'Only an admin can change disappearing messages in this group.';
+
+  @override
+  String noticeTimerChanged(String name, String duration) {
+    return '$name changed disappearing messages: $duration';
+  }
+
+  @override
+  String noticeTimerChangedByMe(String duration) {
+    return 'You changed disappearing messages: $duration';
+  }
 }
