@@ -90,7 +90,11 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
   Contact? findByIdentityId(String identityId) {
     final contacts = state.valueOrNull;
     if (contacts == null) return null;
-    return contacts.where((c) => c.publicIdentity.id == identityId).firstOrNull;
+    try {
+      return contacts.firstWhere((c) => c.publicIdentity.id == identityId);
+    } catch (_) {
+      return null;
+    }
   }
 }
 
