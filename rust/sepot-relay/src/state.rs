@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,12 +9,14 @@ use prost::Message;
 use sepot_proto::v1;
 use sepot_proto::MAX_ENVELOPE_PAYLOAD;
 use sqlx::PgPool;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{oneshot, Notify};
 
 use crate::blocking::{self, Registration, Retire};
 use crate::certs::CertAuthority;
 use crate::fingerprint::Fingerprint;
+use crate::gauge::{QueueTotal, QueueUsage, RecipientCaps, RecipientGauges};
 use crate::net::TrustedProxies;
+use crate::outbox::{Outbox, OUTBOX_MAX_BYTES};
 
 /// TTL offline fronty.
 pub const QUEUE_TTL_DAYS: i64 = 30;
@@ -22,9 +24,12 @@ pub const QUEUE_TTL_DAYS: i64 = 30;
 /// Největší zakódovaná obálka, kterou fronta přijme (CHECK v migraci 0001).
 const MAX_STORED_ENVELOPE_BYTES: usize = 262_144;
 
-/// Velikost dávky při vylévání fronty (SECURITY audit #3). Strop paměti =
-/// FLUSH_BATCH × MAX_ENVELOPE_PAYLOAD (~16 MiB), ne celá fronta najednou.
+/// Dávka při vylévání fronty: nejvýš tolik obálek a nejvýš tolik bajtů
+/// naráz v paměti. Samotný počet nestačil: 64 obálek po 256 KiB je 16 MiB
+/// na každé spojení, které právě vylévá. První obálka dávky se bere vždy,
+/// i kdyby byla větší než strop.
 const FLUSH_BATCH: i64 = 64;
+const FLUSH_BATCH_BYTES: i64 = OUTBOX_MAX_BYTES as i64;
 
 /// Po kolika marných pokusech o doručení obálku zahodit.
 ///
@@ -59,6 +64,19 @@ const WAKE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5)
 /// zazvonila — výměna deseti zpráv za minutu nemá zvonit desetkrát.
 /// V okně jde místo ní jen běžný tichý budíček.
 const ALERT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+/// Okno pro `Limits::alerts_per_hour`. Samotný rozestup nestačí: druh
+/// obálky volí odesílatel, takže kdo zná adresu, zvonil by cizímu telefonu
+/// každých deset sekund celý den. Živý rozhovor s telefonem v kapse se do
+/// hodinového stropu vejde; nad ním chodí dál tichý budíček a zprávy
+/// čekají ve frontě.
+///
+/// Strop se počítá na dvojici odesílatel → cíl, ne na cíl: společný strop
+/// by jeden odesílatel vyčerpal a umlčel tím notifikace všem ostatním.
+const ALERT_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+/// Kolik odesílatelů si značky jednoho cíle pamatují. Dalšímu v okně
+/// notifikace se zvukem neodejde (tichý budíček ano): bez stropu by paměť
+/// rostla s počtem účtů, ze kterých kdo na jeden cíl píše.
+const ALERT_SENDERS_TRACKED: usize = 256;
 /// Budíček hovoru (VoIP push / FCM k=call) zvoní na telefonu hned a bez
 /// ověření — proto má vlastní, přísnější strop na cíl: nejvýš jeden za
 /// `Limits::call_wake_min_interval` a `Limits::call_wakes_per_window` za
@@ -73,8 +91,11 @@ const OTP_ISSUE_WINDOW: std::time::Duration = std::time::Duration::from_secs(360
 /// Kolik zařízení z registru živých spojení ověří kontrola jedním dotazem.
 const LIVE_CHECK_BATCH: usize = 10_000;
 
-/// Okno kvóty odesílatele (`Limits::send_*_per_hour`).
+/// Okno kvóty odesílatele (`Limits::send_*_per_hour`, `ephemeral_per_hour`).
 const SEND_BUDGET_PERIOD: std::time::Duration = std::time::Duration::from_secs(3600);
+/// Jak často se bajty celé fronty přeměří v DB (jeden průchod tabulkou;
+/// mezi měřeními relay počítá vlastní vložení a potvrzení).
+pub const QUEUE_TOTAL_MEASURE_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 /// Okno kvóty příloh na účet (`Limits::att_account_bytes_per_day`).
 const ATTACHMENT_BUDGET_PERIOD: std::time::Duration = std::time::Duration::from_secs(86_400);
 
@@ -90,6 +111,10 @@ pub enum RouteError {
     UnknownRecipient,
     /// 429: odesílající účet vyčerpal hodinovou kvótu.
     SenderQuota,
+    /// Fronta příjemce je plná (odesílatel dostane doručenku DROPPED,
+    /// ws.rs). Nová obálka se odmítne a čekající zůstanou; mazat nejstarší by dalo každému, kdo zná adresu, způsob,
+    /// jak příjemci potichu smazat nedoručené zprávy.
+    RecipientFull,
     /// 507: na disku zbývá méně než `Limits::disk_min_free_pct_queue`.
     DiskFull,
     Internal(anyhow::Error),
@@ -101,6 +126,7 @@ impl RouteError {
             Self::Invalid => (400, "obálka odmítnuta"),
             Self::UnknownRecipient => (404, "příjemce neexistuje"),
             Self::SenderQuota => (429, "příliš mnoho zpráv, zkus to později"),
+            Self::RecipientFull => (507, "příjemce má plnou frontu zpráv, zkus to později"),
             Self::DiskFull => (507, "relay je dočasně plný, zkus to později"),
             Self::Internal(_) => (500, "interní chyba"),
         }
@@ -113,30 +139,198 @@ impl From<sqlx::Error> for RouteError {
     }
 }
 
+/// Kdo obálku posílá: ověřené spojení odesílatele. Slouží jen kvótám
+/// v paměti; do fronty se z toho nic neukládá (sealed sender).
+#[derive(Clone, Copy)]
+pub struct Sender<'a> {
+    pub account: &'a [u8],
+    /// Vlastní doručovací adresa odesílatele.
+    pub address: &'a [u8],
+    pub registered_at: DateTime<Utc>,
+}
+
 /// Značky budíčků jednoho cíle (jen v paměti, nikam se neukládají).
 #[derive(Default)]
 pub struct WakeMarks {
     last_wake: Option<Instant>,
     last_alert: Option<Instant>,
+    /// Viditelné notifikace v ALERT_WINDOW podle odesílatele. Klíč je
+    /// značka účtu ([`AppState::sender_tag`]), ne jeho id: kdo komu píše,
+    /// relay jinde nedrží a nemá to jít vyčíst ani odsud.
+    alerts: std::collections::HashMap<u64, std::collections::VecDeque<Instant>>,
     call_wakes: std::collections::VecDeque<Instant>,
 }
 
-/// Připojené zařízení: kanál na jeho WS + kdy od něj naposled něco přišlo.
+impl WakeMarks {
+    /// Smí teď odejít viditelná notifikace od `sender`? Na cíl nejvýš jedna
+    /// za ALERT_MIN_INTERVAL, od jednoho odesílatele nejvýš `per_hour` za
+    /// ALERT_WINDOW (0 = bez hodinového stropu). Povolená se počítá i jako
+    /// běžný budíček.
+    fn allow_alert(&mut self, now: Instant, sender: u64, per_hour: usize) -> bool {
+        if self
+            .last_alert
+            .is_some_and(|last| now.duration_since(last) < ALERT_MIN_INTERVAL)
+        {
+            return false;
+        }
+        if per_hour > 0 {
+            self.expire_alerts(now);
+            if !self.alerts.contains_key(&sender) && self.alerts.len() >= ALERT_SENDERS_TRACKED {
+                return false;
+            }
+            let sent = self.alerts.entry(sender).or_default();
+            if sent.len() >= per_hour {
+                return false;
+            }
+            sent.push_back(now);
+        }
+        self.last_alert = Some(now);
+        self.last_wake = Some(now);
+        true
+    }
+
+    fn expire_alerts(&mut self, now: Instant) {
+        self.alerts.retain(|_, sent| {
+            sent.retain(|at| now.duration_since(*at) < ALERT_WINDOW);
+            !sent.is_empty()
+        });
+    }
+
+    /// Příjemce se přihlásil: appku otevřel a zmeškané zprávy vidí, další
+    /// má zase slyšet od kohokoli.
+    fn reset_alerts(&mut self) {
+        self.alerts.clear();
+    }
+}
+
+/// Připojené zařízení: fronta na jeho WS + kdy od něj naposled něco přišlo.
 ///
-/// Samotný `tx` o životnosti spojení nic neříká — je to mpsc s bufferem, do
-/// kterého zápis projde i u dávno mrtvého socketu. Právě proto se dřív vracelo
-/// falešné DELIVERED_ONLINE a push budíček se vůbec nezkusil.
+/// Samotná fronta o životnosti spojení nic neříká — zápis do ní projde
+/// i u dávno mrtvého socketu. Právě proto se dřív vracelo falešné
+/// DELIVERED_ONLINE a push budíček se vůbec nezkusil.
 pub struct OnlineDevice {
-    pub tx: mpsc::Sender<v1::ServerFrame>,
+    pub outbox: Outbox,
     /// ms od startu procesu; monotónní, aby s ním neházel NTP.
     last_frame_ms: std::sync::atomic::AtomicU64,
+    /// Doručování převzalo novější spojení téhož zařízení.
+    retired: AtomicBool,
+    retired_notify: Notify,
+    /// Obálky, které se do fronty spojení nevešly (viz [`Backlog`]).
+    backlog: std::sync::Mutex<Backlog>,
+    backlog_notify: Notify,
+}
+
+/// Pozice ve frontě adresy: (enqueued_at, msg_uuid) obálky, za kterou se
+/// čte dál. Prázdné msg_uuid řadí před každé skutečné, tedy „od prvního
+/// zařazeného v ten okamžik“.
+pub type QueueCursor = (DateTime<Utc>, Vec<u8>);
+
+/// Obálky pro připojené zařízení, které šly jen do DB, protože fronta
+/// spojení byla plná. Bez téhle značky by na ně nikdo nesáhl do dalšího
+/// připojení: klient je připojený, takže budíček nic nespustí, a frontu
+/// v DB vylévá relay jen po AUTH.
+#[derive(Default)]
+struct Backlog {
+    /// Za kterou pozicí fronty je potřeba dolít.
+    missed_after: Option<QueueCursor>,
+    /// Dolévání právě běží. Nové obálky jdou do té doby jen do DB, ať je
+    /// dolévání pošle v pořadí a žádná nepřijde dvakrát.
+    refilling: bool,
 }
 
 impl OnlineDevice {
-    pub fn new(tx: mpsc::Sender<v1::ServerFrame>, now_ms: u64) -> Self {
+    pub fn new(outbox: Outbox, now_ms: u64) -> Self {
         Self {
-            tx,
+            outbox,
             last_frame_ms: std::sync::atomic::AtomicU64::new(now_ms),
+            retired: AtomicBool::new(false),
+            retired_notify: Notify::new(),
+            backlog: std::sync::Mutex::default(),
+            backlog_notify: Notify::new(),
+        }
+    }
+
+    fn backlog(&self) -> std::sync::MutexGuard<'_, Backlog> {
+        self.backlog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Má nová obálka přeskočit frontu spojení a počkat v DB na dolití?
+    fn defers_delivery(&self) -> bool {
+        let backlog = self.backlog();
+        backlog.refilling || backlog.missed_after.is_some()
+    }
+
+    /// Obálka zařazená v `enqueued_at` se do fronty spojení nedostala.
+    fn note_missed(&self, enqueued_at: DateTime<Utc>) {
+        let missed = (enqueued_at, Vec::new());
+        let mut backlog = self.backlog();
+        backlog.missed_after = Some(match backlog.missed_after.take() {
+            Some(earlier) => earlier.min(missed),
+            None => missed,
+        });
+        drop(backlog);
+        self.backlog_notify.notify_one();
+    }
+
+    /// Vylévání došlo po `sent_up_to` včetně: co bylo zmeškané před tím,
+    /// spojení už dostalo. Dolévat zbývá jen to, co přibylo potom.
+    fn note_flushed(&self, sent_up_to: &QueueCursor) {
+        let mut backlog = self.backlog();
+        if backlog
+            .missed_after
+            .as_ref()
+            .is_some_and(|missed| missed < sent_up_to)
+        {
+            backlog.missed_after = Some(sent_up_to.clone());
+        }
+    }
+
+    /// Doběhne, jakmile je co dolévat a žádné dolévání neběží; vrací
+    /// pozici, za kterou dolévat. Volající pak pustí
+    /// [`AppState::refill_queue`].
+    pub async fn refill_due(&self) -> QueueCursor {
+        loop {
+            {
+                let mut backlog = self.backlog();
+                if !backlog.refilling {
+                    if let Some(after) = backlog.missed_after.take() {
+                        backlog.refilling = true;
+                        return after;
+                    }
+                }
+            }
+            self.backlog_notify.notified().await;
+        }
+    }
+
+    /// Dolévání skončilo (i neúspěchem). Co se mezitím nevešlo, ohlásí
+    /// další [`Self::refill_due`].
+    fn refill_done(&self) {
+        let mut backlog = self.backlog();
+        backlog.refilling = false;
+        let again = backlog.missed_after.is_some();
+        drop(backlog);
+        if again {
+            self.backlog_notify.notify_one();
+        }
+    }
+
+    fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+        self.retired_notify.notify_waiters();
+    }
+
+    /// Doběhne, jakmile doručování převezme novější spojení.
+    async fn retired(&self) {
+        let notified = self.retired_notify.notified();
+        tokio::pin!(notified);
+        // Zapsat se k odběru dřív, než se přečte příznak: jinak by
+        // `retire` mezi čtením a čekáním proklouzlo bez probuzení.
+        notified.as_mut().enable();
+        if !self.retired.load(Ordering::Acquire) {
+            notified.await;
         }
     }
 
@@ -168,9 +362,13 @@ impl OnlineDevices {
     }
 
     /// Nově ověřené spojení přebírá doručování — i od staršího spojení
-    /// téhož zařízení, které ještě nevypršelo.
+    /// téhož zařízení, které ještě nevypršelo. Starší se o tom dozví
+    /// a přestane vylévat frontu: dvě vylévání téže adresy by jen držela
+    /// paměť a posílala každou obálku dvakrát.
     pub fn attach(&self, delivery_address: Vec<u8>, device: Arc<OnlineDevice>) {
-        self.0.insert(delivery_address, device);
+        if let Some(previous) = self.0.insert(delivery_address, device) {
+            previous.retire();
+        }
     }
 
     /// Konec spojení: odebere záznam, jen pokud pořád patří tomuto spojení.
@@ -290,6 +488,8 @@ pub struct AppState {
     pub started: std::time::Instant,
     /// delivery_address → živé WS spojení zařízení.
     pub online: OnlineDevices,
+    /// delivery_address → zámek vylévání fronty (nejvýš jedno naráz).
+    flush_locks: DashMap<Vec<u8>, Arc<tokio::sync::Mutex<()>>>,
     /// Registr ověřených WS spojení: kontrola proti DB a odpojení.
     pub conns: AuthedConns,
     /// klientská IP → počet souběžných WS spojení (anti-flood cap).
@@ -313,6 +513,12 @@ pub struct AppState {
     pub limits: crate::limits::Limits,
     /// Kvóta ukládaných obálek na odesílající účet (paměť).
     pub send_budget: crate::quota::Budgets,
+    /// Kvóty „píše…“: na odesílající účet a na cílovou adresu (paměť).
+    pub ephemeral_budget: crate::quota::Budgets,
+    pub ephemeral_target_budget: crate::quota::Budgets,
+    /// Obsazenost offline fronty: na příjemce a celkem (paměť, gauge.rs).
+    pub queue_gauges: RecipientGauges,
+    pub queue_total: QueueTotal,
     /// Kvóta příloh na účet: tempo za den a uloženo celkem (paměť).
     pub attachment_budget: crate::quota::Budgets,
     pub attachment_stored: crate::quota::StoredLedger,
@@ -320,15 +526,105 @@ pub struct AppState {
     pub disk: Arc<crate::disk::DiskWatch>,
     /// delivery_address → značky budíčků (throttling pushů a hovorů).
     pub wake_marks: DashMap<Vec<u8>, WakeMarks>,
+    /// Klíč značek odesílatelů ve `wake_marks`, náhodný pro každý start.
+    sender_tags: std::hash::RandomState,
     /// delivery_address → (začátek okna, vydaných OTP) — drain ochrana.
     pub otp_issued: DashMap<Vec<u8>, (Instant, u32)>,
     /// Proof-of-work registrace: klíč výzev, spotřebované výzvy, zátěž (paměť).
     pub pow: crate::pow::RegisterPow,
+    /// Strop všech registrací dohromady; bere se až po ověření důkazů.
+    pub register_global: crate::limits::GlobalLimit,
+    /// Poslední výsledek sondy DB pro `/v1/ready`.
+    pub ready_probe: crate::rest::ReadyProbe,
+    /// Kdy naposledy proběhlo dorovnání blokací (úplné a jakékoli).
+    block_reconcile: std::sync::Mutex<ReconcileMarks>,
     /// Odkaz na zdroj a revize běžící binárky (AGPL §13, /v1/server-info).
     pub source_url: String,
     pub revision: String,
     #[cfg(test)]
     pub test_hooks: crate::testkit::Hooks,
+}
+
+/// Jak často projde dorovnání blokací celou tabulku identit. Mezi tím
+/// stačí registrace od minulého běhu: nová registrace zablokované identity
+/// je jediné, co může přibýt. Úplný průchod zůstává pojistkou pro případy,
+/// které přírůstek nevidí (blokace zapsaná mimo běžnou cestu).
+const RECONCILE_FULL_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// Přesah přírůstkového okna: `registered_at` je čas začátku transakce,
+/// commit přijde později, a hodiny DB a relaye se můžou lišit.
+const RECONCILE_OVERLAP_MINUTES: i64 = 10;
+
+#[derive(Default)]
+struct ReconcileMarks {
+    last_full: Option<Instant>,
+    last_run: Option<DateTime<Utc>>,
+}
+
+impl ReconcileMarks {
+    /// Od kdy stačí registrace projít; `None` = je čas na úplný průchod
+    /// (první běh po startu a pak jednou za `RECONCILE_FULL_EVERY`).
+    fn incremental_since(&self, now: Instant) -> Option<DateTime<Utc>> {
+        let full_due = self
+            .last_full
+            .is_none_or(|at| now.duration_since(at) >= RECONCILE_FULL_EVERY);
+        if full_due {
+            return None;
+        }
+        self.last_run
+            .map(|at| at - Duration::minutes(RECONCILE_OVERLAP_MINUTES))
+    }
+
+    fn done(&mut self, now: Instant, started: DateTime<Utc>, full: bool) {
+        self.last_run = Some(started);
+        if full {
+            self.last_full = Some(now);
+        }
+    }
+}
+
+/// Zapomene token, který push služba natrvalo odmítla. Jen když ho zařízení
+/// pořád má: appka mezitím mohla zaregistrovat nový a ten se smazat nesmí.
+/// Řádek bez obou tokenů nikoho nevzbudí, proto zmizí celý.
+async fn forget_dead_token(
+    pool: &PgPool,
+    dst_address: &[u8],
+    dead: crate::push::DeadToken,
+    token: &[u8],
+) {
+    let clear = match dead {
+        crate::push::DeadToken::Push => {
+            "UPDATE push_tokens p SET token = NULL FROM devices d
+             WHERE d.device_uuid = p.device_uuid AND d.delivery_address = $1 AND p.token = $2"
+        }
+        crate::push::DeadToken::Voip => {
+            "UPDATE push_tokens p SET voip_token = NULL FROM devices d
+             WHERE d.device_uuid = p.device_uuid AND d.delivery_address = $1
+               AND p.voip_token = $2"
+        }
+    };
+    let forgotten = async {
+        let cleared = sqlx::query(clear)
+            .bind(dst_address)
+            .bind(token)
+            .execute(pool)
+            .await?
+            .rows_affected();
+        sqlx::query(
+            "DELETE FROM push_tokens p USING devices d
+             WHERE d.device_uuid = p.device_uuid AND d.delivery_address = $1
+               AND p.token IS NULL AND p.voip_token IS NULL",
+        )
+        .bind(dst_address)
+        .execute(pool)
+        .await?;
+        Ok::<u64, sqlx::Error>(cleared)
+    };
+    match forgotten.await {
+        Ok(0) => {}
+        // Bez adresy i tokenu: obojí je identifikátor uživatele.
+        Ok(_) => tracing::info!(kind = ?dead, "mrtvý push token zapomenut"),
+        Err(e) => tracing::warn!("mrtvý push token se nepodařilo smazat: {e}"),
+    }
 }
 
 impl AppState {
@@ -343,6 +639,7 @@ impl AppState {
             pool,
             started: std::time::Instant::now(),
             online: OnlineDevices::default(),
+            flush_locks: DashMap::new(),
             conns: AuthedConns::default(),
             ws_conns: DashMap::new(),
             certs,
@@ -357,6 +654,18 @@ impl AppState {
                 limits.send_bytes_per_hour,
                 SEND_BUDGET_PERIOD,
             ),
+            ephemeral_budget: crate::quota::Budgets::new(
+                limits.ephemeral_per_hour,
+                0,
+                SEND_BUDGET_PERIOD,
+            ),
+            ephemeral_target_budget: crate::quota::Budgets::new(
+                limits.ephemeral_target_burst,
+                0,
+                limits.ephemeral_target_period,
+            ),
+            queue_gauges: RecipientGauges::default(),
+            queue_total: QueueTotal::default(),
             attachment_budget: crate::quota::Budgets::new(
                 0,
                 limits.att_account_bytes_per_day,
@@ -367,8 +676,12 @@ impl AppState {
                 crate::attachments::ATTACHMENT_TTL_DAYS,
             ),
             disk: Arc::new(crate::disk::DiskWatch::unknown()),
+            register_global: crate::limits::GlobalLimit::new(limits.register_global),
+            ready_probe: crate::rest::ReadyProbe::default(),
+            block_reconcile: std::sync::Mutex::default(),
             limits,
             wake_marks: DashMap::new(),
+            sender_tags: std::hash::RandomState::new(),
             otp_issued: DashMap::new(),
             pow: crate::pow::RegisterPow::new(crate::pow::Config::from_env()),
             source_url: std::env::var("SEPOT_SOURCE_URL")
@@ -446,8 +759,21 @@ impl AppState {
             Ok(_) => {}
             Err(e) => tracing::warn!("údržba blokací: {e}"),
         }
-        match blocking::reconcile(&self.pool).await {
-            Ok(reconciled) if reconciled.identities > 0 => {
+        let started = Utc::now();
+        let since = self
+            .block_reconcile
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .incremental_since(Instant::now());
+        match blocking::reconcile(&self.pool, since).await {
+            Ok(reconciled) => {
+                self.block_reconcile
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .done(Instant::now(), started, since.is_none());
+                if reconciled.identities == 0 {
+                    return;
+                }
                 // Registrace zablokované identity vzniká jen obejitím
                 // blokace; počet je signál pro provozovatele.
                 tracing::warn!(
@@ -456,7 +782,6 @@ impl AppState {
                 );
                 self.conns.kick_devices(&reconciled.device_uuids, 403);
             }
-            Ok(_) => {}
             Err(e) => tracing::warn!("dorovnání blokací: {e}"),
         }
     }
@@ -488,11 +813,21 @@ impl AppState {
                 || m.last_alert
                     .map(|t| now.duration_since(t) < ALERT_MIN_INTERVAL)
                     .unwrap_or(false)
+                || {
+                    m.expire_alerts(now);
+                    !m.alerts.is_empty()
+                }
                 || !m.call_wakes.is_empty()
         });
         self.otp_issued
             .retain(|_, (start, _)| now.duration_since(*start) < OTP_ISSUE_WINDOW);
+        // Zámek, který nikdo nedrží ani na něj nečeká, má jediný odkaz.
+        self.flush_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
         self.send_budget.prune();
+        self.ephemeral_budget.prune();
+        self.ephemeral_target_budget.prune();
+        self.queue_gauges.prune();
         self.attachment_budget.prune();
         self.attachment_stored.prune();
         self.pow
@@ -531,21 +866,29 @@ impl AppState {
         true
     }
 
-    /// Viditelná notifikace smí odejít nejvýš jednou za ALERT_MIN_INTERVAL
-    /// na cíl. Počítá se i jako běžný budíček.
-    fn allow_alert(&self, dst_address: &[u8]) -> bool {
-        let now = Instant::now();
-        let mut marks = self.wake_marks.entry(dst_address.to_vec()).or_default();
-        if marks
-            .last_alert
-            .map(|t| now.duration_since(t) < ALERT_MIN_INTERVAL)
-            .unwrap_or(false)
-        {
-            return false;
+    /// Viditelná notifikace na cíl: rozestup a hodinový strop viz
+    /// [`WakeMarks::allow_alert`].
+    fn allow_alert(&self, dst_address: &[u8], sender_account: &[u8]) -> bool {
+        let sender = self.sender_tag(sender_account);
+        self.wake_marks
+            .entry(dst_address.to_vec())
+            .or_default()
+            .allow_alert(Instant::now(), sender, self.limits.alerts_per_hour)
+    }
+
+    /// Značka odesílajícího účtu pro značky budíčků: hash s klíčem, který
+    /// žije jen v paměti tohoto procesu.
+    fn sender_tag(&self, sender_account: &[u8]) -> u64 {
+        use std::hash::BuildHasher;
+        self.sender_tags.hash_one(sender_account)
+    }
+
+    /// Po úspěšném AUTH zařízení (ws.rs): vynuluje počítadla viditelných
+    /// notifikací na jeho adresu.
+    pub fn reset_alerts(&self, delivery_address: &[u8]) {
+        if let Some(mut marks) = self.wake_marks.get_mut(delivery_address) {
+            marks.reset_alerts();
         }
-        marks.last_alert = Some(now);
-        marks.last_wake = Some(now);
-        true
     }
 
     /// Budíček hovoru: vlastní strop na cíl (viz CALL_WAKE_*). Vrací false,
@@ -579,15 +922,14 @@ impl AppState {
         Ok(n)
     }
 
-    /// Přijme obálku: validace → existence příjemce → kvóta odesílatele a
-    /// místo na disku → perzistentní fronta (dedup) → pokud je příjemce
-    /// online, doručí hned. At-least-once: záznam z fronty maže až ACK
-    /// příjemce, ne odeslání. `sender_account` = ověřený účet spojení (jen
-    /// klíč kvóty v paměti; do fronty se neukládá — sealed sender).
+    /// Přijme obálku: validace → existence příjemce → místo na disku a ve
+    /// frontě příjemce → kvóta odesílatele → perzistentní fronta (dedup) →
+    /// pokud je příjemce online, doručí hned. At-least-once: záznam z fronty
+    /// maže až ACK příjemce, ne odeslání.
     pub async fn route_envelope(
         &self,
         env: v1::Envelope,
-        sender_account: &[u8],
+        sender: Sender<'_>,
     ) -> Result<v1::receipt::Status, RouteError> {
         if env.dst_address.len() != 32
             || env.msg_uuid.len() != 16
@@ -598,12 +940,14 @@ impl AppState {
         }
 
         if env.content_hint == v1::ContentHint::Ephemeral as i32 {
-            return Ok(self.route_ephemeral(env).await);
+            return self.route_ephemeral(env, sender);
         }
 
         let dst = env.dst_address.clone();
-        // Online příjemce existuje; jinak jeden indexovaný dotaz (UNIQUE).
-        if self.online.get(&dst).is_none() && !self.address_exists(&dst).await? {
+        // Vždy proti DB (jeden indexovaný dotaz, UNIQUE), i když je adresa
+        // v `online`: spojení smazaného nebo zablokovaného zařízení tam
+        // zůstává, dokud ho relay neodpojí, a do té doby by dál plnilo frontu.
+        if !self.address_exists(&dst).await? {
             return Err(RouteError::UnknownRecipient);
         }
         if self.disk.below(self.limits.disk_min_free_pct_queue) {
@@ -616,32 +960,41 @@ impl AppState {
         if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
             return Err(RouteError::Invalid);
         }
+        let stored_bytes = encoded.len() as i64;
+        // Před kvótou odesílatele: obálka, kterou relay nepřijme, z ní
+        // nemá ukrojit.
+        let usage = self.recipient_usage(&dst).await?;
+        if !self.recipient_caps().admits(usage, stored_bytes) {
+            // Opakovaná obálka, kterou fronta už má, není nová: klient ji
+            // posílá znovu, protože mu nedošla doručenka, a má ji dostat.
+            if self.is_queued(&dst, &env.msg_uuid).await? {
+                return Ok(v1::receipt::Status::StoredOffline);
+            }
+            return Err(RouteError::RecipientFull);
+        }
         if !self
             .send_budget
-            .try_take(sender_account, encoded.len() as u64)
+            .try_take(sender.account, self.send_cost(&sender, &dst, encoded.len() as u64))
         {
             return Err(RouteError::SenderQuota);
         }
         let expires = Utc::now() + Duration::days(QUEUE_TTL_DAYS);
-        sqlx::query(
+        let enqueued_at: Option<DateTime<Utc>> = sqlx::query_scalar(
             "INSERT INTO message_queue (msg_uuid, dst_address, envelope, expires_at)
-             VALUES ($1, $2, $3, $4) ON CONFLICT (msg_uuid) DO NOTHING",
+             VALUES ($1, $2, $3, $4) ON CONFLICT (msg_uuid) DO NOTHING
+             RETURNING enqueued_at",
         )
         .bind(&env.msg_uuid)
         .bind(&dst)
         .bind(&encoded)
         .bind(expires)
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
-        // FIFO strop na příjemce (audit #3). Nově vložená má nejmladší
-        // enqueued_at → sama se nikdy nezahodí, padne jen starý přebytek.
-        self.trim_queue(
-            &dst,
-            self.limits.queue_max_bytes_per_recipient,
-            self.limits.queue_max_per_recipient,
-        )
-        .await
-        .map_err(RouteError::Internal)?;
+        // Opakovaná obálka (dedup) frontu nezvětšila.
+        if enqueued_at.is_some() {
+            self.queue_gauges.added(&dst, stored_bytes);
+            self.queue_total.added(stored_bytes);
+        }
 
         let is_call = env.content_hint == v1::ContentHint::Call as i32;
         let is_visible = env.content_hint == v1::ContentHint::Visible as i32;
@@ -650,11 +1003,19 @@ impl AppState {
                 frame: Some(v1::server_frame::Frame::Deliver(env)),
             };
             let fresh = dev.is_fresh(self.now_ms());
-            // try_send, ne send().await: plný kanál znamená, že příjemce ze
+            // try_send, ne send().await: plná fronta znamená, že příjemce ze
             // socketu nečte. Čekat na něj by drželo odesílatelovo spojení
             // (a jeho paměť) rukojmím — nečtoucí příjemci by tak shodili
-            // relay. Obálka je v DB, půjde budíček.
-            let queued = dev.tx.try_send(deliver).is_ok();
+            // relay. Obálka je v DB, půjde budíček, a spojení si ji dolije,
+            // až bude mít místo. Dokud dolévá, jdou další obálky jen do DB.
+            let queued = !dev.defers_delivery() && dev.outbox.try_send(&deliver);
+            if !queued {
+                // Opakovaná obálka čas zařazení nevrací; tu už ohlásil
+                // první pokus, nebo ji klient dostal.
+                if let Some(enqueued_at) = enqueued_at {
+                    dev.note_missed(enqueued_at);
+                }
+            }
             // ONLINE hlásíme jen u spojení, které prokazatelně dýchá. Do
             // zatuchlého se sice pošle taky (kdyby to byl jen tichý klient),
             // ale propadne se i na push — jinak by mrtvé spojení budíček
@@ -663,15 +1024,26 @@ impl AppState {
                 return Ok(v1::receipt::Status::DeliveredOnline);
             }
         }
-        // Offline, zatuchlé nebo plný kanál → zkusit push budíček.
+        // Offline, zatuchlé nebo plná fronta spojení → zkusit push budíček.
+        // Nad hodinový strop viditelných notifikací jde jen tichý.
         if is_call && self.allow_call_wake(&dst) {
             self.wake_call(&dst).await;
-        } else if is_visible && self.allow_alert(&dst) {
+        } else if is_visible && self.allow_alert(&dst, sender.account) {
             self.wake_message(&dst).await;
         } else if self.allow_wake(&dst) {
             self.wake(&dst).await;
         }
         Ok(v1::receipt::Status::StoredOffline)
+    }
+
+    async fn is_queued(&self, dst: &[u8], msg_uuid: &[u8]) -> sqlx::Result<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM message_queue WHERE msg_uuid = $1 AND dst_address = $2)",
+        )
+        .bind(msg_uuid)
+        .bind(dst)
+        .fetch_one(&self.pool)
+        .await
     }
 
     async fn address_exists(&self, dst: &[u8]) -> Result<bool, sqlx::Error> {
@@ -681,51 +1053,107 @@ impl AppState {
             .await
     }
 
-    /// Jen živé doručení („píše…“): do fronty nic, push nic. Zatuchlé
-    /// spojení se nepočítá — obálka by v mrtvém kanálu zmizela stejně
-    /// a odesílatel se má dozvědět, že příjemce nikdo neposlouchá.
-    async fn route_ephemeral(&self, env: v1::Envelope) -> v1::receipt::Status {
-        let Some(dev) = self.online.get(&env.dst_address) else {
-            return v1::receipt::Status::Dropped;
-        };
-        if !dev.is_fresh(self.now_ms()) {
-            return v1::receipt::Status::Dropped;
-        }
-        let deliver = v1::ServerFrame {
-            frame: Some(v1::server_frame::Frame::Deliver(env)),
-        };
-        if dev.tx.try_send(deliver).is_ok() {
-            v1::receipt::Status::DeliveredOnline
-        } else {
-            v1::receipt::Status::Dropped
-        }
+    /// Je účet ještě čerstvý (`Limits::fresh_account_age`)?
+    pub fn is_fresh_account(&self, registered_at: DateTime<Utc>) -> bool {
+        let age = Utc::now().signed_duration_since(registered_at);
+        // Registrace „v budoucnosti“ (posun hodin DB a relaye) je čerstvá.
+        age.to_std()
+            .map_or(true, |age| age < self.limits.fresh_account_age)
     }
 
-    /// FIFO strop fronty příjemce: nech nejnovější obálky do `cap_bytes`
-    /// (běžný součet od nejnovější) a nejvýš `cap_count` kusů, starší
-    /// přebytek zahoď. Strop počtu chrání před miliony drobných obálek, kde
-    /// řádek v DB stojí víc než payload. Vrací počet zahozených. Oddělené
-    /// kvůli přímému testu bez vkládání 50 MiB.
-    async fn trim_queue(&self, dst: &[u8], cap_bytes: i64, cap_count: i64) -> anyhow::Result<u64> {
-        let res = sqlx::query(
-            "DELETE FROM message_queue
-             WHERE dst_address = $1 AND msg_uuid IN (
-                 SELECT msg_uuid FROM (
-                     SELECT msg_uuid,
-                            sum(octet_length(envelope)) OVER newest AS running,
-                            row_number() OVER newest AS position
-                     FROM message_queue WHERE dst_address = $1
-                     WINDOW newest AS (ORDER BY enqueued_at DESC, msg_uuid DESC
-                                       ROWS UNBOUNDED PRECEDING)
-                 ) s WHERE running > $2 OR position > $3
-             )",
+    /// Kolik bajtů ukrojit z hodinové kvóty odesílatele za obálku pro
+    /// `dst`: čerstvý účet a obálka na vlastní adresu mají nižší kvótu,
+    /// platí ta přísnější.
+    fn send_cost(&self, sender: &Sender<'_>, dst: &[u8], bytes: u64) -> u64 {
+        let full = self.limits.send_bytes_per_hour;
+        let mut cost = bytes;
+        if self.is_fresh_account(sender.registered_at) {
+            cost = crate::quota::scaled_cost(bytes, full, self.limits.send_fresh_bytes_per_hour);
+        }
+        if dst == sender.address {
+            cost = cost.max(crate::quota::scaled_cost(
+                bytes,
+                full,
+                self.limits.send_self_bytes_per_hour,
+            ));
+        }
+        cost
+    }
+
+    /// Strop fronty jednoho příjemce při současném zaplnění celé fronty.
+    fn recipient_caps(&self) -> RecipientCaps {
+        RecipientCaps {
+            count: self.limits.queue_max_per_recipient,
+            bytes: self.limits.queue_max_bytes_per_recipient,
+        }
+        .under_pressure(self.queue_total.get(), self.limits.queue_max_bytes_total)
+    }
+
+    /// Obsazenost fronty příjemce: z paměti, nebo po vypršení změřená v DB.
+    /// Měřit při každé obálce by u plné fronty znamenalo projít tisíce
+    /// řádků na každý pokus o vložení.
+    async fn recipient_usage(&self, dst: &[u8]) -> sqlx::Result<QueueUsage> {
+        if let Some(usage) = self.queue_gauges.get(dst) {
+            return Ok(usage);
+        }
+        let (count, bytes): (i64, i64) = sqlx::query_as(
+            "SELECT count(*), coalesce(sum(octet_length(envelope)), 0)::bigint
+             FROM message_queue WHERE dst_address = $1",
         )
         .bind(dst)
-        .bind(cap_bytes)
-        .bind(cap_count)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(res.rows_affected())
+        let usage = QueueUsage { count, bytes };
+        self.queue_gauges.set(dst, usage);
+        Ok(usage)
+    }
+
+    /// Přeměří bajty celé fronty (main.rs, á QUEUE_TOTAL_MEASURE_EVERY).
+    /// Délku obálky čte Postgres z hlavičky hodnoty, velké obálky nenačítá.
+    pub async fn measure_queue_total(&self) -> sqlx::Result<()> {
+        let bytes: i64 = sqlx::query_scalar(
+            "SELECT coalesce(sum(octet_length(envelope)), 0)::bigint FROM message_queue",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        self.queue_total.set(bytes);
+        Ok(())
+    }
+
+    /// Jen živé doručení („píše…“): do fronty nic, push nic. Zatuchlé
+    /// spojení se nepočítá — obálka by v mrtvém kanálu zmizela stejně.
+    ///
+    /// Odpověď je vždy stejná (QUEUED = přijato, bez záruky), ať je příjemce
+    /// online, offline, neexistuje, nebo došla kvóta. Dřív relay vracel
+    /// DELIVERED_ONLINE / DROPPED podle stavu cizí adresy: kdo adresu znal,
+    /// sledoval tím zdarma a beze stopy, kdy je její majitel připojený.
+    /// Starší appky berou cokoli jiného než DROPPED jako doručeno a jen
+    /// nezpomalí další „píše…“ offline příjemci; ta relay tiše zahodí.
+    fn route_ephemeral(
+        &self,
+        env: v1::Envelope,
+        sender: Sender<'_>,
+    ) -> Result<v1::receipt::Status, RouteError> {
+        // Jediná odmítnutá věc závisí jen na obálce samotné: velké rámce
+        // by „píše…“ měnilo v záplavu mimo kvótu ukládaných zpráv.
+        if env.payload.len() > self.limits.ephemeral_max_bytes {
+            return Err(RouteError::Invalid);
+        }
+        let dst = env.dst_address.clone();
+        let within_quota = self.ephemeral_budget.try_take(sender.account, 0)
+            && self.ephemeral_target_budget.try_take(&dst, 0);
+        if within_quota {
+            if let Some(dev) = self.online.get(&dst) {
+                if dev.is_fresh(self.now_ms()) {
+                    let deliver = v1::ServerFrame {
+                        frame: Some(v1::server_frame::Frame::Deliver(env)),
+                    };
+                    // Plná fronta spojení = zahodit, odesílateli se to neříká.
+                    dev.outbox.try_send(&deliver);
+                }
+            }
+        }
+        Ok(v1::receipt::Status::Queued)
     }
 
     /// Monotónní značka pro [`OnlineDevice`] — ms od startu procesu.
@@ -743,9 +1171,20 @@ impl AppState {
         let client = self.http.clone();
         let fcm = self.fcm.clone();
         let apns = self.apns.clone();
+        let (pool, dst_address) = (self.pool.clone(), dst_address.to_vec());
         tokio::spawn(async move {
-            crate::push::send_wake(&client, platform, &token, fcm.as_deref(), apns.as_deref())
-                .await;
+            let dead = crate::push::send_wake(
+                &client,
+                platform,
+                &token,
+                crate::push::WakeKind::Sync,
+                fcm.as_deref(),
+                apns.as_deref(),
+            )
+            .await;
+            if let Some(dead) = dead {
+                forget_dead_token(&pool, &dst_address, dead, &token).await;
+            }
         });
     }
 
@@ -758,8 +1197,9 @@ impl AppState {
         let client = self.http.clone();
         let fcm = self.fcm.clone();
         let apns = self.apns.clone();
+        let (pool, dst_address) = (self.pool.clone(), dst_address.to_vec());
         tokio::spawn(async move {
-            crate::push::send_message_wake(
+            let dead = crate::push::send_message_wake(
                 &client,
                 platform,
                 &token,
@@ -767,6 +1207,9 @@ impl AppState {
                 apns.as_deref(),
             )
             .await;
+            if let Some(dead) = dead {
+                forget_dead_token(&pool, &dst_address, dead, &token).await;
+            }
         });
     }
 
@@ -780,9 +1223,19 @@ impl AppState {
         let client = self.http.clone();
         let fcm = self.fcm.clone();
         let apns = self.apns.clone();
+        let (pool, dst_address) = (self.pool.clone(), dst_address.to_vec());
         tokio::spawn(async move {
-            crate::push::send_call_wake(&client, &target, fcm.as_deref(), apns.as_deref())
-                .await;
+            let dead =
+                crate::push::send_call_wake(&client, &target, fcm.as_deref(), apns.as_deref())
+                    .await;
+            let token = match dead {
+                Some(crate::push::DeadToken::Push) => target.token,
+                Some(crate::push::DeadToken::Voip) => target.voip_token,
+                None => None,
+            };
+            if let (Some(dead), Some(token)) = (dead, token) {
+                forget_dead_token(&pool, &dst_address, dead, &token).await;
+            }
         });
     }
 
@@ -905,13 +1358,54 @@ impl AppState {
 
     /// Po AUTH: vyleje nedoručenou frontu zařízení (DELIVER stream). Čte po
     /// dávkách keyset kurzorem přes (enqueued_at, msg_uuid) — paměť je
-    /// omezená na FLUSH_BATCH obálek, ne celá fronta najednou (audit #3).
-    /// Index idx_queue_dst(dst_address, enqueued_at) kurzor pokrývá.
+    /// omezená na jednu dávku (FLUSH_BATCH, FLUSH_BATCH_BYTES), ne celá
+    /// fronta najednou. Index idx_queue_dst(dst_address, enqueued_at) kurzor
+    /// pokrývá.
+    ///
+    /// Jednu adresu vylévá nejvýš jedno spojení naráz a jen to, které právě
+    /// doručuje: desítky spojení téhož zařízení, která nečtou, by jinak
+    /// držely každé svou dávku. Na místo ve frontě spojení čeká, proto běh
+    /// hlídá volající (odpojení, ticho klienta, konec writeru).
     pub async fn flush_queue(
         &self,
         delivery_address: &[u8],
-        tx: &mpsc::Sender<v1::ServerFrame>,
+        device: &OnlineDevice,
     ) -> anyhow::Result<usize> {
+        self.flush_queue_from(delivery_address, device, None).await
+    }
+
+    /// Dolije připojenému zařízení obálky za pozicí `after`, které se do
+    /// fronty jeho spojení nevešly ([`OnlineDevice::refill_due`]). Starší
+    /// nechává být: ty spojení dostalo a čeká se na jejich ACK.
+    pub async fn refill_queue(
+        &self,
+        delivery_address: &[u8],
+        device: &OnlineDevice,
+        after: QueueCursor,
+    ) -> anyhow::Result<usize> {
+        let refilled = self
+            .flush_queue_from(delivery_address, device, Some(after))
+            .await;
+        device.refill_done();
+        refilled
+    }
+
+    async fn flush_queue_from(
+        &self,
+        delivery_address: &[u8],
+        device: &OnlineDevice,
+        after: Option<QueueCursor>,
+    ) -> anyhow::Result<usize> {
+        let lock = self
+            .flush_locks
+            .entry(delivery_address.to_vec())
+            .or_default()
+            .clone();
+        let _flushing = lock.lock().await;
+        if device.retired.load(Ordering::Acquire) {
+            return Ok(0);
+        }
+
         // Obálky, které strop pokusů vyčerpaly, jsou neprůchodné (skoro vždy
         // ztracený ACK po úspěšném dešifrování) — zahodit dřív, než se znovu
         // pošlou. Maže se až tady, ne hned po inkrementu: poslední pokus
@@ -929,71 +1423,85 @@ impl AppState {
         if dropped > 0 {
             // Bez identifikátoru příjemce — jen že se fronta čistila.
             tracing::info!(dropped, "nedoručitelné obálky zahozeny (strop pokusů)");
+            self.queue_gauges.forget(delivery_address);
         }
 
         let mut total = 0usize;
         // (enqueued_at, msg_uuid) poslední odeslané obálky = kurzor další dávky.
-        let mut cursor: Option<(DateTime<Utc>, Vec<u8>)> = None;
+        let mut cursor: Option<QueueCursor> = after;
         loop {
-            let rows: Vec<(Vec<u8>, DateTime<Utc>, Vec<u8>)> = match &cursor {
-                None => {
-                    sqlx::query_as(
-                        "SELECT envelope, enqueued_at, msg_uuid FROM message_queue
-                         WHERE dst_address = $1 AND expires_at > now()
-                         ORDER BY enqueued_at, msg_uuid
-                         LIMIT $2",
-                    )
-                    .bind(delivery_address)
-                    .bind(FLUSH_BATCH)
-                    .fetch_all(&self.pool)
-                    .await?
-                }
-                Some((ts, uuid)) => {
-                    sqlx::query_as(
-                        "SELECT envelope, enqueued_at, msg_uuid FROM message_queue
-                         WHERE dst_address = $1 AND expires_at > now()
-                           AND (enqueued_at, msg_uuid) > ($2, $3)
-                         ORDER BY enqueued_at, msg_uuid
-                         LIMIT $4",
-                    )
-                    .bind(delivery_address)
-                    .bind(ts)
-                    .bind(uuid)
-                    .bind(FLUSH_BATCH)
-                    .fetch_all(&self.pool)
-                    .await?
-                }
-            };
-            let batch_len = rows.len();
-            if batch_len == 0 {
+            let rows = self.flush_batch(delivery_address, cursor.as_ref()).await?;
+            let Some(last) = rows.last().map(|(_, ts, uuid)| (*ts, uuid.clone())) else {
                 break;
-            }
-            let last = rows
-                .last()
-                .map(|(_, ts, uuid)| (*ts, uuid.clone()))
-                .expect("dávka není prázdná");
-            let mut sent_uuids: Vec<Vec<u8>> = Vec::with_capacity(batch_len);
-            for (encoded, _, uuid) in &rows {
+            };
+            let mut sent_uuids: Vec<Vec<u8>> = Vec::with_capacity(rows.len());
+            for (encoded, _, uuid) in rows {
                 let env = v1::Envelope::decode(encoded.as_slice())?;
+                drop(encoded);
                 let frame = v1::ServerFrame {
                     frame: Some(v1::server_frame::Frame::Deliver(env)),
                 };
-                if tx.send(frame).await.is_err() {
-                    // Příjemce odpadl uprostřed dávky — započítat jen to, co
-                    // reálně odešlo, ať pokus „zdarma" nekrátí strop.
+                let sent = tokio::select! {
+                    biased;
+                    () = device.retired() => false,
+                    sent = device.outbox.send(&frame) => sent.is_ok(),
+                };
+                if !sent {
+                    // Příjemce odpadl (nebo doručování převzalo novější
+                    // spojení) uprostřed dávky — započítat jen to, co reálně
+                    // odešlo, ať pokus „zdarma" nekrátí strop.
                     self.bump_attempts(&sent_uuids).await;
                     return Ok(total);
                 }
-                sent_uuids.push(uuid.clone());
+                sent_uuids.push(uuid);
                 total += 1;
             }
             self.bump_attempts(&sent_uuids).await;
-            if (batch_len as i64) < FLUSH_BATCH {
-                break; // poslední (neúplná) dávka
-            }
+            device.note_flushed(&last);
             cursor = Some(last);
         }
         Ok(total)
+    }
+
+    /// Další dávka fronty za kurzorem: nejvýš FLUSH_BATCH obálek, z nich jen
+    /// začátek, který se vejde do FLUSH_BATCH_BYTES. Délku umí Postgres
+    /// z hlavičky hodnoty, velké obálky mimo dávku tedy vůbec nenačte.
+    async fn flush_batch(
+        &self,
+        delivery_address: &[u8],
+        cursor: Option<&(DateTime<Utc>, Vec<u8>)>,
+    ) -> sqlx::Result<Vec<(Vec<u8>, DateTime<Utc>, Vec<u8>)>> {
+        // Podmínka kurzoru jen když kurzor je: jako `$4 IS NULL OR …` by
+        // z ní plánovač neudělal mez indexu a každá dávka by četla frontu
+        // od začátku.
+        let after_cursor = match cursor {
+            Some(_) => "AND (enqueued_at, msg_uuid) > ($4, $5)",
+            None => "",
+        };
+        let sql = format!(
+            "SELECT envelope, enqueued_at, msg_uuid FROM (
+                 SELECT envelope, enqueued_at, msg_uuid,
+                        sum(octet_length(envelope)) OVER oldest AS running,
+                        row_number() OVER oldest AS position
+                 FROM (
+                     SELECT envelope, enqueued_at, msg_uuid FROM message_queue
+                     WHERE dst_address = $1 AND expires_at > now() {after_cursor}
+                     ORDER BY enqueued_at, msg_uuid
+                     LIMIT $2
+                 ) batch
+                 WINDOW oldest AS (ORDER BY enqueued_at, msg_uuid)
+             ) sized
+             WHERE running <= $3 OR position = 1
+             ORDER BY enqueued_at, msg_uuid"
+        );
+        let query = sqlx::query_as(&sql)
+            .bind(delivery_address)
+            .bind(FLUSH_BATCH)
+            .bind(FLUSH_BATCH_BYTES);
+        match cursor {
+            Some((ts, uuid)) => query.bind(ts).bind(uuid).fetch_all(&self.pool).await,
+            None => query.fetch_all(&self.pool).await,
+        }
     }
 
     /// Započítá pokus o doručení odeslaným obálkám. Selhání se jen zaloguje —
@@ -1020,11 +1528,18 @@ impl AppState {
 
     /// ACK příjemce → hard-delete z fronty (žádná retence po doručení).
     pub async fn ack(&self, delivery_address: &[u8], msg_uuid: &[u8]) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM message_queue WHERE msg_uuid = $1 AND dst_address = $2")
-            .bind(msg_uuid)
-            .bind(delivery_address)
-            .execute(&self.pool)
-            .await?;
+        let freed: Option<i32> = sqlx::query_scalar(
+            "DELETE FROM message_queue WHERE msg_uuid = $1 AND dst_address = $2
+             RETURNING octet_length(envelope)",
+        )
+        .bind(msg_uuid)
+        .bind(delivery_address)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(freed) = freed {
+            self.queue_gauges.removed(delivery_address, i64::from(freed));
+            self.queue_total.removed(i64::from(freed));
+        }
         Ok(())
     }
 }
@@ -1033,9 +1548,38 @@ impl AppState {
 mod online_tests {
     use super::*;
 
+    /// První běh po startu a pak jednou denně projde všechno, mezi tím jen
+    /// registrace od minulého běhu (s přesahem).
+    #[test]
+    fn dorovnani_blokaci_je_uplne_jen_obcas() {
+        let mut marks = ReconcileMarks::default();
+        let start = Instant::now();
+        let ran_at = Utc::now();
+        assert_eq!(marks.incremental_since(start), None, "po startu úplný průchod");
+
+        marks.done(start, ran_at, true);
+        let hour = std::time::Duration::from_secs(3600);
+        assert_eq!(
+            marks.incremental_since(start + hour),
+            Some(ran_at - Duration::minutes(RECONCILE_OVERLAP_MINUTES))
+        );
+        let later = ran_at + Duration::hours(1);
+        marks.done(start + hour, later, false);
+        assert_eq!(
+            marks.incremental_since(start + 2 * hour),
+            Some(later - Duration::minutes(RECONCILE_OVERLAP_MINUTES)),
+            "okno navazuje na poslední běh"
+        );
+        assert_eq!(
+            marks.incremental_since(start + RECONCILE_FULL_EVERY),
+            None,
+            "přírůstkový běh úplný průchod neodkládá"
+        );
+    }
+
     fn spojeni() -> Arc<OnlineDevice> {
-        let (tx, _rx) = mpsc::channel::<v1::ServerFrame>(1);
-        Arc::new(OnlineDevice::new(tx, 0))
+        let (outbox, _rx) = crate::outbox::channel();
+        Arc::new(OnlineDevice::new(outbox, 0))
     }
 
     #[test]
@@ -1093,6 +1637,89 @@ mod online_tests {
         );
     }
 
+    /// Druh obálky volí odesílatel: bez hodinového stropu by cizí telefon
+    /// zvonil každých deset sekund, jak dlouho by si kdo přál.
+    #[test]
+    fn viditelne_notifikace_maji_hodinovy_strop() {
+        const PER_HOUR: usize = 3;
+        const SENDER: u64 = 1;
+        let step = ALERT_MIN_INTERVAL + std::time::Duration::from_secs(1);
+        let mut marks = WakeMarks::default();
+        let start = Instant::now();
+        for i in 0..PER_HOUR as u32 {
+            assert!(marks.allow_alert(start + step * i, SENDER, PER_HOUR), "{i}");
+        }
+        let over = start + step * PER_HOUR as u32;
+        assert!(!marks.allow_alert(over, SENDER, PER_HOUR), "nad hodinový strop");
+        assert!(
+            marks.allow_alert(over, SENDER, 0),
+            "0 = bez hodinového stropu, platí jen rozestup"
+        );
+        let next_hour = start + ALERT_WINDOW + step;
+        assert!(marks.allow_alert(next_hour, SENDER, PER_HOUR), "okno se posunulo");
+    }
+
+    /// Kdo vyčerpal svůj strop, neumlčí notifikace od ostatních, a po
+    /// přihlášení příjemce slyší zase všechny.
+    #[test]
+    fn strop_notifikaci_je_na_odesilatele_a_prihlaseni_ho_nuluje() {
+        const PER_HOUR: usize = 2;
+        const NOISY: u64 = 1;
+        const FRIEND: u64 = 2;
+        let step = ALERT_MIN_INTERVAL + std::time::Duration::from_secs(1);
+        let mut marks = WakeMarks::default();
+        let start = Instant::now();
+        assert!(marks.allow_alert(start, NOISY, PER_HOUR));
+        assert!(marks.allow_alert(start + step, NOISY, PER_HOUR));
+        assert!(!marks.allow_alert(start + step * 2, NOISY, PER_HOUR), "vyčerpáno");
+        assert!(
+            marks.allow_alert(start + step * 2, FRIEND, PER_HOUR),
+            "jiný odesílatel má vlastní strop"
+        );
+
+        marks.reset_alerts();
+        assert!(
+            marks.allow_alert(start + step * 3, NOISY, PER_HOUR),
+            "po přihlášení příjemce se počítá znovu"
+        );
+    }
+
+    /// Značky jednoho cíle nerostou s počtem odesílajících účtů a po okně
+    /// zmizí.
+    #[test]
+    fn znacky_notifikaci_maji_strop_odesilatelu() {
+        const PER_HOUR: usize = 60;
+        let step = ALERT_MIN_INTERVAL + std::time::Duration::from_secs(1);
+        let mut marks = WakeMarks::default();
+        let start = Instant::now();
+        for sender in 0..ALERT_SENDERS_TRACKED as u64 {
+            assert!(marks.allow_alert(start, sender, PER_HOUR), "{sender}");
+            // Rozestup tu test nezajímá, jen počet zapamatovaných odesílatelů.
+            marks.last_alert = None;
+        }
+        assert!(
+            !marks.allow_alert(start, u64::MAX, PER_HOUR),
+            "další odesílatel se už nezapamatuje"
+        );
+        assert_eq!(marks.alerts.len(), ALERT_SENDERS_TRACKED);
+
+        marks.expire_alerts(start + ALERT_WINDOW + step);
+        assert!(marks.alerts.is_empty(), "po okně značky zmizí");
+    }
+
+    #[test]
+    fn viditelna_notifikace_drzi_rozestup() {
+        let mut marks = WakeMarks::default();
+        let start = Instant::now();
+        assert!(marks.allow_alert(start, 1, 60), "první zpráva zazvoní");
+        assert!(!marks.allow_alert(start, 2, 60), "druhá v okně už ne");
+        assert_eq!(
+            marks.last_wake,
+            Some(start),
+            "notifikace se počítá i jako budíček"
+        );
+    }
+
     #[test]
     fn registr_guard_uklidi_pri_dropu() {
         let conns = AuthedConns::default();
@@ -1121,6 +1748,15 @@ mod db_tests {
 
     /// Účet odesílatele v testech — kvóta je jen v paměti, DB ho nezná.
     const SENDER: &[u8] = b"test-odesilatel";
+
+    /// Odesílatel s plnými kvótami: dávno registrovaný, píše cizím adresám.
+    fn established(account: &[u8]) -> Sender<'_> {
+        Sender {
+            account,
+            address: &[],
+            registered_at: DateTime::UNIX_EPOCH,
+        }
+    }
 
     /// Testovací DB s aktuálním schématem (migrace spouští testkit).
     async fn test_state() -> AppState {
@@ -1171,19 +1807,6 @@ mod db_tests {
             .execute(&state.pool)
             .await
             .unwrap();
-    }
-
-    #[tokio::test]
-    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
-    async fn viditelna_notifikace_ma_vlastni_strop_a_bere_i_budicek() {
-        let state = test_state().await;
-        let dst = rand_bytes(32);
-        assert!(state.allow_alert(&dst), "první zpráva zazvoní");
-        assert!(!state.allow_alert(&dst), "druhá v okně už ne");
-        assert!(
-            !state.allow_wake(&dst),
-            "notifikace se počítá i jako budíček — žádný tichý hned po ní"
-        );
     }
 
     #[tokio::test]
@@ -1260,7 +1883,7 @@ mod db_tests {
             content_hint: v1::ContentHint::Call as i32,
             payload: vec![0xCD; 64],
         };
-        let status = state.route_envelope(env, SENDER).await.unwrap();
+        let status = state.route_envelope(env, established(SENDER)).await.unwrap();
         assert_eq!(status, v1::receipt::Status::StoredOffline);
         let queued: i64 =
             sqlx::query_scalar("SELECT count(*) FROM message_queue WHERE dst_address = $1")
@@ -1309,7 +1932,7 @@ mod db_tests {
             content_hint: 0,
             payload: vec![0xAB; 64],
         };
-        let status = state.route_envelope(env, SENDER).await.unwrap();
+        let status = state.route_envelope(env, established(SENDER)).await.unwrap();
         assert_eq!(status, v1::receipt::Status::StoredOffline);
 
         // obálka je ve frontě (příjemce byl offline)
@@ -1336,8 +1959,8 @@ mod db_tests {
             content_hint: v1::ContentHint::Ephemeral as i32,
             payload: vec![0xAB; 64],
         };
-        let status = state.route_envelope(env, SENDER).await.unwrap();
-        assert_eq!(status, v1::receipt::Status::Dropped);
+        let status = state.route_envelope(env, established(SENDER)).await.unwrap();
+        assert_eq!(status, v1::receipt::Status::Queued);
 
         // „píše…“ pro offline příjemce nesmí skončit ve frontě
         let queued: i64 =
@@ -1441,13 +2064,13 @@ mod db_tests {
             .unwrap();
         }
 
-        let (tx, mut rx) = mpsc::channel::<v1::ServerFrame>(256);
-        let count = state.flush_queue(&dst, &tx).await.unwrap();
-        drop(tx);
+        let (device, mut rx) = crate::testkit::device(&state);
+        let count = state.flush_queue(&dst, &device).await.unwrap();
+        drop(device);
         assert_eq!(count, n);
 
         let mut got = std::collections::HashSet::new();
-        while let Some(frame) = rx.recv().await {
+        while let Some(frame) = rx.frame().await {
             if let Some(v1::server_frame::Frame::Deliver(env)) = frame.frame {
                 assert!(got.insert(env.msg_uuid), "obálka doručena dvakrát");
             }
@@ -1461,7 +2084,117 @@ mod db_tests {
             .unwrap();
     }
 
-    /// Zapsat do mpsc bufferu jde i u dávno mrtvého spojení — DELIVERED_ONLINE
+    /// Naplní frontu adresy velkými obálkami v daném pořadí.
+    async fn enqueue_big(state: &AppState, dst: &[u8], count: usize) {
+        /// Čtyři takové se do dávky i do fronty spojení vejdou, pátá ne.
+        const BIG_PAYLOAD_BYTES: usize = 250 * 1024;
+        for i in 0..count {
+            let env = v1::Envelope {
+                dst_address: dst.to_vec(),
+                msg_uuid: rand_bytes(16),
+                content_hint: 0,
+                payload: vec![0x77; BIG_PAYLOAD_BYTES],
+            };
+            sqlx::query(
+                "INSERT INTO message_queue (msg_uuid, dst_address, envelope, enqueued_at, expires_at)
+                 VALUES ($1, $2, $3, now() + (interval '1 millisecond' * $4), now() + interval '30 days')",
+            )
+            .bind(&env.msg_uuid)
+            .bind(dst)
+            .bind(env.encode_to_vec())
+            .bind(i as i32)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    async fn clear_queue(state: &AppState, dst: &[u8]) {
+        sqlx::query("DELETE FROM message_queue WHERE dst_address = $1")
+            .bind(dst)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+    }
+
+    /// Dávka vylévání má strop i v bajtech (dřív 64 obálek × 256 KiB =
+    /// 16 MiB v paměti na spojení) a přes hranice dávek se nic neztratí.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn flush_queue_davka_ma_strop_bajtu() {
+        const QUEUED: usize = 9;
+        let state = test_state().await;
+        let dst = rand_bytes(32);
+        enqueue_big(&state, &dst, QUEUED).await;
+
+        let batch = state.flush_batch(&dst, None).await.unwrap();
+        let bytes: usize = batch.iter().map(|(envelope, _, _)| envelope.len()).sum();
+        assert!(bytes <= FLUSH_BATCH_BYTES as usize, "dávka má {bytes} B");
+        assert!(!batch.is_empty() && batch.len() < QUEUED, "{}", batch.len());
+
+        let (device, mut rx) = crate::testkit::device(&state);
+        let reader = tokio::spawn(async move {
+            let mut delivered = std::collections::HashSet::new();
+            while let Some(frame) = rx.frame().await {
+                if let Some(v1::server_frame::Frame::Deliver(env)) = frame.frame {
+                    delivered.insert(env.msg_uuid);
+                }
+            }
+            delivered.len()
+        });
+        assert_eq!(state.flush_queue(&dst, &device).await.unwrap(), QUEUED);
+        drop(device);
+        assert_eq!(reader.await.unwrap(), QUEUED, "každá obálka právě jednou");
+        clear_queue(&state, &dst).await;
+    }
+
+    /// Jednu adresu vylévá jen spojení, které právě doručuje. Starší
+    /// spojení, které nečte, po reconnectu přestane a zámek adresy pustí —
+    /// jinak by každé nečtoucí spojení téhož zařízení drželo svou dávku.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn flush_queue_prevezme_novejsi_spojeni() {
+        /// Víc, než pojme fronta jednoho spojení.
+        const QUEUED: usize = 12;
+        const STEP: std::time::Duration = std::time::Duration::from_millis(200);
+        let state = Arc::new(test_state().await);
+        let dst = rand_bytes(32);
+        enqueue_big(&state, &dst, QUEUED).await;
+
+        let (old, _old_never_reads) = crate::testkit::device(&state);
+        state.online.attach(dst.clone(), old.clone());
+        let old_flush = tokio::spawn({
+            let (state, dst) = (state.clone(), dst.clone());
+            async move { state.flush_queue(&dst, &old).await.unwrap() }
+        });
+        tokio::time::sleep(STEP).await;
+        assert!(!old_flush.is_finished(), "starší spojení stojí o plnou frontu");
+
+        let (new, mut new_rx) = crate::testkit::device(&state);
+        state.online.attach(dst.clone(), new.clone());
+        // Hned, ne až po lhůtě zápisu staršího spojení: to stojí na plné
+        // frontě a čekání na místo se převzetím přeruší.
+        let sent_to_old = tokio::time::timeout(STEP, old_flush)
+            .await
+            .expect("starší spojení má vylévání pustit hned")
+            .unwrap();
+        assert!(sent_to_old < QUEUED, "{sent_to_old}");
+
+        let reader = tokio::spawn(async move {
+            let mut delivered = 0;
+            while new_rx.frame().await.is_some() {
+                delivered += 1;
+            }
+            delivered
+        });
+        assert_eq!(state.flush_queue(&dst, &new).await.unwrap(), QUEUED);
+        state.online.detach(&dst, &new);
+        drop(new);
+        assert_eq!(reader.await.unwrap(), QUEUED);
+        clear_queue(&state, &dst).await;
+    }
+
+    /// Zapsat do fronty spojení jde i u dávno mrtvého spojení — DELIVERED_ONLINE
     /// se proto smí hlásit jen u zařízení, od kterého nedávno něco přišlo.
     /// Zatuchlé musí spadnout na offline větev, jinak spolkne push budíček.
     #[tokio::test]
@@ -1476,8 +2209,8 @@ mod db_tests {
 
         // Kanál nikdo nečte, ale buffer zápis spolkne — přesně situace
         // mrtvého klienta, kterou dřív relay hlásil jako doručeno.
-        let (tx, _rx) = mpsc::channel::<v1::ServerFrame>(64);
-        let device = Arc::new(OnlineDevice::new(tx, 0));
+        let (outbox, _rx) = crate::outbox::channel();
+        let device = Arc::new(OnlineDevice::new(outbox, 0));
         state
             .online
             .attach(delivery_address.clone(), device.clone());
@@ -1489,7 +2222,7 @@ mod db_tests {
             payload: vec![0xCD; 64],
         };
         assert_eq!(
-            state.route_envelope(env, SENDER).await.unwrap(),
+            state.route_envelope(env, established(SENDER)).await.unwrap(),
             v1::receipt::Status::StoredOffline,
             "zatuchlé spojení se nesmí hlásit jako doručené online"
         );
@@ -1503,7 +2236,7 @@ mod db_tests {
             payload: vec![0xCE; 64],
         };
         assert_eq!(
-            state.route_envelope(env2, SENDER).await.unwrap(),
+            state.route_envelope(env2, established(SENDER)).await.unwrap(),
             v1::receipt::Status::DeliveredOnline,
             "živé spojení má být online"
         );
@@ -1524,12 +2257,10 @@ mod db_tests {
         let state = test_state().await;
         let (account_id, _device_uuid, delivery_address) = seed_device(&state).await;
 
-        let (tx_stare, _rx_stare) = mpsc::channel::<v1::ServerFrame>(64);
-        let stare = Arc::new(OnlineDevice::new(tx_stare, state.now_ms()));
+        let (stare, _rx_stare) = crate::testkit::device(&state);
         state.online.attach(delivery_address.clone(), stare.clone());
 
-        let (tx_nove, mut rx_nove) = mpsc::channel::<v1::ServerFrame>(64);
-        let nove = Arc::new(OnlineDevice::new(tx_nove, state.now_ms()));
+        let (nove, mut rx_nove) = crate::testkit::device(&state);
         state.online.attach(delivery_address.clone(), nove.clone());
 
         // Handler starého spojení končí (idle timeout) až po reconnectu.
@@ -1543,12 +2274,12 @@ mod db_tests {
             payload: vec![0xEF; 64],
         };
         assert_eq!(
-            state.route_envelope(env, SENDER).await.unwrap(),
+            state.route_envelope(env, established(SENDER)).await.unwrap(),
             v1::receipt::Status::DeliveredOnline,
             "konec zombie spojení nesmí vyřadit nové spojení"
         );
-        match rx_nove.try_recv().map(|f| f.frame) {
-            Ok(Some(v1::server_frame::Frame::Deliver(env))) => assert_eq!(env.msg_uuid, msg_uuid),
+        match rx_nove.try_frame().map(|f| f.frame) {
+            Some(Some(v1::server_frame::Frame::Deliver(env))) => assert_eq!(env.msg_uuid, msg_uuid),
             jinak => panic!("nové spojení nedostalo DELIVER: {jinak:?}"),
         }
 
@@ -1582,8 +2313,8 @@ mod db_tests {
 
         // Dva flushe bez ACK = dva započtené pokusy.
         for _ in 0..2 {
-            let (tx, rx) = mpsc::channel::<v1::ServerFrame>(16);
-            assert_eq!(state.flush_queue(&dst, &tx).await.unwrap(), 1);
+            let (device, rx) = crate::testkit::device(&state);
+            assert_eq!(state.flush_queue(&dst, &device).await.unwrap(), 1);
             drop(rx);
         }
 
@@ -1631,9 +2362,9 @@ mod db_tests {
         .await
         .unwrap();
 
-        let (tx, rx) = mpsc::channel::<v1::ServerFrame>(16);
+        let (device, rx) = crate::testkit::device(&state);
         assert_eq!(
-            state.flush_queue(&dst, &tx).await.unwrap(),
+            state.flush_queue(&dst, &device).await.unwrap(),
             0,
             "vyčerpaná obálka se nesmí znovu poslat"
         );
@@ -1674,9 +2405,9 @@ mod db_tests {
         .await
         .unwrap();
 
-        let (tx, mut rx) = mpsc::channel::<v1::ServerFrame>(16);
-        assert_eq!(state.flush_queue(&dst, &tx).await.unwrap(), 1);
-        assert!(rx.try_recv().is_ok(), "obálka odešla příjemci");
+        let (device, mut rx) = crate::testkit::device(&state);
+        assert_eq!(state.flush_queue(&dst, &device).await.unwrap(), 1);
+        assert!(rx.try_frame().is_some(), "obálka odešla příjemci");
 
         state.ack(&dst, &msg_uuid).await.unwrap();
         let zbylo: (i64,) =
@@ -1721,8 +2452,8 @@ mod db_tests {
             uuids.push(msg_uuid);
         }
 
-        let (tx, _rx) = mpsc::channel::<v1::ServerFrame>(16);
-        assert_eq!(state.flush_queue(&dst, &tx).await.unwrap(), 2);
+        let (device, _rx) = crate::testkit::device(&state);
+        assert_eq!(state.flush_queue(&dst, &device).await.unwrap(), 2);
 
         let mut pokusy = Vec::new();
         for uuid in &uuids {
@@ -1735,50 +2466,6 @@ mod db_tests {
             pokusy.push(n);
         }
         assert_eq!(pokusy, vec![i16::MAX, 4]);
-    }
-
-    /// Audit #3: FIFO strop zahodí nejstarší přes limit, nejnovější nechá.
-    #[tokio::test]
-    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
-    async fn trim_queue_fifo_zahodi_nejstarsi() {
-        let state = test_state().await;
-        let dst = rand_bytes(32);
-        // 5 obálek po 100 B, rostoucí enqueued_at. Strop 250 B → nejnovější
-        // dvě (2×100 ≤ 250) zůstanou, tři nejstarší padnou.
-        let mut uuids = Vec::new();
-        for i in 0..5 {
-            let msg_uuid = rand_bytes(16);
-            uuids.push(msg_uuid.clone());
-            sqlx::query(
-                "INSERT INTO message_queue (msg_uuid, dst_address, envelope, enqueued_at, expires_at)
-                 VALUES ($1, $2, $3, now() + (interval '1 second' * $4), now() + interval '30 days')",
-            )
-            .bind(&msg_uuid)
-            .bind(&dst)
-            .bind(vec![0u8; 100])
-            .bind(i as i32)
-            .execute(&state.pool)
-            .await
-            .unwrap();
-        }
-
-        let dropped = state.trim_queue(&dst, 250, 1000).await.unwrap();
-        assert_eq!(dropped, 3);
-
-        let remaining: Vec<Vec<u8>> = sqlx::query_scalar(
-            "SELECT msg_uuid FROM message_queue WHERE dst_address = $1 ORDER BY enqueued_at",
-        )
-        .bind(&dst)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap();
-        assert_eq!(remaining, vec![uuids[3].clone(), uuids[4].clone()]);
-
-        sqlx::query("DELETE FROM message_queue WHERE dst_address = $1")
-            .bind(&dst)
-            .execute(&state.pool)
-            .await
-            .unwrap();
     }
 
     fn envelope(dst: &[u8], payload_len: usize) -> v1::Envelope {
@@ -1805,7 +2492,7 @@ mod db_tests {
     async fn obalka_na_neexistujici_adresu_se_neulozi() {
         let state = test_state().await;
         let dst = rand_bytes(32);
-        let err = state.route_envelope(envelope(&dst, 64), SENDER).await.unwrap_err();
+        let err = state.route_envelope(envelope(&dst, 64), established(SENDER)).await.unwrap_err();
         assert!(matches!(err, RouteError::UnknownRecipient), "{err:?}");
         assert_eq!(err.code_and_message().0, 404);
         assert_eq!(queued(&state, &dst).await, 0);
@@ -1820,12 +2507,18 @@ mod db_tests {
         let (account_id, _device, dst) = seed_device(&state).await;
         let sender = rand_bytes(16);
         for _ in 0..3 {
-            state.route_envelope(envelope(&dst, 64), &sender).await.unwrap();
+            state
+                .route_envelope(envelope(&dst, 64), established(&sender))
+                .await
+                .unwrap();
         }
-        let err = state.route_envelope(envelope(&dst, 64), &sender).await.unwrap_err();
+        let err = state
+            .route_envelope(envelope(&dst, 64), established(&sender))
+            .await
+            .unwrap_err();
         assert!(matches!(err, RouteError::SenderQuota), "{err:?}");
         state
-            .route_envelope(envelope(&dst, 64), &rand_bytes(16))
+            .route_envelope(envelope(&dst, 64), established(&rand_bytes(16)))
             .await
             .expect("jiný odesílatel má vlastní kvótu");
         assert_eq!(queued(&state, &dst).await, 4);
@@ -1839,48 +2532,316 @@ mod db_tests {
         let state = test_state().await;
         let (account_id, _device, dst) = seed_device(&state).await;
         state.disk.set_free_pct(state.limits.disk_min_free_pct_queue - 1.0);
-        let err = state.route_envelope(envelope(&dst, 64), SENDER).await.unwrap_err();
+        let err = state.route_envelope(envelope(&dst, 64), established(SENDER)).await.unwrap_err();
         assert!(matches!(err, RouteError::DiskFull), "{err:?}");
         assert_eq!(queued(&state, &dst).await, 0);
         cleanup(&state, &account_id, &dst).await;
     }
 
-    /// Strop počtu obálek na příjemce drží nejnovější, i když bajty stačí.
+    /// Plná fronta příjemce novou obálku odmítne a čekající nechá. Dřív
+    /// strop mazal nejstarší: kdo znal adresu, tím příjemci smazal zprávy.
     #[tokio::test]
     #[ignore = "vyžaduje běžící Postgres (dev DB)"]
-    async fn trim_queue_strop_poctu() {
-        let state = test_state().await;
-        let dst = rand_bytes(32);
-        let mut uuids = Vec::new();
-        for i in 0..5 {
-            let msg_uuid = rand_bytes(16);
-            uuids.push(msg_uuid.clone());
-            sqlx::query(
-                "INSERT INTO message_queue (msg_uuid, dst_address, envelope, enqueued_at, expires_at)
-                 VALUES ($1, $2, $3, now() + (interval '1 second' * $4), now() + interval '30 days')",
-            )
-            .bind(&msg_uuid)
-            .bind(&dst)
-            .bind(vec![0u8; 10])
-            .bind(i as i32)
-            .execute(&state.pool)
-            .await
-            .unwrap();
+    async fn plna_fronta_odmitne_novou_a_stare_necha() {
+        const CAP: i64 = 3;
+        let mut state = test_state().await;
+        state.limits.queue_max_per_recipient = CAP;
+        let (account_id, _device, dst) = seed_device(&state).await;
+        let mut waiting = Vec::new();
+        let mut first = None;
+        for _ in 0..CAP {
+            let env = envelope(&dst, 64);
+            waiting.push(env.msg_uuid.clone());
+            first.get_or_insert_with(|| env.clone());
+            state.route_envelope(env, established(SENDER)).await.unwrap();
         }
-        assert_eq!(state.trim_queue(&dst, 1 << 30, 2).await.unwrap(), 3);
-        let remaining: Vec<Vec<u8>> = sqlx::query_scalar(
-            "SELECT msg_uuid FROM message_queue WHERE dst_address = $1 ORDER BY enqueued_at",
-        )
-        .bind(&dst)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap();
-        assert_eq!(remaining, vec![uuids[3].clone(), uuids[4].clone()]);
-        sqlx::query("DELETE FROM message_queue WHERE dst_address = $1")
-            .bind(&dst)
-            .execute(&state.pool)
+        let err = state
+            .route_envelope(envelope(&dst, 64), established(SENDER))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RouteError::RecipientFull), "{err:?}");
+
+        // Obálku, kterou fronta už má, klient opakuje kvůli ztracené
+        // doručence: ta odmítnutí dostat nesmí.
+        let repeated = state
+            .route_envelope(first.expect("první obálka"), established(SENDER))
+            .await
+            .expect("opakovaná obálka není nová");
+        assert_eq!(repeated, v1::receipt::Status::StoredOffline);
+
+        let mut kept: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT msg_uuid FROM message_queue WHERE dst_address = $1")
+                .bind(&dst)
+                .fetch_all(&state.pool)
+                .await
+                .unwrap();
+        kept.sort();
+        waiting.sort();
+        assert_eq!(kept, waiting, "čekající obálky zůstaly všechny");
+
+        // Příjemce si jednu vyzvedne: místo je hned zpět, bez čekání na
+        // další měření fronty.
+        state.ack(&dst, &waiting[0]).await.unwrap();
+        state
+            .route_envelope(envelope(&dst, 64), established(SENDER))
+            .await
+            .expect("po potvrzení je ve frontě místo");
+        cleanup(&state, &account_id, &dst).await;
+    }
+
+    /// Strop bajtů na příjemce: obálka, která by ho přesáhla, neprojde,
+    /// menší ano.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn plna_fronta_strop_bajtu() {
+        let mut state = test_state().await;
+        state.limits.queue_max_bytes_per_recipient = 1000;
+        let (account_id, _device, dst) = seed_device(&state).await;
+        state
+            .route_envelope(envelope(&dst, 600), established(SENDER))
             .await
             .unwrap();
+        let err = state
+            .route_envelope(envelope(&dst, 600), established(SENDER))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RouteError::RecipientFull), "{err:?}");
+        state
+            .route_envelope(envelope(&dst, 100), established(SENDER))
+            .await
+            .expect("menší obálka se vejde");
+        assert_eq!(queued(&state, &dst).await, 2);
+        cleanup(&state, &account_id, &dst).await;
+    }
+
+    /// Odmítnutá obálka neukrojí z kvóty odesílatele.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn plna_fronta_nestoji_kvotu_odesilatele() {
+        let mut state = test_state().await;
+        state.limits.queue_max_per_recipient = 1;
+        state.send_budget = crate::quota::Budgets::new(2, 0, SEND_BUDGET_PERIOD);
+        let (full_account, _device, full) = seed_device(&state).await;
+        let (free_account, _device, free) = seed_device(&state).await;
+        let sender = rand_bytes(16);
+        state
+            .route_envelope(envelope(&full, 64), established(&sender))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            let err = state
+                .route_envelope(envelope(&full, 64), established(&sender))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, RouteError::RecipientFull), "{err:?}");
+        }
+        state
+            .route_envelope(envelope(&free, 64), established(&sender))
+            .await
+            .expect("druhá obálka z kvóty dvou");
+        cleanup(&state, &full_account, &full).await;
+        cleanup(&state, &free_account, &free).await;
+    }
+
+    /// Globální strop fronty je měkký: nad ním dostane každý příjemce jen
+    /// zaručený příděl. Kdo si frontu vybírá, tomu relay doručuje dál; plná
+    /// fronta útočníkových adres další obálky nepřijme.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn nad_globalnim_stropem_zbyva_zaruceny_pridel() {
+        /// Větší než polovina zaručeného přídělu: druhá se už nevejde.
+        const LARGE: usize = 200 * 1024;
+        let mut state = test_state().await;
+        state.limits.queue_max_bytes_total = 1 << 20;
+        let (hoarder_account, _device, hoarder) = seed_device(&state).await;
+        let (reader_account, _device, reader) = seed_device(&state).await;
+        state.queue_total.set(state.limits.queue_max_bytes_total);
+
+        for _ in 0..2 {
+            state
+                .route_envelope(envelope(&hoarder, LARGE), established(SENDER))
+                .await
+                .expect("zaručený příděl");
+        }
+        let err = state
+            .route_envelope(envelope(&hoarder, LARGE), established(SENDER))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RouteError::RecipientFull), "{err:?}");
+        state
+            .route_envelope(envelope(&reader, LARGE), established(SENDER))
+            .await
+            .expect("příjemce s prázdnou frontou dostává dál");
+
+        // Pod polovinou stropu platí zase plný strop příjemce.
+        state.queue_total.set(0);
+        state
+            .route_envelope(envelope(&hoarder, LARGE), established(SENDER))
+            .await
+            .expect("bez tlaku plný strop");
+        cleanup(&state, &hoarder_account, &hoarder).await;
+        cleanup(&state, &reader_account, &reader).await;
+    }
+
+    /// Měření celé fronty vidí vložené obálky; mezi měřeními je relay
+    /// dopočítává sám.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn celkova_fronta_se_meri_a_dopocitava() {
+        let isolated = crate::testkit::Isolated::new().await;
+        let state = isolated.state().await;
+        let (_account, _device, dst) = seed_device(&state).await;
+        state.measure_queue_total().await.unwrap();
+        assert_eq!(state.queue_total.get(), 0);
+
+        let env = envelope(&dst, 1000);
+        let (msg_uuid, stored) = (env.msg_uuid.clone(), env.encoded_len() as i64);
+        state.route_envelope(env, established(SENDER)).await.unwrap();
+        assert_eq!(state.queue_total.get(), stored, "vložení se dopočítá");
+        state.queue_total.set(0);
+        state.measure_queue_total().await.unwrap();
+        assert_eq!(state.queue_total.get(), stored, "měření ho potvrdí");
+
+        state.ack(&dst, &msg_uuid).await.unwrap();
+        assert_eq!(state.queue_total.get(), 0, "potvrzení se odečte");
+        isolated.remove().await;
+    }
+
+    /// Čerstvý účet a obálky na vlastní adresu mají nižší hodinovou kvótu
+    /// bajtů; zavedený účet píšící jinam ji má plnou.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn cerstvy_ucet_a_vlastni_adresa_maji_nizsi_kvotu() {
+        const PAYLOAD: usize = 1000;
+        let mut state = test_state().await;
+        // Plná kvóta na pět obálek, čerstvý účet na dvě, vlastní adresa
+        // na jednu (obálka má s hlavičkou něco přes PAYLOAD bajtů).
+        state.limits.send_bytes_per_hour = 6000;
+        state.limits.send_fresh_bytes_per_hour = 2400;
+        state.limits.send_self_bytes_per_hour = 1200;
+        state.send_budget = crate::quota::Budgets::new(0, 6000, SEND_BUDGET_PERIOD);
+        let (account_id, _device, dst) = seed_device(&state).await;
+        let (own_account, _device, own) = seed_device(&state).await;
+
+        async fn accepted(state: &AppState, sender: Sender<'_>, to: &[u8]) -> usize {
+            let mut count = 0;
+            while state
+                .route_envelope(envelope(to, PAYLOAD), sender)
+                .await
+                .is_ok()
+            {
+                count += 1;
+            }
+            count
+        }
+        let (old, fresh, own_sender) = (rand_bytes(16), rand_bytes(16), rand_bytes(16));
+        assert_eq!(accepted(&state, established(&old), &dst).await, 5);
+        let just_registered = Sender {
+            account: &fresh,
+            address: &[],
+            registered_at: Utc::now(),
+        };
+        assert_eq!(accepted(&state, just_registered, &dst).await, 2);
+        let to_self = Sender {
+            account: &own_sender,
+            address: &own,
+            registered_at: DateTime::UNIX_EPOCH,
+        };
+        assert_eq!(accepted(&state, to_self, &own).await, 1);
+
+        cleanup(&state, &account_id, &dst).await;
+        cleanup(&state, &own_account, &own).await;
+    }
+
+    /// „Píše…“ odpovídá vždy stejně: online, offline i neexistující adresa
+    /// vypadají pro odesílatele stejně, takže z odpovědi nepozná, kdy je
+    /// cizí zařízení připojené. Živému spojení se přitom doručí.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn ephemeral_odpovida_stejne_at_je_prijemce_kdekoli() {
+        let state = test_state().await;
+        let (online_account, _device, online) = seed_device(&state).await;
+        let (offline_account, _device, offline) = seed_device(&state).await;
+        let (device, mut rx) = crate::testkit::device(&state);
+        state.online.attach(online.clone(), device.clone());
+
+        let typing = |dst: &[u8]| v1::Envelope {
+            content_hint: v1::ContentHint::Ephemeral as i32,
+            ..envelope(dst, 64)
+        };
+        for dst in [&online, &offline, &rand_bytes(32)] {
+            let status = state
+                .route_envelope(typing(dst), established(SENDER))
+                .await
+                .unwrap();
+            assert_eq!(status, v1::receipt::Status::Queued);
+        }
+        assert!(rx.try_frame().is_some(), "online příjemce „píše…“ dostal");
+        assert!(rx.try_frame().is_none(), "a jen to jedno");
+
+        state.online.detach(&online, &device);
+        cleanup(&state, &online_account, &online).await;
+        cleanup(&state, &offline_account, &offline).await;
+    }
+
+    /// „Píše…“ má vlastní kvótu na odesílatele, strop na cíl i strop
+    /// velikosti. Nad kvótu se zahazuje tiše — odpověď se nemění.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn ephemeral_ma_kvotu_strop_na_cil_a_velikost() {
+        const SENDER_QUOTA: u64 = 3;
+        const TARGET_QUOTA: u64 = 2;
+        let mut state = test_state().await;
+        state.ephemeral_budget = crate::quota::Budgets::new(SENDER_QUOTA, 0, SEND_BUDGET_PERIOD);
+        state.ephemeral_target_budget =
+            crate::quota::Budgets::new(TARGET_QUOTA, 0, SEND_BUDGET_PERIOD);
+        let (account_id, _device, dst) = seed_device(&state).await;
+        let (other_account, _device, other) = seed_device(&state).await;
+        let (device, mut rx) = crate::testkit::device(&state);
+        let (other_device, mut other_rx) = crate::testkit::device(&state);
+        state.online.attach(dst.clone(), device.clone());
+        state.online.attach(other.clone(), other_device.clone());
+        let typing = |dst: &[u8], payload_len: usize| v1::Envelope {
+            content_hint: v1::ContentHint::Ephemeral as i32,
+            ..envelope(dst, payload_len)
+        };
+        let delivered = |rx: &mut crate::outbox::OutboxReceiver| {
+            std::iter::from_fn(|| rx.try_frame()).count()
+        };
+
+        let too_big = typing(&dst, state.limits.ephemeral_max_bytes + 1);
+        let err = state
+            .route_envelope(too_big, established(SENDER))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RouteError::Invalid), "{err:?}");
+
+        // Strop na cíl: dva odesílatelé, na adresu dojdou jen TARGET_QUOTA.
+        let (first, second) = (rand_bytes(16), rand_bytes(16));
+        for sender in [&first, &second, &first] {
+            let status = state
+                .route_envelope(typing(&dst, 64), established(sender))
+                .await
+                .unwrap();
+            assert_eq!(status, v1::receipt::Status::Queued);
+        }
+        assert_eq!(delivered(&mut rx), TARGET_QUOTA as usize);
+
+        // Kvóta odesílatele: `first` už poslal dvě, zbývá mu jedna.
+        for _ in 0..3 {
+            let status = state
+                .route_envelope(typing(&other, 64), established(&first))
+                .await
+                .unwrap();
+            assert_eq!(status, v1::receipt::Status::Queued);
+        }
+        assert_eq!(delivered(&mut other_rx), 1);
+        assert_eq!(queued(&state, &dst).await, 0, "„píše…“ se neukládá");
+
+        state.online.detach(&dst, &device);
+        state.online.detach(&other, &other_device);
+        cleanup(&state, &account_id, &dst).await;
+        cleanup(&state, &other_account, &other).await;
     }
 
     /// iPhone s jediným VoIP tokenem (běžný APNs token ještě nemá) musí jít
@@ -1901,6 +2862,42 @@ mod db_tests {
         cleanup(&state, &account_id, &dst).await;
     }
 
+    /// Token, který push služba natrvalo odmítla, zmizí; token, který si
+    /// zařízení mezitím vyměnilo, a druhý token téhož zařízení zůstanou.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn mrtvy_push_token_se_zapomene() {
+        use crate::push::{DeadToken, PLATFORM_APNS};
+        let state = test_state().await;
+        let (account_id, device_uuid, dst) = seed_device(&state).await;
+        state
+            .register_push(&device_uuid, PLATFORM_APNS, Some(b"novy"), Some(b"voip"))
+            .await
+            .unwrap();
+
+        forget_dead_token(&state.pool, &dst, DeadToken::Push, b"stary").await;
+        assert_eq!(
+            state.push_target(&dst).await,
+            Some((PLATFORM_APNS, b"novy".to_vec())),
+            "odmítnutí starého tokenu nesmí smazat nově registrovaný"
+        );
+
+        forget_dead_token(&state.pool, &dst, DeadToken::Push, b"novy").await;
+        assert!(state.push_target(&dst).await.is_none());
+        let target = state.push_target_full(&dst).await.expect("VoIP token zůstal");
+        assert_eq!(target.voip_token.as_deref(), Some(&b"voip"[..]));
+
+        forget_dead_token(&state.pool, &dst, DeadToken::Voip, b"voip").await;
+        let rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM push_tokens WHERE device_uuid = $1")
+                .bind(&device_uuid)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(rows, 0, "řádek bez tokenů nemá zůstat");
+        cleanup(&state, &account_id, &dst).await;
+    }
+
     /// Obálka, která se zakódovaná nevejde do CHECK fronty, je 400 dřív, než
     /// ukrojí z kvóty odesílatele — ne 500 z databáze.
     #[tokio::test]
@@ -1909,7 +2906,7 @@ mod db_tests {
         let state = test_state().await;
         let (account_id, _device, dst) = seed_device(&state).await;
         let err = state
-            .route_envelope(envelope(&dst, MAX_ENVELOPE_PAYLOAD), SENDER)
+            .route_envelope(envelope(&dst, MAX_ENVELOPE_PAYLOAD), established(SENDER))
             .await
             .unwrap_err();
         assert!(matches!(err, RouteError::Invalid), "{err:?}");

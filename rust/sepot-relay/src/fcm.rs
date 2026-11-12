@@ -21,6 +21,26 @@ use tokio::sync::Mutex;
 
 const FCM_SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 
+/// Tělo FCM budíčku. Vysokou prioritu dostane jen budíček zprávy: provozní
+/// obálky nekončí notifikací a Google aplikacím, které vysokou prioritu
+/// utrácejí bez ní, doručování zpomalí. Běžná priorita počká na okno údržby,
+/// doručence to nevadí.
+fn wake_message(device_token: &str, kind: crate::push::WakeKind) -> serde_json::Value {
+    let (priority, collapse_key) = match kind {
+        crate::push::WakeKind::Message => ("HIGH", "wake"),
+        // Vlastní klíč: jinak by čekající tichý budíček přepsal budíček
+        // zprávy (FCM drží na klíč jen poslední) a notifikace by zmizela.
+        crate::push::WakeKind::Sync => ("NORMAL", "sync"),
+    };
+    serde_json::json!({
+        "message": {
+            "token": device_token,
+            "data": { "v": "1", "k": kind.as_str() },
+            "android": { "priority": priority, "collapse_key": collapse_key }
+        }
+    })
+}
+
 #[derive(Deserialize)]
 struct ServiceAccount {
     project_id: String,
@@ -127,23 +147,21 @@ impl FcmSender {
     }
 
     /// Pošle budíček na FCM registrační token. Best-effort; loguje se jen
-    /// stavový kód (nikdy token).
-    pub async fn send_wake(&self, http: &reqwest::Client, device_token: &str) {
-        let body = serde_json::json!({
-            "message": {
-                "token": device_token,
-                "data": { "v": "1" },
-                // collapse_key: čekající budíčky pro zařízení mimo síť se
-                // slijí do jednoho (třicet zpráv ≠ třicet pushů).
-                "android": { "priority": "HIGH", "collapse_key": "wake" }
-            }
-        });
-        self.send(http, body).await;
+    /// stavový kód (nikdy token). Vrací `true`, když FCM token natrvalo
+    /// odmítl (stejně i `send_call_wake`).
+    pub async fn send_wake(
+        &self,
+        http: &reqwest::Client,
+        device_token: &str,
+        kind: crate::push::WakeKind,
+    ) -> bool {
+        self.send(http, wake_message(device_token, kind)).await
     }
+
 
     /// Budíček pro příchozí hovor: `k=call` spustí na telefonu zvonění
     /// a platnost je krátká — zmeškaný hovor po návratu do sítě nezvoní.
-    pub async fn send_call_wake(&self, http: &reqwest::Client, device_token: &str) {
+    pub async fn send_call_wake(&self, http: &reqwest::Client, device_token: &str) -> bool {
         let body = serde_json::json!({
             "message": {
                 "token": device_token,
@@ -154,12 +172,12 @@ impl FcmSender {
                 }
             }
         });
-        self.send(http, body).await;
+        self.send(http, body).await
     }
 
-    async fn send(&self, http: &reqwest::Client, body: serde_json::Value) {
+    async fn send(&self, http: &reqwest::Client, body: serde_json::Value) -> bool {
         let Some(access) = self.access_token(http).await else {
-            return;
+            return false;
         };
         let url = format!(
             "https://fcm.googleapis.com/v1/projects/{}/messages:send",
@@ -170,11 +188,78 @@ impl FcmSender {
         // je Google, ne telefon uživatele — chyba tu znamená mrtvý token nebo
         // rozbitou konfiguraci projektu, obojí je provozní problém.
         match http.post(&url).bearer_auth(access).json(&body).send().await {
-            Ok(resp) if !resp.status().is_success() => {
-                tracing::warn!(status = %resp.status(), "FCM budíček odmítnut");
+            Ok(resp) if resp.status().is_success() => false,
+            Ok(resp) => {
+                let status = resp.status();
+                let dead = is_dead_token(status.as_u16(), &resp.text().await.unwrap_or_default());
+                tracing::warn!(status = %status, dead_token = dead, "FCM budíček odmítnut");
+                dead
             }
-            Err(e) => tracing::warn!("FCM budíček selhal: {}", e.without_url()),
-            _ => {}
+            Err(e) => {
+                tracing::warn!("FCM budíček selhal: {}", e.without_url());
+                false
+            }
         }
+    }
+}
+
+/// Odmítl FCM token natrvalo? Jen 404 s kódem `UNREGISTERED` (appka
+/// odinstalovaná, token vyměněný). Holé 404 může znamenat i špatně
+/// nastavený projekt a kvůli chybě v konfiguraci se tokeny mazat nesmí.
+fn is_dead_token(status: u16, body: &str) -> bool {
+    const NOT_FOUND: u16 = 404;
+    if status != NOT_FOUND {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(body).is_ok_and(|reply| {
+        reply["error"]["details"]
+            .as_array()
+            .is_some_and(|details| details.iter().any(|d| d["errorCode"] == "UNREGISTERED"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::push::WakeKind;
+
+    #[test]
+    fn budicek_zpravy_ma_vysokou_prioritu_a_provozni_beznou() {
+        let msg = wake_message("t", WakeKind::Message);
+        assert_eq!(msg["message"]["data"]["k"], "msg");
+        assert_eq!(msg["message"]["android"]["priority"], "HIGH");
+
+        let sync = wake_message("t", WakeKind::Sync);
+        assert_eq!(sync["message"]["data"]["k"], "sync");
+        assert_eq!(sync["message"]["android"]["priority"], "NORMAL");
+        assert_ne!(
+            msg["message"]["android"]["collapse_key"], sync["message"]["android"]["collapse_key"],
+            "tichý budíček nesmí ve frontě FCM přepsat budíček zprávy"
+        );
+    }
+
+    #[test]
+    fn mrtvy_token_pozna_jen_z_kodu_unregistered() {
+        let unregistered = r#"{"error":{"code":404,"status":"NOT_FOUND","details":[
+            {"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}}"#;
+        assert!(is_dead_token(404, unregistered));
+        for (status, body) in [
+            (404, r#"{"error":{"code":404,"status":"NOT_FOUND"}}"#),
+            (404, "není JSON"),
+            (400, r#"{"error":{"details":[{"errorCode":"INVALID_ARGUMENT"}]}}"#),
+            (403, r#"{"error":{"details":[{"errorCode":"SENDER_ID_MISMATCH"}]}}"#),
+            (429, r#"{"error":{"details":[{"errorCode":"QUOTA_EXCEEDED"}]}}"#),
+            (503, unregistered),
+        ] {
+            assert!(!is_dead_token(status, body), "{status} {body}");
+        }
+    }
+
+    #[test]
+    fn budicek_nenese_nic_nez_verzi_a_druh() {
+        let msg = wake_message("t", WakeKind::Message);
+        let data = msg["message"]["data"].as_object().unwrap();
+        assert_eq!(data.len(), 2);
+        assert_eq!(data["v"], "1");
     }
 }

@@ -11,6 +11,11 @@
 //! adresy); a nové kvóty (odesílatel, přílohy na účet, místo na disku) dřív
 //! neexistovaly.
 //!
+//! Čerstvý účet (`fresh_account_age`) má kvóty nižší: založit účet nic
+//! nestojí, takže plné kvóty hned po registraci by každý limit „na účet“
+//! násobily počtem účtů, které si útočník právě vyrobil. Kdo počká, limity
+//! obejde — čekání ale útok zdražuje a dává čas si ho všimnout.
+//!
 //! Rate limity jsou token buckety: `*_BURST` tokenů naráz, jeden token zpět
 //! každých `*_PERIOD_MS` ms. Kvóty bajtů/kusů: 0 = bez omezení.
 
@@ -29,6 +34,7 @@ use governor::{DefaultDirectRateLimiter, DefaultKeyedRateLimiter, Quota};
 use crate::net::TrustedProxies;
 
 const MIB: u64 = 1024 * 1024;
+const SECONDS_PER_HOUR: u64 = 3600;
 
 fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
     match std::env::var(name) {
@@ -102,7 +108,8 @@ pub struct Limits {
     pub pow_challenge: RatePair,
     /// `SEPOT_RL_REGISTER_GLOBAL_*`: všechny registrace dohromady, 600 naráz,
     /// pak 40/s. Chrání DB (změřeno 117–147 registrací/s na 2 jádrech), když
-    /// registruje mnoho adres naráz; BURST 0 = vypnuto.
+    /// registruje mnoho adres naráz; BURST 0 = vypnuto. Počítají se jen
+    /// registrace s platnými podpisy a důkazem držení klíče ([`GlobalLimit`]).
     pub register_global: Option<Rate>,
     /// `SEPOT_REGISTRATION_PAUSED=1`: nové registrace dostanou 503 + Retry-After
     /// (nouzový vypínač při záplavě registrací); existující zařízení jedou dál.
@@ -130,18 +137,70 @@ pub struct Limits {
     pub call_wake_min_interval: Duration,
 
     /// `SEPOT_QUEUE_MAX_BYTES_PER_RECIPIENT` (50 MiB) a
-    /// `SEPOT_QUEUE_MAX_PER_RECIPIENT` (10 000 obálek): přebytek padá od nejstarších.
+    /// `SEPOT_QUEUE_MAX_PER_RECIPIENT` (10 000 obálek): do plné fronty relay
+    /// další obálku nepřijme (507). Starší se nemažou — kdo zná adresu, by
+    /// jinak příjemci přeplněním fronty potichu smazal čekající zprávy.
     pub queue_max_bytes_per_recipient: i64,
     pub queue_max_per_recipient: i64,
+    /// `SEPOT_QUEUE_MAX_BYTES_TOTAL` (2 GiB): strop obálek ve frontě všech
+    /// příjemců dohromady. Od poloviny se krátí příděl jednoho příjemce, nad
+    /// stropem zbývá každému jen malý zaručený příděl (gauge.rs).
+    pub queue_max_bytes_total: i64,
     /// `SEPOT_SEND_MAX_PER_HOUR` / `SEPOT_SEND_MAX_BYTES_PER_HOUR` na odesílající
-    /// účet (ukládané obálky; „píše…“ se nepočítá).
+    /// účet (ukládané obálky; „píše…“ má vlastní kvótu).
     pub send_per_hour: u64,
     pub send_bytes_per_hour: u64,
+    /// `SEPOT_FRESH_ACCOUNT_HOURS` (72): po tuhle dobu od registrace je účet
+    /// čerstvý a platí pro něj nižší kvóty; 0 = bez rozlišení.
+    pub fresh_account_age: Duration,
+    /// `SEPOT_SEND_FRESH_BYTES_PER_HOUR` (16 MiB): bajty ukládaných obálek za
+    /// hodinu od čerstvého účtu. Na psaní to stačí s velkou rezervou (obálka
+    /// s textem má kolem 1 KiB). Míru udávají fotky do skupiny: obálka
+    /// s fotkou nese náhled (desítky KiB) a jde každému členovi zvlášť, a
+    /// čerstvý je i dlouholetý uživatel po obnově na novém telefonu.
+    pub send_fresh_bytes_per_hour: u64,
+    /// `SEPOT_SEND_SELF_BYTES_PER_HOUR` (2 MiB): obálky na vlastní adresu.
+    /// Běžná appka si sama sobě neposílá; fronta, kterou si odesílatel sám
+    /// nevybírá, je nejlevnější způsob, jak relayi plnit disk.
+    pub send_self_bytes_per_hour: u64,
+
+    /// `SEPOT_EPHEMERAL_MAX_BYTES` (4 KiB): strop payloadu obálky „píše…“.
+    /// Zapečetěné „píše…“ má stovky bajtů, s úvodním PQXDH materiálem
+    /// (Kyber ciphertext 1 568 B) kolem 2,5 KiB.
+    pub ephemeral_max_bytes: usize,
+    /// `SEPOT_EPHEMERAL_PER_HOUR` (3 000) na odesílající účet. Appka posílá
+    /// nejvýš jedno „píše…“ za 4 s na konverzaci, ve skupině až 19 obálek.
+    pub ephemeral_per_hour: u64,
+    /// `SEPOT_EPHEMERAL_TARGET_BURST` (30) a `SEPOT_EPHEMERAL_TARGET_PERIOD_S`
+    /// (30): kolik „píše…“ smí dojít na jednu adresu naráz a za jak dlouho
+    /// se příděl doplní.
+    pub ephemeral_target_burst: u64,
+    pub ephemeral_target_period: Duration,
+
+    /// `SEPOT_ALERTS_PER_HOUR` (60): viditelných notifikací se zvukem od
+    /// jednoho odesílatele na jeden cíl za hodinu; nad strop jde jen tichý
+    /// budíček. Přihlášení příjemce počítadla nuluje. 0 = bez stropu.
+    pub alerts_per_hour: usize,
 
     /// `SEPOT_ATT_ACCOUNT_BYTES_PER_DAY` (100 MiB) a
     /// `SEPOT_ATT_ACCOUNT_STORED_BYTES` (250 MiB živých v rámci TTL).
     pub att_account_bytes_per_day: u64,
     pub att_account_stored_bytes: u64,
+    /// `SEPOT_ATT_FRESH_BYTES_PER_DAY` (30 MiB): kolik příloh smí čerstvý
+    /// účet nahrát za den a zároveň kolik jich smí mít uloženo. Uložené
+    /// přílohy se z účtu odepíšou až po vypršení (30 dní), takže za celou
+    /// dobu, co je účet čerstvý, nahraje dohromady nejvýš tolik — není to
+    /// 30 MiB každý den. Nový uživatel pošle fotky i jedno video v plné
+    /// velikosti hned po registraci; plnit úložiště čerstvě vyrobenými účty
+    /// ale chce násobně víc účtů než dřív.
+    pub att_fresh_bytes_per_day: u64,
+    /// `SEPOT_ATT_EVICT_MIN_AGE_HOURS` (48): když je úložiště příloh plné,
+    /// nová příloha vytlačí nejstarší bloby starší než tohle; 0 = nevytlačovat
+    /// (plné úložiště pak odmítá až do vypršení TTL). Dřív stačilo úložiště
+    /// jednou zaplnit a 30 dní nikdo nic neposlal; teď musí útočník
+    /// zaplňovat pořád dokola. Cena: pod tlakem přijde o přílohu příjemce,
+    /// který si ji do té doby nestáhl.
+    pub att_evict_min_age_hours: i32,
 
     /// `SEPOT_DISK_MIN_FREE_PCT_ATTACHMENTS` (15) a `SEPOT_DISK_MIN_FREE_PCT_QUEUE`
     /// (8): pod tímto podílem volného místa na datovém filesystému relay
@@ -236,10 +295,25 @@ impl Limits {
                 (50 * MIB) as i64,
             ),
             queue_max_per_recipient: env_parse("SEPOT_QUEUE_MAX_PER_RECIPIENT", 10_000i64),
+            queue_max_bytes_total: env_parse("SEPOT_QUEUE_MAX_BYTES_TOTAL", (2048 * MIB) as i64),
             send_per_hour: env_parse("SEPOT_SEND_MAX_PER_HOUR", 5_000u64),
             send_bytes_per_hour: env_parse("SEPOT_SEND_MAX_BYTES_PER_HOUR", 32 * MIB),
+            fresh_account_age: Duration::from_secs(
+                env_parse("SEPOT_FRESH_ACCOUNT_HOURS", 72u64) * SECONDS_PER_HOUR,
+            ),
+            send_fresh_bytes_per_hour: env_parse("SEPOT_SEND_FRESH_BYTES_PER_HOUR", 16 * MIB),
+            send_self_bytes_per_hour: env_parse("SEPOT_SEND_SELF_BYTES_PER_HOUR", 2 * MIB),
+            ephemeral_max_bytes: env_parse("SEPOT_EPHEMERAL_MAX_BYTES", 4096usize),
+            ephemeral_per_hour: env_parse("SEPOT_EPHEMERAL_PER_HOUR", 3_000u64),
+            ephemeral_target_burst: env_parse("SEPOT_EPHEMERAL_TARGET_BURST", 30u64),
+            ephemeral_target_period: Duration::from_secs(
+                env_parse("SEPOT_EPHEMERAL_TARGET_PERIOD_S", 30u64).max(1),
+            ),
+            alerts_per_hour: env_parse("SEPOT_ALERTS_PER_HOUR", 60usize),
             att_account_bytes_per_day: env_parse("SEPOT_ATT_ACCOUNT_BYTES_PER_DAY", 100 * MIB),
             att_account_stored_bytes: env_parse("SEPOT_ATT_ACCOUNT_STORED_BYTES", 250 * MIB),
+            att_fresh_bytes_per_day: env_parse("SEPOT_ATT_FRESH_BYTES_PER_DAY", 30 * MIB),
+            att_evict_min_age_hours: env_parse("SEPOT_ATT_EVICT_MIN_AGE_HOURS", 48i32).max(0),
             disk_min_free_pct_attachments: env_parse("SEPOT_DISK_MIN_FREE_PCT_ATTACHMENTS", 15.0),
             disk_min_free_pct_queue: env_parse("SEPOT_DISK_MIN_FREE_PCT_QUEUE", 8.0),
             inactive_cleanup: inactive_cleanup_or_off(inactive_cleanup_from_env()),
@@ -252,12 +326,11 @@ impl Limits {
 pub struct RateLimit {
     clearnet: DefaultKeyedRateLimiter<IpAddr>,
     tor: DefaultDirectRateLimiter,
-    global: Option<Arc<DefaultDirectRateLimiter>>,
     trusted: Arc<TrustedProxies>,
 }
 
-/// Registrace bez a s proof-of-work: vlastní buckety per IP, společný
-/// globální strop (chrání DB bez ohledu na to, kdo PoW přinesl).
+/// Registrace bez a s proof-of-work: vlastní buckety per IP. Globální
+/// strop je zvlášť ([`GlobalLimit`]) a platí pro obě cesty.
 pub struct RegisterLimits {
     pub base: Arc<RateLimit>,
     pub pow: Arc<RateLimit>,
@@ -265,32 +338,41 @@ pub struct RegisterLimits {
 
 impl RegisterLimits {
     pub fn new(limits: &Limits, trusted: Arc<TrustedProxies>) -> Arc<Self> {
-        let base = RateLimit::new(limits.register, limits.register_global, trusted);
-        let pow = base.sibling(limits.register_pow);
+        let base = RateLimit::new(limits.register, trusted.clone());
+        let pow = RateLimit::new(limits.register_pow, trusted);
         Arc::new(Self { base, pow })
     }
 }
 
+/// Strop přes všechny klienty dohromady (registrace: chrání DB).
+///
+/// Bere se až po ověření podpisů a důkazu držení klíče. Dřív ubíral každý
+/// požadavek, který prošel limitem na adresu, i s nesmyslným tělem: kdo měl
+/// dost adres, vybral strop požadavky, které se do DB nikdy nedostaly, a
+/// skutečné registrace dostávaly 429.
+pub struct GlobalLimit(Option<DefaultDirectRateLimiter>);
+
+impl GlobalLimit {
+    pub fn new(rate: Option<Rate>) -> Self {
+        Self(rate.map(|rate| DefaultDirectRateLimiter::direct(rate.quota())))
+    }
+
+    /// `Ok` = povoleno, `Err(wait)` = odmítnuto, zkusit znovu za `wait`.
+    pub fn check(&self) -> Result<(), Duration> {
+        let Some(limiter) = &self.0 else {
+            return Ok(());
+        };
+        limiter
+            .check()
+            .map_err(|not_until| not_until.wait_time_from(DefaultClock::default().now()))
+    }
+}
+
 impl RateLimit {
-    pub fn new(rates: RatePair, global: Option<Rate>, trusted: Arc<TrustedProxies>) -> Arc<Self> {
-        let global = global.map(|g| Arc::new(DefaultDirectRateLimiter::direct(g.quota())));
-        Self::build(rates, global, trusted)
-    }
-
-    /// Limiter s vlastními buckety per IP a stejným globálním stropem.
-    pub fn sibling(&self, rates: RatePair) -> Arc<Self> {
-        Self::build(rates, self.global.clone(), self.trusted.clone())
-    }
-
-    fn build(
-        rates: RatePair,
-        global: Option<Arc<DefaultDirectRateLimiter>>,
-        trusted: Arc<TrustedProxies>,
-    ) -> Arc<Self> {
+    pub fn new(rates: RatePair, trusted: Arc<TrustedProxies>) -> Arc<Self> {
         let limiter = Arc::new(Self {
             clearnet: DefaultKeyedRateLimiter::keyed(rates.clearnet.quota()),
             tor: DefaultDirectRateLimiter::direct(rates.tor.quota()),
-            global,
             trusted,
         });
         // Zapomenout nečinné buckety, ať mapa neroste s každou kdy viděnou IP.
@@ -313,13 +395,9 @@ impl RateLimit {
             self.tor.check()
         } else {
             self.clearnet
-                .check_key(&self.trusted.client_ip(peer, headers))
+                .check_key(&self.trusted.client_key(peer, headers))
         };
-        own.map_err(|not_until| not_until.wait_time_from(now))?;
-        if let Some(global) = &self.global {
-            global.check().map_err(|not_until| not_until.wait_time_from(now))?;
-        }
-        Ok(())
+        own.map_err(|not_until| not_until.wait_time_from(now))
     }
 }
 
@@ -336,12 +414,19 @@ pub async fn enforce(
     }
 }
 
-pub fn too_many(wait: Duration) -> Response {
+pub const TEXT_TOO_MANY: &str = "příliš mnoho požadavků";
+
+/// Hodnota Retry-After: celé sekundy nahoru, nejméně jedna.
+pub fn retry_after(wait: Duration) -> HeaderValue {
     let secs = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
-    let mut response = (StatusCode::TOO_MANY_REQUESTS, "příliš mnoho požadavků").into_response();
-    if let Ok(value) = HeaderValue::from_str(&secs.max(1).to_string()) {
-        response.headers_mut().insert(header::RETRY_AFTER, value);
-    }
+    HeaderValue::from(secs.max(1))
+}
+
+pub fn too_many(wait: Duration) -> Response {
+    let mut response = (StatusCode::TOO_MANY_REQUESTS, TEXT_TOO_MANY).into_response();
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, retry_after(wait));
     response
 }
 
@@ -366,7 +451,7 @@ mod tests {
             clearnet: Rate::new(2, 3_600_000),
             tor: Rate::new(100, 1),
         };
-        let rl = RateLimit::new(rates, None, trusted("10.0.0.1", ""));
+        let rl = RateLimit::new(rates, trusted("10.0.0.1", ""));
         let proxy: IpAddr = "10.0.0.1".parse().unwrap();
         assert!(rl.check(proxy, &xff("198.51.100.1")).is_ok());
         assert!(rl.check(proxy, &xff("198.51.100.1")).is_ok());
@@ -381,7 +466,7 @@ mod tests {
             clearnet: Rate::new(1, 3_600_000),
             tor: Rate::new(3, 3_600_000),
         };
-        let rl = RateLimit::new(rates, None, trusted("10.0.0.1", "172.20.1.0/24"));
+        let rl = RateLimit::new(rates, trusted("10.0.0.1", "172.20.1.0/24"));
         let tor_peer: IpAddr = "172.20.1.3".parse().unwrap();
         for i in 0..3 {
             // podvržená XFF z Toru nesmí založit nové buckety
@@ -393,37 +478,59 @@ mod tests {
         assert!(rl.check(proxy, &xff("198.51.100.1")).is_ok());
     }
 
-    #[tokio::test]
-    async fn globalni_strop_plati_pres_klienty() {
-        let rates = RatePair {
-            clearnet: Rate::new(100, 1),
-            tor: Rate::new(100, 1),
-        };
-        let rl = RateLimit::new(rates, Some(Rate::new(2, 3_600_000)), trusted("10.0.0.1", ""));
-        let proxy: IpAddr = "10.0.0.1".parse().unwrap();
-        assert!(rl.check(proxy, &xff("198.51.100.1")).is_ok());
-        assert!(rl.check(proxy, &xff("198.51.100.2")).is_ok());
-        assert!(rl.check(proxy, &xff("198.51.100.3")).is_err());
+    #[test]
+    fn globalni_strop_plati_pres_klienty() {
+        let global = GlobalLimit::new(Some(Rate::new(2, 3_600_000)));
+        assert!(global.check().is_ok());
+        assert!(global.check().is_ok());
+        let wait = global.check().expect_err("strop vyčerpán");
+        assert!(wait > Duration::from_secs(3000), "Retry-After odpovídá periodě");
+        let off = GlobalLimit::new(None);
+        for _ in 0..1000 {
+            assert!(off.check().is_ok());
+        }
     }
 
     #[tokio::test]
-    async fn sourozenec_sdili_globalni_strop_ne_ip_bucket() {
-        let base_rates = RatePair {
+    async fn registrace_s_pow_ma_vlastni_ip_bucket() {
+        let mut limits = Limits::from_env();
+        limits.register = RatePair {
             clearnet: Rate::new(1, 3_600_000),
             tor: Rate::new(1, 3_600_000),
         };
-        let pow_rates = RatePair {
-            clearnet: Rate::new(5, 3_600_000),
-            tor: Rate::new(5, 3_600_000),
+        limits.register_pow = RatePair {
+            clearnet: Rate::new(2, 3_600_000),
+            tor: Rate::new(2, 3_600_000),
         };
-        let base = RateLimit::new(base_rates, Some(Rate::new(3, 3_600_000)), trusted("10.0.0.1", ""));
-        let pow = base.sibling(pow_rates);
+        let register = RegisterLimits::new(&limits, trusted("10.0.0.1", ""));
         let proxy: IpAddr = "10.0.0.1".parse().unwrap();
-        assert!(base.check(proxy, &xff("198.51.100.1")).is_ok());
-        assert!(base.check(proxy, &xff("198.51.100.1")).is_err(), "IP bucket bez PoW vyčerpán");
-        assert!(pow.check(proxy, &xff("198.51.100.1")).is_ok(), "s PoW vlastní bucket");
-        assert!(pow.check(proxy, &xff("198.51.100.1")).is_ok());
-        assert!(pow.check(proxy, &xff("198.51.100.1")).is_err(), "globální strop 3 společný");
+        assert!(register.base.check(proxy, &xff("198.51.100.1")).is_ok());
+        assert!(
+            register.base.check(proxy, &xff("198.51.100.1")).is_err(),
+            "IP bucket bez PoW vyčerpán"
+        );
+        assert!(register.pow.check(proxy, &xff("198.51.100.1")).is_ok(), "s PoW vlastní bucket");
+        assert!(register.pow.check(proxy, &xff("198.51.100.1")).is_ok());
+        assert!(register.pow.check(proxy, &xff("198.51.100.1")).is_err());
+    }
+
+    /// Adresy z jedné IPv6 sítě /64 sdílí bucket: jinak má jeden zákazník
+    /// pro každý požadavek čerstvý.
+    #[tokio::test]
+    async fn ipv6_bucket_je_na_sit() {
+        let rates = RatePair {
+            clearnet: Rate::new(2, 3_600_000),
+            tor: Rate::new(2, 3_600_000),
+        };
+        let rl = RateLimit::new(rates, trusted("10.0.0.1", ""));
+        let proxy: IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(rl.check(proxy, &xff("2001:db8:1:2::1")).is_ok());
+        assert!(rl.check(proxy, &xff("2001:db8:1:2:ffff::2")).is_ok());
+        assert!(
+            rl.check(proxy, &xff("2001:db8:1:2:1234:5678:9abc:def0")).is_err(),
+            "třetí adresa téže /64"
+        );
+        assert!(rl.check(proxy, &xff("2001:db8:1:3::1")).is_ok(), "jiná /64");
     }
 
     #[test]

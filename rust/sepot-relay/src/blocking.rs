@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgExecutor, PgPool};
@@ -146,7 +146,7 @@ pub async fn find_registration(
     fingerprint: &Fingerprint,
 ) -> sqlx::Result<Option<Registration>> {
     let wanted = HashSet::from([*fingerprint]);
-    Ok(find_registrations(conn, &wanted)
+    Ok(find_registrations(conn, &wanted, None)
         .await?
         .pop()
         .map(|(_, registration)| registration))
@@ -154,18 +154,23 @@ pub async fn find_registration(
 
 /// Registrace identit s danými otisky. Postgres BLAKE2b neumí, otisk se
 /// počítá v Rustu při jednom průchodu tabulkou identit; průchod skončí,
-/// jakmile jsou nalezeny všechny.
+/// jakmile jsou nalezeny všechny. `since` průchod zúží na identity
+/// registrované od té doby.
 pub async fn find_registrations(
     conn: &mut PgConnection,
     wanted: &HashSet<Fingerprint>,
+    since: Option<DateTime<Utc>>,
 ) -> sqlx::Result<Vec<(Fingerprint, Registration)>> {
     let mut found = Vec::new();
     if wanted.is_empty() {
         return Ok(found);
     }
-    let mut rows =
-        sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>("SELECT account_id, identity_key FROM identities")
-            .fetch(&mut *conn);
+    let mut rows = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+        "SELECT account_id, identity_key FROM identities
+         WHERE $1::timestamptz IS NULL OR registered_at >= $1",
+    )
+    .bind(since)
+    .fetch(&mut *conn);
     while let Some((account_id, identity_key)) = rows.try_next().await? {
         let fingerprint = Fingerprint::of_identity_key(&identity_key);
         if wanted.contains(&fingerprint) {
@@ -948,7 +953,11 @@ impl std::fmt::Debug for Reconciled {
 /// Hodinové dorovnání: registrace zablokované identity nemá existovat.
 /// Vznikne jen obejitím, typicky během návratu na starší verzi serveru,
 /// která blokace nevynucuje. Každý výskyt je pro provozovatele signál.
-pub async fn reconcile(pool: &PgPool) -> sqlx::Result<Reconciled> {
+///
+/// `since` = jen identity registrované od té doby; `None` = celá tabulka.
+/// Otisk se počítá v Rustu, takže úplný průchod čte každý identity klíč;
+/// každou hodinu je to zbytečné, když přibýt mohly jen nové registrace.
+pub async fn reconcile(pool: &PgPool, since: Option<DateTime<Utc>>) -> sqlx::Result<Reconciled> {
     let mut reconciled = Reconciled::default();
     let blocked: Vec<[u8; 32]> = sqlx::query_scalar(
         "SELECT fingerprint FROM blocked_identities WHERE expires_on >= current_date",
@@ -962,7 +971,7 @@ pub async fn reconcile(pool: &PgPool) -> sqlx::Result<Reconciled> {
     let wanted: HashSet<Fingerprint> = blocked.into_iter().map(Fingerprint).collect();
     let found = {
         let mut conn = pool.acquire().await?;
-        find_registrations(&mut conn, &wanted).await?
+        find_registrations(&mut conn, &wanted, since).await?
     };
     for (fingerprint, registration) in found {
         let mut tx = pool.begin().await?;
@@ -1738,7 +1747,7 @@ mod db_tests {
             .execute(pool)
             .await
             .unwrap();
-        let idle = reconcile(pool).await.expect("prázdný seznam blokací");
+        let idle = reconcile(pool, None).await.expect("prázdný seznam blokací");
         assert_eq!(idle.identities, 0);
         sqlx::query("ALTER TABLE identities_mimo RENAME TO identities")
             .execute(pool)
@@ -1748,7 +1757,27 @@ mod db_tests {
         let identity = TestIdentity::new();
         insert_block(pool, &identity.fingerprint).await;
         let (account_id, device_uuid, address) = insert_registration(pool, &identity.key).await;
-        let reconciled = reconcile(pool).await.expect("dorovnání");
+        // Přírůstkový běh starou registraci nevidí, novou ano; stará zbude
+        // na úplný průchod.
+        sqlx::query(
+            "UPDATE identities SET registered_at = now() - interval '2 days'
+             WHERE account_id = $1",
+        )
+        .bind(&account_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        let recent = Some(Utc::now() - chrono::Duration::hours(1));
+        let skipped = reconcile(pool, recent).await.expect("přírůstkové dorovnání");
+        assert_eq!(skipped.identities, 0, "stará registrace je mimo okno");
+        let newcomer = TestIdentity::new();
+        insert_block(pool, &newcomer.fingerprint).await;
+        let (_, newcomer_device, _) = insert_registration(pool, &newcomer.key).await;
+        let caught = reconcile(pool, recent).await.expect("přírůstkové dorovnání");
+        assert_eq!(caught.identities, 1);
+        assert_eq!(caught.device_uuids, vec![newcomer_device]);
+
+        let reconciled = reconcile(pool, None).await.expect("dorovnání");
         assert_eq!(reconciled.identities, 1);
         assert_eq!(reconciled.device_uuids, vec![device_uuid.clone()]);
         let left = testkit::count(

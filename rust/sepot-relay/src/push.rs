@@ -1,11 +1,15 @@
 //! Push budíčky. TVRDÉ PRAVIDLO: přes push se posílá
-//! VŽDY jen prázdný „ťuk" `{"v":1}` — nikdy ciphertext, nikdy odesílatel.
+//! VŽDY jen „ťuk" `{"v":1,"k":…}` — nikdy ciphertext, nikdy odesílatel.
 //! Klient se po probuzení sám připojí na WS a vyzvedne frontu sealed-sender
 //! kanálem. Endpoint se nikde neloguje.
 //!
-//! Jediná výjimka je příchozí hovor (`ContentHint::Call`): budíček nese
-//! `"k":"call"`, aby telefon začal zvonit hned (CallKit / celoobrazovkové
-//! zvonění) místo tichého probuzení. Kdo volá, v něm dál není.
+//! Pole `k` říká jen druh budíčku ([`WakeKind`]): `msg` = čeká zpráva,
+//! kterou člověk uvidí, `sync` = jen provozní obálka (doručenka, potvrzení
+//! přečtení, reakce…). Zamčená appka nic nerozšifruje, takže bez téhle
+//! nápovědy hlásila „nové zprávy“ i na cizí doručenku. Příchozí hovor
+//! (`ContentHint::Call`) nese `"k":"call"`, aby telefon začal zvonit hned
+//! (CallKit / celoobrazovkové zvonění). Kdo píše nebo volá, v budíčku dál
+//! není.
 //!
 //! Podporované cesty:
 //!  - UnifiedPush (3) / WebPush (4): HTTP POST na endpoint URL distributora.
@@ -16,11 +20,15 @@
 //!
 //! SSRF: endpoint zadává klient, takže relay by jinak POSToval na libovolné
 //! URL. `endpoint_allowed` proto vynucuje https (http jen pro .onion) a
-//! odmítá cíle, které resolvují na interní/loopback/privátní adresy.
+//! odmítá adresy zapsané číslem; jména hlídá resolver klienta
+//! ([`PublicOnlyResolver`]), který odmítne cíl s interní, loopback nebo
+//! privátní adresou.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::Client;
 
 /// Platform kódy (musí sedět s proto RegisterPush.Platform).
@@ -31,9 +39,42 @@ pub const PLATFORM_UNIFIEDPUSH: i16 = 3;
 pub const PLATFORM_WEBPUSH: i16 = 4;
 pub const PLATFORM_MAX: i16 = 4;
 
-/// Konstantní budíček — žádná informace. Šifrovat (RFC 8291) netřeba,
-/// není co chránit.
-const WAKE_BODY: &str = "{\"v\":1}";
+/// Druh budíčku — jediná informace, kterou push nese.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WakeKind {
+    /// Čeká zpráva, kterou člověk uvidí → appka smí ukázat notifikaci.
+    Message,
+    /// Provozní obálka → appka se jen tiše připojí (nebo neudělá nic).
+    Sync,
+}
+
+impl WakeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WakeKind::Message => "msg",
+            WakeKind::Sync => "sync",
+        }
+    }
+
+    /// Tělo budíčku pro UnifiedPush/WebPush. Šifrovat (RFC 8291) netřeba,
+    /// nese jen druh.
+    fn body(self) -> &'static str {
+        match self {
+            WakeKind::Message => "{\"v\":1,\"k\":\"msg\"}",
+            WakeKind::Sync => "{\"v\":1,\"k\":\"sync\"}",
+        }
+    }
+}
+
+/// Token, který push služba natrvalo odmítla (appka odinstalovaná, token
+/// vyměněný). Relay ho má zapomenout: jinak na něj posílá dál, dokud účet
+/// nezmizí, a z opakovaných pokusů na mrtvé tokeny Apple i Google usuzují
+/// na špatného odesílatele.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeadToken {
+    Push,
+    Voip,
+}
 
 /// Push cíl zařízení včetně iOS VoIP tokenu (jen pro hovory).
 pub struct PushTarget {
@@ -51,93 +92,123 @@ pub async fn send_call_wake(
     target: &PushTarget,
     fcm: Option<&crate::fcm::FcmSender>,
     apns: Option<&crate::apns::ApnsSender>,
-) {
+) -> Option<DeadToken> {
     if let (Some(sender), Some(Ok(voip))) = (
         apns,
         target.voip_token.as_deref().map(std::str::from_utf8),
     ) {
-        sender.send_voip_call(client, voip).await;
-        return;
+        return sender
+            .send_voip_call(client, voip)
+            .await
+            .then_some(DeadToken::Voip);
     }
-    let Some(token) = target.token.as_deref() else {
-        return;
-    };
+    let token = target.token.as_deref()?;
     if target.platform == PLATFORM_FCM {
-        if let (Some(sender), Ok(device_token)) = (fcm, std::str::from_utf8(token)) {
-            sender.send_call_wake(client, device_token).await;
-        }
-        return;
+        let (Some(sender), Ok(device_token)) = (fcm, std::str::from_utf8(token)) else {
+            return None;
+        };
+        return sender
+            .send_call_wake(client, device_token)
+            .await
+            .then_some(DeadToken::Push);
     }
-    send_wake(client, target.platform, token, fcm, apns).await;
+    // Bez zvonění ať se o hovoru člověk dozví aspoň notifikací — zamčená
+    // appka by tichý budíček zahodila.
+    send_wake(client, target.platform, token, WakeKind::Message, fcm, apns).await
 }
 
 /// Budíček pro zprávu, kterou člověk uvidí (`ContentHint::Visible`).
 /// iPhone dostane hned viditelnou notifikaci s obecným lokalizovaným textem
 /// (tichý budíček iOS zdržuje podle baterie); obsah ani odesílatel v ní
-/// nejsou. Ostatní platformy dostanou běžný budíček.
+/// nejsou. Ostatní platformy dostanou budíček druhu [`WakeKind::Message`].
 pub async fn send_message_wake(
     client: &Client,
     platform: i16,
     token: &[u8],
     fcm: Option<&crate::fcm::FcmSender>,
     apns: Option<&crate::apns::ApnsSender>,
-) {
+) -> Option<DeadToken> {
     if platform == PLATFORM_APNS {
-        if let (Some(sender), Ok(device_token)) = (apns, std::str::from_utf8(token)) {
-            sender.send_message_alert(client, device_token).await;
-        }
-        return;
+        let (Some(sender), Ok(device_token)) = (apns, std::str::from_utf8(token)) else {
+            return None;
+        };
+        return sender
+            .send_message_alert(client, device_token)
+            .await
+            .then_some(DeadToken::Push);
     }
-    send_wake(client, platform, token, fcm, apns).await;
+    send_wake(client, platform, token, WakeKind::Message, fcm, apns).await
+}
+
+/// Resolver HTTP klienta pro budíčky: jméno, které vede na vnitřní adresu,
+/// nepřeloží vůbec.
+///
+/// Kontrola musí být přímo v resolveru spojení. Dřív se jméno přeložilo
+/// zvlášť kvůli kontrole a adresy se připínaly do nového klienta, který se
+/// stavěl pro každý budíček (načtení kořenových certifikátů, žádné sdílení
+/// spojení). Jediný klient s hlídaným resolverem dá totéž bez té ceny a bez
+/// okna mezi kontrolou a spojením (DNS rebinding).
+struct PublicOnlyResolver;
+
+/// Záměrně bez jména: endpoint je identifikátor uživatele a chyba se loguje.
+const INTERNAL_TARGET: &str = "cíl vede na vnitřní adresu";
+const NO_ADDRESS: &str = "cíl nemá žádnou adresu";
+
+impl Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            // Port doplní až spojení; resolver vrací jen adresy.
+            let resolved: Vec<SocketAddr> =
+                tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
+            if resolved.is_empty() {
+                return Err(NO_ADDRESS.into());
+            }
+            // Stačí jedna vnitřní adresa a neplatí žádná: jinak by si
+            // klient při výpadku té veřejné vybral vnitřní.
+            if resolved.iter().any(|addr| is_internal_ip(&addr.ip())) {
+                return Err(INTERNAL_TARGET.into());
+            }
+            Ok(Box::new(resolved.into_iter()) as Addrs)
+        })
+    }
 }
 
 /// HTTP klient pro budíčky: bez redirectů (anti-SSRF přes 3xx), krátký
-/// timeout, generický UA.
+/// timeout, generický UA, jména jen na veřejné adresy.
 pub fn build_client() -> Client {
     Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(5))
         .connect_timeout(Duration::from_secs(3))
         .user_agent("sepot-relay")
+        .dns_resolver(Arc::new(PublicOnlyResolver))
         .build()
         .expect("reqwest klient")
 }
 
 /// Pošle budíček. Best-effort: chyby se tiše polykají (offline zařízení,
-/// vypnutý distributor…). Nic o endpointu se neloguje.
+/// vypnutý distributor…). Nic o endpointu se neloguje. Vrací token, který
+/// push služba natrvalo odmítla.
 pub async fn send_wake(
     client: &Client,
     platform: i16,
     token: &[u8],
+    kind: WakeKind,
     fcm: Option<&crate::fcm::FcmSender>,
     apns: Option<&crate::apns::ApnsSender>,
-) {
+) -> Option<DeadToken> {
     match platform {
         PLATFORM_UNIFIEDPUSH | PLATFORM_WEBPUSH => {
-            let Ok(url) = std::str::from_utf8(token) else { return };
-            let Some(pinned) = endpoint_allowed(url).await else {
+            let url = std::str::from_utf8(token).ok()?;
+            if !endpoint_allowed(url) {
                 tracing::debug!("push endpoint odmítnut (scheme/SSRF guard)");
-                return;
-            };
-            // Adresy z guardu se připnou i pro vlastní POST — reqwest by
-            // jinak resolvoval znovu a DNS s TTL 0 by napodruhé vrátil
-            // vnitřní adresu (DNS rebinding).
-            match pinned {
-                Some((host, addrs)) => {
-                    let pinned_client = Client::builder()
-                        .redirect(reqwest::redirect::Policy::none())
-                        .timeout(Duration::from_secs(5))
-                        .connect_timeout(Duration::from_secs(3))
-                        .user_agent("sepot-relay")
-                        .resolve_to_addrs(&host, &addrs)
-                        .build();
-                    match pinned_client {
-                        Ok(c) => post_wake(&c, url).await,
-                        Err(_) => post_wake(client, url).await,
-                    }
-                }
-                None => post_wake(client, url).await,
+                return None;
             }
+            post_wake(client, url, kind).await;
+            // Odmítnutí distributora token nemaže: UnifiedPush nemá
+            // jednotný kód pro zaniklý endpoint a 404 vrací i server,
+            // který má jen výpadek.
+            None
         }
         PLATFORM_FCM => {
             // Opt-in fast mode — jen když je relay nakonfigurován
@@ -145,29 +216,35 @@ pub async fn send_wake(
             // (UnifiedPush) funguje vždy.
             let (Some(sender), Ok(device_token)) = (fcm, std::str::from_utf8(token)) else {
                 tracing::debug!("FCM budíček přeskočen (bez credentials)");
-                return;
+                return None;
             };
-            sender.send_wake(client, device_token).await;
+            sender
+                .send_wake(client, device_token, kind)
+                .await
+                .then_some(DeadToken::Push)
         }
         PLATFORM_APNS => {
             let (Some(sender), Ok(device_token)) = (apns, std::str::from_utf8(token)) else {
                 tracing::debug!("APNs budíček přeskočen (bez credentials)");
-                return;
+                return None;
             };
-            sender.send_wake(client, device_token).await;
+            sender
+                .send_wake(client, device_token)
+                .await
+                .then_some(DeadToken::Push)
         }
-        _ => {}
+        _ => None,
     }
 }
 
 /// Samotný POST budíčku (bez guardu — ten řeší volající). Oddělené kvůli
 /// testovatelnosti proti loopback mocku (guard by loopback jinak odmítl).
-async fn post_wake(client: &Client, url: &str) {
+async fn post_wake(client: &Client, url: &str, kind: WakeKind) {
     let resp = client
         .post(url)
         .header("content-type", "application/json")
         .header("ttl", "2419200") // WebPush TTL (28 dní), ntfy ignoruje
-        .body(WAKE_BODY)
+        .body(kind.body())
         .send()
         .await;
     // Výsledek se dřív zahazoval (`let _ =`), takže nešlo poznat, jestli
@@ -184,47 +261,30 @@ async fn post_wake(client: &Client, url: &str) {
     }
 }
 
-/// Povolit jen bezpečné cíle. https vždy; http jen pro .onion (samo šifruje).
-/// Odmítnout hostitele resolvující na interní adresy (blind-SSRF ochrana).
-///
-/// Vrací `None` = odmítnuto; `Some(None)` = povoleno bez DNS (.onion);
-/// `Some(Some((host, adresy)))` = povoleno, a tyhle adresy se mají pro POST
-/// připnout (ochrana proti DNS rebindingu mezi kontrolou a požadavkem).
-async fn endpoint_allowed(url: &str) -> Option<Option<(String, Vec<std::net::SocketAddr>)>> {
-    let parsed = reqwest::Url::parse(url).ok()?;
-    let host = parsed.host_str()?;
-    let is_onion = host.ends_with(".onion");
-
-    match parsed.scheme() {
-        "https" => {}
+/// Povolit jen bezpečné cíle: https vždy, http jen pro .onion (samo
+/// šifruje), adresa zapsaná číslem jen veřejná. Jména tu neprojdou
+/// kontrolou adres — tu dělá resolver klienta až při spojení.
+fn endpoint_allowed(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    // Parser URL srovná do běžného tvaru i zápisy jako `0x7f.1` nebo
+    // `2130706433`; IPv6 vrací v hranatých závorkách.
+    let literal = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<IpAddr>();
+    match (parsed.scheme(), literal) {
+        ("https", Ok(ip)) => !is_internal_ip(&ip),
+        ("https", Err(_)) => true,
         // .onion šifruje sám; relay stejně nemá tor egress, request tiše
         // selže — ale schéma povolíme, ať je to připravené.
-        "http" if is_onion => return Some(None),
-        _ => return None,
+        ("http", Err(_)) => host.ends_with(".onion"),
+        _ => false,
     }
-    // .onion přes https (neobvyklé) — neresolvuje se přes DNS, pustit.
-    if is_onion {
-        return Some(None);
-    }
-
-    // Vlastnit host+port, ať `parsed` nepřežívá await na lookup_host.
-    let host = host.to_string();
-    let port = parsed.port_or_known_default().unwrap_or(443);
-    drop(parsed);
-
-    let resolved = tokio::net::lookup_host((host.as_str(), port)).await;
-    let addrs = resolved.ok()?; // host nejde resolvovat → nepouštět
-    let mut pinned = Vec::new();
-    for a in addrs {
-        if is_internal_ip(&a.ip()) {
-            return None; // aspoň jedna interní adresa → celé odmítnout
-        }
-        pinned.push(a);
-    }
-    if pinned.is_empty() {
-        return None;
-    }
-    Some(Some((host, pinned)))
 }
 
 fn is_internal_v4(v4: &std::net::Ipv4Addr) -> bool {
@@ -234,8 +294,17 @@ fn is_internal_v4(v4: &std::net::Ipv4Addr) -> bool {
         || v4.is_unspecified()
         || v4.is_broadcast()
         || v4.is_documentation()
+        || v4.is_multicast()
         // 100.64.0.0/10 CGNAT (Tailscale apod.)
         || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40)
+        // 0.0.0.0/8 „tahle síť“: Linux ji směruje na vlastní stroj
+        || v4.octets()[0] == 0
+        // 192.0.0.0/24 přidělení pro protokoly IETF
+        || v4.octets()[..3] == [192, 0, 0]
+        // 198.18.0.0/15 měření sítí, v praxi vnitřní testovací segmenty
+        || (v4.octets()[0] == 198 && (v4.octets()[1] & 0xfe) == 18)
+        // 240.0.0.0/4 rezervováno; některé sítě ho používají uvnitř
+        || v4.octets()[0] >= 240
 }
 
 fn is_internal_ip(ip: &IpAddr) -> bool {
@@ -245,6 +314,8 @@ fn is_internal_ip(ip: &IpAddr) -> bool {
             let o = v6.octets();
             v6.is_loopback()
                 || v6.is_unspecified()
+                || v6.is_multicast()
+                || (o[..4] == [0x20, 0x01, 0x0d, 0xb8]) // 2001:db8::/32 dokumentace
                 || (o[0] & 0xfe) == 0xfc // fc00::/7 ULA
                 || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80) // fe80::/10 link-local
                 || (o[0] == 0xfe && (o[1] & 0xc0) == 0xc0) // fec0::/10 site-local
@@ -302,23 +373,93 @@ mod tests {
         assert!(!is_internal_ip(&verejna_nat64));
     }
 
-    #[tokio::test]
-    async fn schema_a_ssrf_guard() {
+    #[test]
+    fn rezervovane_rozsahy_jsou_interni() {
+        for ip in [
+            "0.1.2.3",
+            "192.0.0.8",
+            "198.18.0.1",
+            "198.19.255.255",
+            "224.0.0.1",
+            "239.255.255.250",
+            "240.0.0.1",
+            "255.255.255.255",
+            "ff02::1",
+            "2001:db8::1",
+        ] {
+            assert!(is_internal_ip(&ip.parse().unwrap()), "{ip} mělo být interní");
+        }
+        for ip in ["198.17.255.255", "198.20.0.1", "192.0.1.1", "223.255.255.255"] {
+            assert!(!is_internal_ip(&ip.parse().unwrap()), "{ip} nemělo být interní");
+        }
+    }
+
+    #[test]
+    fn schema_a_ssrf_guard() {
         // http (ne-onion) se odmítne
-        assert!(endpoint_allowed("http://ntfy.sh/abc").await.is_none());
-        // loopback se odmítne i přes https
-        assert!(endpoint_allowed("https://127.0.0.1/abc").await.is_none());
-        assert!(endpoint_allowed("https://localhost/abc").await.is_none());
-        // interní IP se odmítne
-        assert!(endpoint_allowed("https://10.0.0.5:8000/x").await.is_none());
-        // http na .onion se pustí (schéma OK), bez DNS → nic k připnutí
-        assert_eq!(
-            endpoint_allowed("http://cipjsctoeyf4fcrntvdvt22o2ansgr73qvthmewo246vuntd7cqmykyd.onion/x").await,
-            Some(None)
-        );
+        assert!(!endpoint_allowed("http://ntfy.sh/abc"));
+        assert!(endpoint_allowed("https://ntfy.sh/abc"));
+        // adresa zapsaná číslem: loopback a interní se odmítne i přes https
+        for refused in [
+            "https://127.0.0.1/abc",
+            "https://10.0.0.5:8000/x",
+            "https://0x7f.1/x",
+            "https://2130706433/x",
+            "https://0.0.0.0/x",
+            "https://[::1]/x",
+            "https://[::ffff:10.0.0.1]/x",
+            "http://1.1.1.1/x",
+        ] {
+            assert!(!endpoint_allowed(refused), "{refused}");
+        }
+        assert!(endpoint_allowed("https://1.1.1.1/x"));
+        // http na .onion se pustí (schéma OK)
+        assert!(endpoint_allowed(
+            "http://cipjsctoeyf4fcrntvdvt22o2ansgr73qvthmewo246vuntd7cqmykyd.onion/x"
+        ));
         // nesmysl se odmítne
-        assert!(endpoint_allowed("není url").await.is_none());
-        assert!(endpoint_allowed("ftp://ntfy.sh/x").await.is_none());
+        assert!(!endpoint_allowed("není url"));
+        assert!(!endpoint_allowed("ftp://ntfy.sh/x"));
+    }
+
+    /// Jméno vedoucí na loopback resolver klienta nepřeloží; chyba nenese
+    /// jméno (endpoint je identifikátor uživatele).
+    #[tokio::test]
+    async fn resolver_odmitne_jmeno_s_vnitrni_adresou() {
+        let name: Name = "localhost".parse().expect("jméno");
+        let error = PublicOnlyResolver
+            .resolve(name)
+            .await
+            .err()
+            .expect("localhost je vnitřní");
+        assert_eq!(error.to_string(), INTERNAL_TARGET);
+    }
+
+    /// Klient pro budíčky se na jméno s vnitřní adresou vůbec nepřipojí.
+    #[tokio::test]
+    async fn klient_se_na_vnitrni_jmeno_nepripoji() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = build_client();
+        let sent = client
+            .post(format!("http://localhost:{port}/up"))
+            .send()
+            .await;
+        assert!(sent.is_err(), "požadavek na vnitřní jméno prošel");
+        let accepted =
+            tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+        assert!(accepted.is_err(), "spojení na vnitřní adresu vzniklo");
+    }
+
+    #[test]
+    fn telo_budicku_nese_jen_verzi_a_druh() {
+        for kind in [WakeKind::Message, WakeKind::Sync] {
+            let v: serde_json::Value = serde_json::from_str(kind.body()).unwrap();
+            let obj = v.as_object().unwrap();
+            assert_eq!(obj.len(), 2, "jen v a k");
+            assert_eq!(obj["v"], 1);
+            assert_eq!(obj["k"], kind.as_str());
+        }
     }
 
     #[test]
@@ -330,7 +471,7 @@ mod tests {
         assert!(!is_internal_v4(&Ipv4Addr::new(100, 128, 0, 1)));
     }
 
-    /// post_wake musí poslat POST s tělem přesně `{"v":1}` — žádný obsah.
+    /// post_wake musí poslat POST jen s verzí a druhem budíčku — žádný obsah.
     /// Mock server na loopbacku (guard se tu záměrně obchází — testuje jen
     /// tvar POSTu, guard má vlastní testy).
     #[tokio::test]
@@ -352,11 +493,14 @@ mod tests {
         });
 
         let client = build_client();
-        post_wake(&client, &format!("http://{addr}/up?token=abc")).await;
+        post_wake(&client, &format!("http://{addr}/up?token=abc"), WakeKind::Sync).await;
 
         let req = server.await.unwrap();
         assert!(req.starts_with("POST /up?token=abc "), "čekal POST, dostal: {req}");
-        assert!(req.contains("{\"v\":1}"), "tělo není prázdný ťuk: {req}");
+        assert!(
+            req.ends_with("\r\n\r\n{\"v\":1,\"k\":\"sync\"}"),
+            "tělo není holý ťuk: {req}"
+        );
         // budíček nesmí nést nic dalšího
         assert!(!req.to_lowercase().contains("payload"));
     }

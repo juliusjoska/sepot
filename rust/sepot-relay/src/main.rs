@@ -14,8 +14,10 @@ mod cleanup;
 mod disk;
 mod fcm;
 mod fingerprint;
+mod gauge;
 mod limits;
 mod net;
+mod outbox;
 mod pow;
 mod push;
 mod quota;
@@ -116,10 +118,10 @@ async fn main() -> anyhow::Result<()> {
     // Registrace: bucket per IP volí handler podle proof-of-work (rest.rs),
     // proto limiter jako Extension, ne middleware.
     let rl_register = RegisterLimits::new(&limits, trusted.clone());
-    let rl_challenge = RateLimit::new(limits.pow_challenge, None, trusted.clone());
-    let rl_general = RateLimit::new(limits.general, None, trusted.clone());
-    let rl_attachments = RateLimit::new(limits.attachments, None, trusted.clone());
-    let rl_ws = RateLimit::new(limits.ws_upgrade, None, trusted.clone());
+    let rl_challenge = RateLimit::new(limits.pow_challenge, trusted.clone());
+    let rl_general = RateLimit::new(limits.general, trusted.clone());
+    let rl_attachments = RateLimit::new(limits.attachments, trusted.clone());
+    let rl_ws = RateLimit::new(limits.ws_upgrade, trusted.clone());
 
     // Úklid značek budíčků a OTP oken (jen paměť)
     {
@@ -129,6 +131,21 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tick.tick().await;
                 state.prune_marks();
+            }
+        });
+    }
+
+    // Bajty celé offline fronty pro globální strop (první měření hned).
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(state::QUEUE_TOTAL_MEASURE_EVERY);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                if let Err(e) = state.measure_queue_total().await {
+                    tracing::warn!("měření fronty: {e}");
+                }
             }
         });
     }

@@ -17,7 +17,7 @@ use crate::blocking::{
     self, BlockError, BlockOptions, BlockReport, HoldState, Outcome, RegistrationInfo,
 };
 use crate::cleanup::{self, INACTIVE_REGISTRATION_DAYS};
-use crate::fingerprint::{parse_admin_input, AdminInput, Fingerprint};
+use crate::fingerprint::{parse_admin_input, AdminInput, Fingerprint, InputError};
 use crate::limits::InvalidSwitch;
 
 /// Hotovo, včetně běhu nanečisto.
@@ -39,6 +39,9 @@ const NO_INPUT: &str =
     "Na stdin nic nepřišlo. Pošli plný otisk, odkaz s pozvánkou nebo identity klíč.";
 const BAD_INPUT: &str =
     "Vstup není plný otisk, odkaz s pozvánkou, identity klíč (33 B, base64) ani zkratka SEP.";
+const NON_CANONICAL_KEY: &str = "Identity klíč není v kanonickém zápisu. Takový klíč relay \
+     při registraci odmítá, otisk z něj nepatří žádné identitě a příkaz by nic neudělal. \
+     Vezmi klíč nebo pozvánku přímo z aplikace, nebo pošli plný otisk.";
 const POSITIONAL: &str = "Otisk, odkaz ani klíč nepatří do argumentů (vidí je audit i historie \
      shellu). Pošli je na stdin.";
 const SCHEMA_MISSING: &str = "Databáze nemá schéma 0005, nic nedělám.";
@@ -286,12 +289,13 @@ fn parse_command(args: &[String]) -> Result<Command, Reply> {
 /// oběť.
 fn target(command: Command, input: &str) -> Result<AdminInput, Reply> {
     match parse_admin_input(input) {
-        Some(AdminInput::Short(_)) if command != Command::Find => {
+        Ok(AdminInput::Short(_)) if command != Command::Find => {
             Err(Reply::usage(SHORT_NOT_ENOUGH))
         }
-        Some(parsed) => Ok(parsed),
-        None if input.trim().is_empty() => Err(Reply::usage(NO_INPUT)),
-        None => Err(Reply::usage(BAD_INPUT)),
+        Ok(parsed) => Ok(parsed),
+        Err(InputError::NonCanonicalKey) => Err(Reply::usage(NON_CANONICAL_KEY)),
+        Err(InputError::Unrecognized) if input.trim().is_empty() => Err(Reply::usage(NO_INPUT)),
+        Err(InputError::Unrecognized) => Err(Reply::usage(BAD_INPUT)),
     }
 }
 
@@ -1057,12 +1061,19 @@ mod tests {
             Some(AdminInput::Short(short.into()))
         );
 
-        let mut key = vec![0x05];
-        key.extend(0u8..32);
+        let key = libsignal_protocol::KeyPair::generate(&mut rand::rng())
+            .public_key
+            .serialize()
+            .to_vec();
         assert!(matches!(
             target(block, &BASE64_STANDARD.encode(&key)),
             Ok(AdminInput::Full(_))
         ));
+        let mut alias = key.clone();
+        alias[32] |= 0x80;
+        let refused = target(block, &BASE64_STANDARD.encode(&alias)).expect_err("alias klíče");
+        assert_eq!(refused.code, EXIT_USAGE);
+        assert_eq!(refused.text.trim_end(), NON_CANONICAL_KEY);
         let mut without_type = key.clone();
         without_type[0] = 0x06;
         let link_without_ik = format!(

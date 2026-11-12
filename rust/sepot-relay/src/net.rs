@@ -87,6 +87,11 @@ impl TrustedProxies {
     /// → X-Real-Ip drží konzistenci s governor extraktorem. Bere se PRVNÍ
     /// (nejlevější) záznam XFF = původní klient — platí jen díky tomu, že
     /// traefik pro netrusted klienty příchozí XFF přepisuje (nedopisuje).
+    /// Klíč klienta pro limity na adresu ([`limit_key`] nad `client_ip`).
+    pub fn client_key(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
+        limit_key(self.client_ip(peer, headers))
+    }
+
     pub fn client_ip(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
         if !self.trusts(peer) {
             return peer;
@@ -101,6 +106,26 @@ impl TrustedProxies {
         from_header("x-forwarded-for")
             .or_else(|| from_header("x-real-ip"))
             .unwrap_or(peer)
+    }
+}
+
+/// Prefix, pod kterým se IPv6 klient počítá jako jeden: /64 je nejmenší
+/// síť, jakou poskytovatel zákazníkovi přiděluje.
+const V6_CLIENT_PREFIX_BITS: u32 = 64;
+
+/// Adresa, na kterou se vážou limity. IPv4 celá; IPv6 jen prefix sítě —
+/// jeden zákazník má v /64 víc adres, než kolik je všech IPv4, a s limitem
+/// na celou adresu by měl pro každý požadavek čerstvý bucket.
+pub fn limit_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let network = u128::MAX << (u128::BITS - V6_CLIENT_PREFIX_BITS);
+                IpAddr::V6((u128::from(v6) & network).into())
+            }
+        },
     }
 }
 
@@ -194,5 +219,22 @@ mod tests {
         let tor = ip("172.20.1.3");
         assert!(tp.is_tor(tor));
         assert_eq!(tp.client_ip(tor, &headers(&[("x-forwarded-for", "1.2.3.4")])), tor);
+    }
+
+    #[test]
+    fn klic_limitu_slouci_ipv6_sit() {
+        assert_eq!(limit_key(ip("203.0.113.9")), ip("203.0.113.9"));
+        assert_eq!(
+            limit_key(ip("2001:db8:1:2:aaaa:bbbb:cccc:dddd")),
+            limit_key(ip("2001:db8:1:2::1")),
+            "stejná /64"
+        );
+        assert_eq!(limit_key(ip("2001:db8:1:2::1")), ip("2001:db8:1:2::"));
+        assert_ne!(
+            limit_key(ip("2001:db8:1:2::1")),
+            limit_key(ip("2001:db8:1:3::1")),
+            "sousední /64"
+        );
+        assert_eq!(limit_key(ip("::ffff:203.0.113.9")), ip("203.0.113.9"));
     }
 }

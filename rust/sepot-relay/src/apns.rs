@@ -44,6 +44,75 @@ fn wake_expiration(now: DateTime<Utc>) -> i64 {
 /// zmeškaná.
 pub const CALL_RING_SECONDS: i64 = 45;
 
+/// Meze délky device tokenu v hex znacích. Dnes má 64 znaků, Apple ale
+/// délku nezaručuje a radí ji nepředpokládat; horní mez nechává rezervu.
+const DEVICE_TOKEN_MIN_HEX: usize = 64;
+const DEVICE_TOKEN_MAX_HEX: usize = 200;
+
+/// Token jde do cesty URL (`/3/device/<token>`), a posílá ho klient. Bez
+/// kontroly by `../` nebo `?` v tokenu poslalo požadavek s přihlášením
+/// relaye na jinou cestu APNs.
+pub fn valid_device_token(token: &str) -> bool {
+    (DEVICE_TOKEN_MIN_HEX..=DEVICE_TOKEN_MAX_HEX).contains(&token.len())
+        && token.len() % 2 == 0
+        && token.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Odmítl APNs token natrvalo? 410 = appka odinstalovaná nebo token
+/// vyměněný; 400 `BadDeviceToken` = token nepatří tomuhle prostředí APNs.
+/// Jiná odmítnutí (přetížení, prošlé přihlášení relaye, špatný topic)
+/// o tokenu nic neříkají.
+fn is_dead_token(status: u16, body: &str) -> bool {
+    const GONE: u16 = 410;
+    const BAD_REQUEST: u16 = 400;
+    match status {
+        GONE => true,
+        BAD_REQUEST => serde_json::from_str::<serde_json::Value>(body)
+            .is_ok_and(|reply| reply["reason"] == "BadDeviceToken"),
+        _ => false,
+    }
+}
+
+/// Texty do logu pro jeden druh pushe.
+struct LogLabels {
+    rejected: &'static str,
+    failed: &'static str,
+}
+
+const WAKE_LABELS: LogLabels = LogLabels {
+    rejected: "APNs budíček odmítnut",
+    failed: "APNs budíček selhal",
+};
+const ALERT_LABELS: LogLabels = LogLabels {
+    rejected: "APNs notifikace odmítnuta",
+    failed: "APNs notifikace selhala",
+};
+const VOIP_LABELS: LogLabels = LogLabels {
+    rejected: "APNs VoIP push odmítnut",
+    failed: "APNs VoIP push selhal",
+};
+
+/// Vyhodnotí odpověď APNs; `true` = token je natrvalo mrtvý. Loguje jen
+/// stav, nikdy token.
+async fn token_is_dead(resp: reqwest::Result<reqwest::Response>, labels: &LogLabels) -> bool {
+    match resp {
+        Ok(r) if r.status().is_success() => false,
+        Ok(r) => {
+            let status = r.status();
+            let dead = is_dead_token(status.as_u16(), &r.text().await.unwrap_or_default());
+            // warn, ne debug — viz shodný komentář ve fcm.rs: na RUST_LOG=info
+            // bylo selhání pushe neviditelné.
+            tracing::warn!(status = %status, dead_token = dead, "{}", labels.rejected);
+            dead
+        }
+        // without_url: URL nese device token.
+        Err(e) => {
+            tracing::warn!("{}: {}", labels.failed, e.without_url());
+            false
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct Claims<'a> {
     iss: &'a str,
@@ -132,9 +201,15 @@ impl ApnsSender {
     /// doručení umí jen viditelná notifikace (`alert` + `mutable-content`),
     /// kterou appka v Notification Service Extension nahradí — to je změna
     /// appky, ne jen relaye.
-    pub async fn send_wake(&self, client: &reqwest::Client, device_token: &str) {
+    ///
+    /// Vrací `true`, když APNs token natrvalo odmítl (stejně i ostatní
+    /// odesílací funkce).
+    pub async fn send_wake(&self, client: &reqwest::Client, device_token: &str) -> bool {
+        if !valid_device_token(device_token) {
+            return false;
+        }
         let Some(jwt) = self.auth_token().await else {
-            return;
+            return false;
         };
         let url = format!("{}/3/device/{}", self.host, device_token);
         let resp = client
@@ -149,16 +224,7 @@ impl ApnsSender {
             .body(r#"{"aps":{"content-available":1}}"#)
             .send()
             .await;
-        // warn, ne debug — viz shodný komentář ve fcm.rs: na RUST_LOG=info
-        // bylo selhání pushe neviditelné.
-        match resp {
-            Ok(r) if !r.status().is_success() => {
-                tracing::warn!(status = %r.status(), "APNs budíček odmítnut");
-            }
-            // without_url: URL nese device token.
-            Err(e) => tracing::warn!("APNs budíček selhal: {}", e.without_url()),
-            _ => {}
-        }
+        token_is_dead(resp, &WAKE_LABELS).await
     }
 
     /// Viditelná notifikace o nové zprávě. Text si iPhone vezme z vlastní
@@ -166,9 +232,12 @@ impl ApnsSender {
     /// `mutable-content` nechává prostor rozšíření appky (NSE), které text
     /// nahradí dešifrovaným odesílatelem a obsahem. Víc notifikací APNs
     /// sloučí do jedné (collapse-id), `k` appce řekne, že jde o tenhle druh.
-    pub async fn send_message_alert(&self, client: &reqwest::Client, device_token: &str) {
+    pub async fn send_message_alert(&self, client: &reqwest::Client, device_token: &str) -> bool {
+        if !valid_device_token(device_token) {
+            return false;
+        }
         let Some(jwt) = self.auth_token().await else {
-            return;
+            return false;
         };
         let url = format!("{}/3/device/{}", self.host, device_token);
         let resp = client
@@ -182,22 +251,19 @@ impl ApnsSender {
             .body(MESSAGE_ALERT_BODY)
             .send()
             .await;
-        match resp {
-            Ok(r) if !r.status().is_success() => {
-                tracing::warn!(status = %r.status(), "APNs notifikace odmítnuta");
-            }
-            Err(e) => tracing::warn!("APNs notifikace selhala: {}", e.without_url()),
-            _ => {}
-        }
+        token_is_dead(resp, &ALERT_LABELS).await
     }
 
     /// VoIP push (PushKit) pro příchozí hovor. iOS po něm MUSÍ hned ukázat
     /// hovor v CallKit — to zařídí appka. Topic je `<bundle>.voip`, priorita
     /// 10 (u typu voip povolená) a krátká expirace: zvonit po minutě nemá
     /// smysl.
-    pub async fn send_voip_call(&self, client: &reqwest::Client, voip_token: &str) {
+    pub async fn send_voip_call(&self, client: &reqwest::Client, voip_token: &str) -> bool {
+        if !valid_device_token(voip_token) {
+            return false;
+        }
         let Some(jwt) = self.auth_token().await else {
-            return;
+            return false;
         };
         let url = format!("{}/3/device/{}", self.host, voip_token);
         let expiration = Utc::now().timestamp() + CALL_RING_SECONDS;
@@ -211,13 +277,7 @@ impl ApnsSender {
             .body(r#"{"aps":{},"k":"call"}"#)
             .send()
             .await;
-        match resp {
-            Ok(r) if !r.status().is_success() => {
-                tracing::warn!(status = %r.status(), "APNs VoIP push odmítnut");
-            }
-            Err(e) => tracing::warn!("APNs VoIP push selhal: {}", e.without_url()),
-            _ => {}
-        }
+        token_is_dead(resp, &VOIP_LABELS).await
     }
 }
 
@@ -247,6 +307,45 @@ mod tests {
         assert_eq!(aps["mutable-content"], 1);
         assert_eq!(v.as_object().unwrap().len(), 2, "jen aps a k");
         assert_eq!(aps["alert"].as_object().unwrap().len(), 1, "jen loc-key");
+    }
+
+    /// Token jde do cesty URL: projít smí jen hex.
+    #[test]
+    fn device_token_musi_byt_hex() {
+        let token = "a1".repeat(32);
+        assert!(valid_device_token(&token));
+        assert!(valid_device_token(&token.to_uppercase()));
+        assert!(valid_device_token(&"0f".repeat(50)), "delší token Apple nevylučuje");
+        for bad in [
+            String::new(),
+            "a1".repeat(31),
+            format!("{}a", "a1".repeat(32)),
+            "a1".repeat(101),
+            format!("{}/../x", "a1".repeat(32)),
+            format!("../../{}", "a1".repeat(29)),
+            format!("{}?x=1", "a1".repeat(30)),
+            format!("{}%2f", "a1".repeat(30)),
+            "zz".repeat(32),
+        ] {
+            assert!(!valid_device_token(&bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn mrtvy_token_pozna_jen_z_jasne_odpovedi() {
+        assert!(is_dead_token(410, r#"{"reason":"Unregistered","timestamp":1}"#));
+        assert!(is_dead_token(410, ""));
+        assert!(is_dead_token(400, r#"{"reason":"BadDeviceToken"}"#));
+        for (status, body) in [
+            (400, r#"{"reason":"BadTopic"}"#),
+            (400, r#"{"reason":"DeviceTokenNotForTopic"}"#),
+            (400, "není JSON"),
+            (403, r#"{"reason":"ExpiredProviderToken"}"#),
+            (429, r#"{"reason":"TooManyRequests"}"#),
+            (503, r#"{"reason":"ServiceUnavailable"}"#),
+        ] {
+            assert!(!is_dead_token(status, body), "{status} {body}");
+        }
     }
 
     #[tokio::test]

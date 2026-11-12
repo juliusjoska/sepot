@@ -10,6 +10,7 @@ use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::Engine;
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
+use libsignal_protocol::PublicKey;
 
 /// Crockford base32: bez I, L, O a U, aby se otisk dal přečíst nahlas.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -134,9 +135,19 @@ impl std::fmt::Debug for AdminInput {
     }
 }
 
+/// Proč vstup provozovatele nejde použít.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InputError {
+    Unrecognized,
+    /// Klíč je platný bod křivky, ale v zápisu, který relay při registraci
+    /// odmítá. Otisk se počítá z bajtů, takže blokace podle takového klíče
+    /// by nezasáhla nikoho a provozovatel by přitom viděl úspěch.
+    NonCanonicalKey,
+}
+
 /// Přijme plný otisk, text se sdíleným odkazem `sepot://add/…`, samotný
 /// identity klíč v base64 nebo zkratku `SEP-…`.
-pub fn parse_admin_input(text: &str) -> Option<AdminInput> {
+pub fn parse_admin_input(text: &str) -> Result<AdminInput, InputError> {
     let text = text.trim();
     // Lidé vkládají celou pozvánku i s průvodním textem, ne jen odkaz;
     // znaky payloadu jako regulární výraz v aplikaci.
@@ -149,10 +160,10 @@ pub fn parse_admin_input(text: &str) -> Option<AdminInput> {
             .map(|key| AdminInput::Full(Fingerprint::of_identity_key(&key)));
     }
     if let Some(short) = parse_short(text) {
-        return Some(AdminInput::Short(short));
+        return Ok(AdminInput::Short(short));
     }
     if let Some(fingerprint) = Fingerprint::parse_full(text) {
-        return Some(AdminInput::Full(fingerprint));
+        return Ok(AdminInput::Full(fingerprint));
     }
     identity_key_from_base64(text).map(|key| AdminInput::Full(Fingerprint::of_identity_key(&key)))
 }
@@ -173,15 +184,29 @@ fn parse_short(text: &str) -> Option<String> {
 }
 
 /// Payload odkazu: base64url JSON s polem `ik` (identity klíč v base64).
-fn identity_key_from_link(payload: &str) -> Option<Vec<u8>> {
-    let json = URL_SAFE_LENIENT.decode(payload).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&json).ok()?;
-    identity_key_from_base64(value.get("ik")?.as_str()?)
+fn identity_key_from_link(payload: &str) -> Result<Vec<u8>, InputError> {
+    let key = URL_SAFE_LENIENT
+        .decode(payload)
+        .ok()
+        .and_then(|json| serde_json::from_slice::<serde_json::Value>(&json).ok())
+        .and_then(|value| Some(value.get("ik")?.as_str()?.to_owned()))
+        .ok_or(InputError::Unrecognized)?;
+    identity_key_from_base64(&key)
 }
 
-fn identity_key_from_base64(text: &str) -> Option<Vec<u8>> {
-    let key = STANDARD_LENIENT.decode(text.trim()).ok()?;
-    (key.len() == IDENTITY_KEY_LEN && key[0] == DJB_KEY_TYPE).then_some(key)
+fn identity_key_from_base64(text: &str) -> Result<Vec<u8>, InputError> {
+    let key = STANDARD_LENIENT
+        .decode(text.trim())
+        .ok()
+        .filter(|key| key.len() == IDENTITY_KEY_LEN && key[0] == DJB_KEY_TYPE)
+        .ok_or(InputError::Unrecognized)?;
+    // Stejná podmínka jako u registrace (rest.rs): jeden soukromý klíč má
+    // víc zápisů veřejného a každý zápis jiný otisk.
+    match PublicKey::deserialize(&key) {
+        Ok(parsed) if parsed.is_canonical() => Ok(key),
+        Ok(_) => Err(InputError::NonCanonicalKey),
+        Err(_) => Err(InputError::Unrecognized),
+    }
 }
 
 #[cfg(test)]
@@ -258,10 +283,19 @@ mod tests {
         }
     }
 
+    /// Klíč, jaký vyrobí aplikace. Vektor `kat_key` tu neposlouží: jeho
+    /// bajty nejsou bod, který by prošel registrací.
+    fn generated_key() -> Vec<u8> {
+        libsignal_protocol::KeyPair::generate(&mut rand::rng())
+            .public_key
+            .serialize()
+            .to_vec()
+    }
+
     #[test]
     fn vstup_z_odkazu_a_klice() {
-        let key = kat_key();
-        let expected = Some(AdminInput::Full(Fingerprint::of_identity_key(&key)));
+        let key = generated_key();
+        let expected = Ok(AdminInput::Full(Fingerprint::of_identity_key(&key)));
 
         // Pozvánka jako z aplikace: base64url JSON s výplní a průvodní text.
         let json = serde_json::json!({
@@ -278,10 +312,13 @@ mod tests {
         assert_eq!(parse_admin_input(&unpadded), expected);
 
         assert_eq!(parse_admin_input(&BASE64_STANDARD.encode(&key)), expected);
-        assert_eq!(parse_admin_input(KAT), expected);
+        assert_eq!(
+            parse_admin_input(KAT),
+            Ok(AdminInput::Full(Fingerprint::of_identity_key(&kat_key())))
+        );
         assert_eq!(
             parse_admin_input(" sep-2tfmwyyw4m\n"),
-            Some(AdminInput::Short("SEP-2TFMWYYW4M".into()))
+            Ok(AdminInput::Short("SEP-2TFMWYYW4M".into()))
         );
 
         let mut without_type = key.clone();
@@ -297,7 +334,33 @@ mod tests {
             "SEP-2TFMWYYW4".into(),
             "nesmysl".into(),
         ] {
-            assert_eq!(parse_admin_input(&bad), None, "{bad}");
+            assert_eq!(parse_admin_input(&bad), Err(InputError::Unrecognized), "{bad}");
         }
+    }
+
+    /// Alias téhož klíče s nastaveným horním bitem má jiný otisk a registrací
+    /// neprojde. Blokace podle něj by nezasáhla nikoho; vstup se proto
+    /// odmítne, ať provozovatel nevidí úspěch, který nic neudělal.
+    #[test]
+    fn vstup_odmitne_nekanonicky_zapis_klice() {
+        let key = generated_key();
+        let mut alias = key.clone();
+        alias[IDENTITY_KEY_LEN - 1] |= 0x80;
+        assert_ne!(
+            Fingerprint::of_identity_key(&alias),
+            Fingerprint::of_identity_key(&key)
+        );
+
+        let encoded = BASE64_STANDARD.encode(&alias);
+        assert_eq!(parse_admin_input(&encoded), Err(InputError::NonCanonicalKey));
+        let payload = BASE64_URL_SAFE.encode(serde_json::json!({ "v": 2, "ik": encoded }).to_string());
+        assert_eq!(
+            parse_admin_input(&format!("sepot://add/{payload}")),
+            Err(InputError::NonCanonicalKey)
+        );
+        // Plný otisk aliasu projde: z otisku zápis klíče poznat nejde a
+        // identitu registrovanou před zavedením kontroly musí jít zablokovat.
+        let fingerprint = Fingerprint::of_identity_key(&alias).to_crockford();
+        assert!(matches!(parse_admin_input(&fingerprint), Ok(AdminInput::Full(_))));
     }
 }

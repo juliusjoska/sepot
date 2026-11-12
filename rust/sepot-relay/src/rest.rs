@@ -4,14 +4,17 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{ConnectInfo, Path, State};
+use axum::body::{Body, Bytes};
+use axum::extract::{ConnectInfo, FromRequest, Path, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use base64::prelude::*;
 use libsignal_protocol::PublicKey;
 use rand::RngCore;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::blocking::{self, AddressError, Retire};
 use crate::fingerprint::Fingerprint;
@@ -35,6 +38,8 @@ pub(crate) struct ApiError {
     pub status: StatusCode,
     pub message: String,
     pub tag: Option<&'static str>,
+    /// Za jak dlouho má klient zkusit znovu (hlavička Retry-After).
+    pub retry_after: Option<std::time::Duration>,
 }
 
 impl ApiError {
@@ -43,6 +48,16 @@ impl ApiError {
             status,
             message: message.into(),
             tag: Some(tag),
+            retry_after: None,
+        }
+    }
+
+    fn too_many(wait: std::time::Duration) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: crate::limits::TEXT_TOO_MANY.into(),
+            tag: None,
+            retry_after: Some(wait),
         }
     }
 }
@@ -53,6 +68,7 @@ impl From<(StatusCode, String)> for ApiError {
             status,
             message,
             tag: None,
+            retry_after: None,
         }
     }
 }
@@ -64,6 +80,11 @@ impl IntoResponse for ApiError {
             response
                 .headers_mut()
                 .insert(ERROR_TAG_HEADER, HeaderValue::from_static(tag));
+        }
+        if let Some(wait) = self.retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, crate::limits::retry_after(wait));
         }
         response
     }
@@ -108,21 +129,45 @@ pub async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
+/// Jak dlouho platí výsledek sondy DB. `/v1/ready` je bez přihlášení a bez
+/// limitu (volají ho sondy z vnitřní sítě); kdyby každý dotaz stál spojení
+/// z poolu, šlo by jím pool vyčerpat. Dvě sekundy sondám monitoringu nevadí.
+const READY_PROBE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+const READY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Poslední výsledek sondy DB, sdílený všemi dotazy na `/v1/ready`.
+#[derive(Default)]
+pub struct ReadyProbe(tokio::sync::Mutex<Option<(std::time::Instant, bool)>>);
+
+impl ReadyProbe {
+    /// Zámek se drží i přes dotaz: souběžné požadavky počkají na jeden
+    /// výsledek, místo aby každý poslal vlastní.
+    pub async fn check(&self, pool: &sqlx::PgPool) -> bool {
+        let mut last = self.0.lock().await;
+        if let Some((at, ready)) = *last {
+            if at.elapsed() < READY_PROBE_TTL {
+                return ready;
+            }
+        }
+        let probe =
+            tokio::time::timeout(READY_PROBE_TIMEOUT, sqlx::query("SELECT 1").execute(pool)).await;
+        let ready = matches!(probe, Ok(Ok(_)));
+        *last = Some((std::time::Instant::now(), ready));
+        ready
+    }
+}
+
 /// Readiness: health je jen „proces žije", tohle ověří i DB.
 /// Pro sondy monitoringu — DB mimo provoz = 503, ne falešné 200.
 pub async fn ready(State(state): State<Arc<AppState>>) -> ApiResult<Json<serde_json::Value>> {
-    let probe = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        sqlx::query("SELECT 1").execute(&state.pool),
-    )
-    .await;
-    match probe {
-        Ok(Ok(_)) => Ok(Json(serde_json::json!({ "status": "ready" }))),
-        _ => Err((
+    if state.ready_probe.check(&state.pool).await {
+        Ok(Json(serde_json::json!({ "status": "ready" })))
+    } else {
+        Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "databáze neodpovídá".to_string(),
         )
-            .into()),
+            .into())
     }
 }
 
@@ -132,7 +177,14 @@ pub async fn ready(State(state): State<Arc<AppState>>) -> ApiResult<Json<serde_j
 /// volí texty. `inactive_registration_days` je lhůta úklidu neaktivních
 /// registrací, null = úklid vypnutý.
 pub async fn server_info(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let mut capabilities = vec!["pqxdh", "sealed-sender", "prekey-upload", "identity-reclaim"];
+    let mut capabilities = vec![
+        "pqxdh",
+        "sealed-sender",
+        "prekey-upload",
+        "identity-reclaim",
+        // Relay rozumí hlavičce X-Sepot-Body-SHA256 (podpis kryje i tělo).
+        "auth-body-hash",
+    ];
     if state.pow.mode() != PowMode::Off {
         capabilities.push("register-pow");
     }
@@ -182,32 +234,101 @@ pub async fn register_challenge(State(state): State<Arc<AppState>>) -> Response 
     response
 }
 
+/// Hlavička `X-Sepot-Body-SHA256: <hex>`: otisk těla, který klient zahrnul
+/// do podpisu X-Sepot-Auth nebo X-Sepot-Identity-Proof.
+pub(crate) const BODY_HASH_HEADER: &str = "x-sepot-body-sha256";
+const SHA256_LEN: usize = 32;
+
+/// K čemu se klient podpisem zavázal: k otisku těla, nebo jen k cestě a
+/// času (klienti do 1.2.7).
+///
+/// Podpis jen nad cestou a časem jde v pětiminutovém okně použít znovu
+/// s jiným tělem, když ho někdo po cestě zachytí. S hlavičkou je otisk těla
+/// součástí podepsané zprávy a relay ho s tělem porovná. Hlavičku nejde
+/// z požadavku jen vypustit: podpis je nad zprávou s otiskem a ke zprávě bez
+/// něj nesedí. Staří klienti ji neposílají a mají ochranu jako dosud.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BodyClaim(Option<[u8; SHA256_LEN]>);
+
+impl BodyClaim {
+    /// `None` = hlavička je přítomná, ale není to otisk.
+    fn from_headers(headers: &HeaderMap) -> Option<Self> {
+        let Some(value) = headers.get(BODY_HASH_HEADER) else {
+            return Some(Self(None));
+        };
+        let digest = hex::decode(value.as_bytes()).ok()?;
+        Some(Self(Some(digest.try_into().ok()?)))
+    }
+
+    /// Zpráva, kterou klient podepsal.
+    fn message(&self, method_path: &str, ts: i64) -> String {
+        match &self.0 {
+            Some(digest) => format!("{method_path}\n{ts}\n{}", hex::encode(digest)),
+            None => format!("{method_path}\n{ts}"),
+        }
+    }
+
+    /// Sedí tělo k tomu, co klient podepsal? Bez závazku sedí každé.
+    pub(crate) fn matches(&self, body_sha256: &[u8; SHA256_LEN]) -> bool {
+        self.0.is_none_or(|claimed| &claimed == body_sha256)
+    }
+}
+
+pub(crate) const TEXT_BODY_MISMATCH: &str = "tělo požadavku nesedí k podpisu";
+
+/// JSON tělo i s otiskem bajtů, jak přišly. Chová se jako `Json` (stejná
+/// odmítnutí i strop velikosti), jen si tělo napřed přečte celé.
+pub struct HashedJson<T> {
+    pub value: T,
+    pub sha256: [u8; SHA256_LEN],
+}
+
+impl<S, T> FromRequest<S> for HashedJson<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned,
+{
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let (parts, body) = request.into_parts();
+        let bytes = Bytes::from_request(Request::from_parts(parts.clone(), body), state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let sha256 = Sha256::digest(&bytes).into();
+        let Json(value) =
+            Json::<T>::from_request(Request::from_parts(parts, Body::from(bytes)), state)
+                .await
+                .map_err(IntoResponse::into_response)?;
+        Ok(Self { value, sha256 })
+    }
+}
+
 /// Ověří hlavičku `X-Sepot-Identity-Proof: <ts_ms>.<sig_b64>` — podpis
-/// identity klíčem nad `"<method_path>\n<ts_ms>"`, stejné okno jako
-/// X-Sepot-Auth. Důkaz držení privátního klíče bez znalosti device_uuid:
-/// obnova ze 24 slov na novém telefonu nemá nic jiného.
-fn identity_proof_valid(headers: &HeaderMap, identity: &PublicKey, method_path: &str) -> bool {
-    let Some(header) = headers
+/// identity klíčem nad `"<method_path>\n<ts_ms>"` (s `X-Sepot-Body-SHA256`
+/// ještě `"\n<otisk hex>"`), stejné okno jako X-Sepot-Auth. Důkaz držení
+/// privátního klíče bez znalosti device_uuid: obnova ze 24 slov na novém
+/// telefonu nemá nic jiného. Vrací, k čemu se klient zavázal; `None` =
+/// důkaz neplatí.
+fn identity_proof_valid(
+    headers: &HeaderMap,
+    identity: &PublicKey,
+    method_path: &str,
+) -> Option<BodyClaim> {
+    let header = headers
         .get("x-sepot-identity-proof")
-        .and_then(|v| v.to_str().ok())
-    else {
-        return false;
-    };
-    let Some((ts_str, sig_b64)) = header.split_once('.') else {
-        return false;
-    };
-    let Ok(ts) = ts_str.parse::<i64>() else {
-        return false;
-    };
-    let Ok(signature) = BASE64_STANDARD.decode(sig_b64) else {
-        return false;
-    };
+        .and_then(|v| v.to_str().ok())?;
+    let (ts_str, sig_b64) = header.split_once('.')?;
+    let ts = ts_str.parse::<i64>().ok()?;
+    let signature = BASE64_STANDARD.decode(sig_b64).ok()?;
     let now_ms = chrono::Utc::now().timestamp_millis();
     if now_ms.abs_diff(ts) > AUTH_WINDOW_MS as u64 {
-        return false;
+        return None;
     }
-    let message = format!("{method_path}\n{ts}");
-    identity.verify_signature(message.as_bytes(), &signature)
+    let claim = BodyClaim::from_headers(headers)?;
+    identity
+        .verify_signature(claim.message(method_path, ts).as_bytes(), &signature)
+        .then_some(claim)
 }
 
 // ── POST /v1/register ──────────────────────────────────────────────────
@@ -252,7 +373,10 @@ pub async fn register(
     Extension(limits): Extension<Arc<RegisterLimits>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(body): Json<RegisterIn>,
+    HashedJson {
+        value: body,
+        sha256: body_sha256,
+    }: HashedJson<RegisterIn>,
 ) -> Response {
     if state.limits.registration_paused {
         return (
@@ -288,11 +412,13 @@ pub async fn register(
                 .into_response();
         }
     };
+    // Tady jen limit na adresu; globální strop bere až `register_device`
+    // po ověření podpisů a důkazu držení klíče.
     let limiter = if with_pow { &limits.pow } else { &limits.base };
     if let Err(wait) = limiter.check(peer.ip(), &headers) {
         return crate::limits::too_many(wait);
     }
-    match register_device(&state, &headers, identity_key, body).await {
+    match register_device(&state, &headers, identity_key, body, &body_sha256).await {
         Ok(created) => {
             state.pow.note_registration();
             tracing::info!(pow = with_pow, "nová registrace zařízení");
@@ -307,6 +433,7 @@ pub(crate) async fn register_device(
     headers: &HeaderMap,
     identity_key: Vec<u8>,
     body: RegisterIn,
+    body_sha256: &[u8; SHA256_LEN],
 ) -> ApiResult<(StatusCode, Json<RegisterOut>)> {
     if body.one_time_prekeys.len() > MAX_ONE_TIME_PREKEYS {
         return Err(bad("příliš mnoho one-time prekeys"));
@@ -349,13 +476,20 @@ pub(crate) async fn register_device(
     // Důkaz držení klíče u každé registrace: SPK a Kyber jdou z veřejného
     // bundlu opsat, takže bez důkazu by šlo zaregistrovat cizí klíč, obsadit
     // jeho vyřazenou adresu nebo zjistit, zda je identita zablokovaná.
-    if !identity_proof_valid(headers, &identity, "POST /v1/register") {
+    // Důkaz s otiskem těla platí jen pro tělo, se kterým ho klient podepsal:
+    // adresa doručení v těle jinak podpisem krytá není.
+    let proven = identity_proof_valid(headers, &identity, "POST /v1/register")
+        .is_some_and(|claim| claim.matches(body_sha256));
+    if !proven {
         return Err(ApiError::tagged(
             StatusCode::UNAUTHORIZED,
             "chybí nebo neplatí důkaz držení klíče",
             TAG_IDENTITY_PROOF,
         ));
     }
+    // Globální strop až tady: požadavek bez platných důkazů do DB nedojde
+    // a strop určený k její ochraně nemá vybírat.
+    state.register_global.check().map_err(ApiError::too_many)?;
     let fingerprint = Fingerprint::of_identity_key(&identity_key);
 
     // ThreadRng je !Send — nesmí přežít přes await, proto vlastní scope.
@@ -658,10 +792,15 @@ pub(crate) struct AuthedDevice {
     pub identity_key: Vec<u8>,
     pub device_id: i32,
     pub device_uuid: Vec<u8>,
+    /// Kdy se identita registrovala: čerstvý účet má nižší kvóty.
+    pub registered_at: chrono::DateTime<chrono::Utc>,
+    /// K jakému tělu se podpis váže; routa s tělem to musí porovnat.
+    pub body_claim: BodyClaim,
 }
 
 /// Ověří hlavičku `X-Sepot-Auth: <device_uuid_hex>.<ts_ms>.<sig_b64>`,
-/// kde sig = XEdDSA identity klíčem zařízení nad `"<method_path>\n<ts_ms>"`.
+/// kde sig = XEdDSA identity klíčem zařízení nad `"<method_path>\n<ts_ms>"`
+/// (s `X-Sepot-Body-SHA256` ještě `"\n<otisk hex>"`, viz [`BodyClaim`]).
 /// Sdílí ji sender certificate a upload příloh; do logů nejde nic.
 /// Zařízení, které v DB není: 403, smazala-li ho blokace, jinak 410
 /// (registrace skončila). device_uuid zná jen zařízení samo, takže ani
@@ -697,8 +836,8 @@ pub(crate) async fn authenticate_device(
         return Err(unauthorized());
     }
 
-    let row: Option<(Vec<u8>, Vec<u8>, i32)> = sqlx::query_as(
-        "SELECT d.account_id, i.identity_key, d.device_id
+    let row: Option<(Vec<u8>, Vec<u8>, i32, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT d.account_id, i.identity_key, d.device_id, i.registered_at
          FROM devices d JOIN identities i USING (account_id)
          WHERE d.device_uuid = $1",
     )
@@ -706,7 +845,7 @@ pub(crate) async fn authenticate_device(
     .fetch_optional(&state.pool)
     .await
     .map_err(internal)?;
-    let Some((account_id, identity_key, device_id)) = row else {
+    let Some((account_id, identity_key, device_id, registered_at)) = row else {
         return Err(
             if blocking::blocked_device(&state.pool, &device_uuid)
                 .await
@@ -727,7 +866,8 @@ pub(crate) async fn authenticate_device(
         );
     };
 
-    let message = format!("{method_path}\n{ts}");
+    let body_claim = BodyClaim::from_headers(headers).ok_or_else(unauthorized)?;
+    let message = body_claim.message(method_path, ts);
     let identity = PublicKey::deserialize(&identity_key).map_err(|_| unauthorized())?;
     if !identity.verify_signature(message.as_bytes(), &signature) {
         return Err(unauthorized());
@@ -751,6 +891,8 @@ pub(crate) async fn authenticate_device(
         identity_key,
         device_id,
         device_uuid,
+        registered_at,
+        body_claim,
     })
 }
 
@@ -782,9 +924,15 @@ const SIGNED_PREKEY_GRACE_DAYS: i64 = 30;
 pub async fn upload_keys(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<UploadKeysIn>,
+    HashedJson {
+        value: body,
+        sha256: body_sha256,
+    }: HashedJson<UploadKeysIn>,
 ) -> ApiResult<Json<UploadKeysOut>> {
     let authed = authenticate_device(&state, &headers, "POST /v1/keys").await?;
+    if !authed.body_claim.matches(&body_sha256) {
+        return Err((StatusCode::UNAUTHORIZED, TEXT_BODY_MISMATCH.to_string()).into());
+    }
     if body.one_time_prekeys.len() > MAX_ONE_TIME_PREKEYS {
         return Err(bad("příliš mnoho one-time prekeys"));
     }
@@ -1019,6 +1167,7 @@ mod db_tests {
                 &headers,
                 identity.key.clone(),
                 identity.register_body(&rand_bytes(32)),
+                &[0; SHA256_LEN],
             )
             .await;
             let Err(error) = result else {
@@ -1452,6 +1601,194 @@ mod db_tests {
         }
     }
 
+    /// Globální strop registrací nevybere požadavek bez platného důkazu
+    /// držení klíče; vybere ho až registrace, která jde do DB.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn globalni_strop_berou_jen_overene_registrace() {
+        /// Jedna registrace za hodinu: druhá ověřená už neprojde.
+        const ONE_PER_HOUR: crate::limits::Rate = crate::limits::Rate::new(1, 3_600_000);
+        /// Nejméně tolik sekund v Retry-After při hodinové periodě.
+        const RETRY_AFTER_FLOOR_SECS: u64 = 3000;
+        let mut state = testkit::state().await;
+        state.register_global = crate::limits::GlobalLimit::new(Some(ONE_PER_HOUR));
+        let (first, second) = (TestIdentity::new(), TestIdentity::new());
+        let (first_address, second_address) = (rand_bytes(32), rand_bytes(32));
+
+        for _ in 0..3 {
+            let unproven = register_device(
+                &state,
+                &HeaderMap::new(),
+                first.key.clone(),
+                first.register_body(&first_address),
+                &[0; SHA256_LEN],
+            )
+            .await
+            .err()
+            .expect("bez důkazu držení klíče");
+            assert_eq!(unproven.status, StatusCode::UNAUTHORIZED);
+        }
+        testkit::register(&state, &first, &first_address)
+            .await
+            .expect("neověřené požadavky strop nevybraly");
+
+        let refused = testkit::register(&state, &second, &second_address)
+            .await
+            .expect_err("strop vybrala první registrace");
+        assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+        let response = refused.into_response();
+        let retry_after: u64 = response.headers()[header::RETRY_AFTER]
+            .to_str()
+            .expect("hlavička")
+            .parse()
+            .expect("sekundy");
+        assert!(retry_after > RETRY_AFTER_FLOOR_SECS, "Retry-After odpovídá periodě");
+
+        testkit::forget(&state.pool, &first, &[&first_address]).await;
+    }
+
+    /// Podpis s otiskem těla nejde použít s jiným tělem ani bez hlavičky;
+    /// podpis bez otisku (klienti do 1.2.7) platí dál.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn podpis_s_otiskem_tela_plati_jen_pro_to_telo() {
+        let state = testkit::state().await;
+        let path = "POST /v1/keys";
+        let owner = TestIdentity::new();
+        let address = rand_bytes(32);
+        let device = testkit::register(&state, &owner, &address)
+            .await
+            .expect("registrace")
+            .device_uuid;
+        let (signed_body, other_body) = ([0x11; SHA256_LEN], [0x22; SHA256_LEN]);
+
+        let bound = owner.auth_headers_for_body(&device, path, &signed_body);
+        let authed = authenticate_device(&state, &bound, path)
+            .await
+            .expect("podpis s otiskem");
+        assert!(authed.body_claim.matches(&signed_body));
+        assert!(!authed.body_claim.matches(&other_body), "jiné tělo");
+
+        let mut stripped = bound.clone();
+        stripped.remove(BODY_HASH_HEADER);
+        let mut swapped = bound.clone();
+        swapped.insert(
+            BODY_HASH_HEADER,
+            HeaderValue::from_str(&hex::encode(other_body)).unwrap(),
+        );
+        let mut garbled = bound.clone();
+        garbled.insert(BODY_HASH_HEADER, HeaderValue::from_static("abc"));
+        for (tampered, why) in [
+            (stripped, "hlavička vypuštěná"),
+            (swapped, "otisk vyměněný"),
+            (garbled, "otisk není otisk"),
+        ] {
+            let error = authenticate_device(&state, &tampered, path)
+                .await
+                .err()
+                .expect(why);
+            assert_eq!(error.status, StatusCode::UNAUTHORIZED, "{why}");
+        }
+
+        let legacy = authenticate_device(&state, &owner.auth_headers(&device, path), path)
+            .await
+            .expect("podpis bez otisku");
+        assert!(legacy.body_claim.matches(&other_body), "bez závazku sedí každé tělo");
+
+        testkit::forget(&state.pool, &owner, &[&address]).await;
+    }
+
+    /// Důkaz držení klíče s otiskem těla nepustí registraci s jiným tělem
+    /// (podvržená adresa doručení).
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn registrace_s_otiskem_tela_odmitne_jine_telo() {
+        let state = testkit::state().await;
+        let identity = TestIdentity::new();
+        let address = rand_bytes(32);
+        let (signed_body, other_body) = ([0x11; SHA256_LEN], [0x22; SHA256_LEN]);
+        let headers = identity.proof_headers_for_body(&signed_body);
+
+        let refused = register_device(
+            &state,
+            &headers,
+            identity.key.clone(),
+            identity.register_body(&address),
+            &other_body,
+        )
+        .await
+        .err()
+        .expect("tělo nesedí k podpisu");
+        assert_error(&refused, StatusCode::UNAUTHORIZED, Some(TAG_IDENTITY_PROOF));
+
+        register_device(
+            &state,
+            &headers,
+            identity.key.clone(),
+            identity.register_body(&address),
+            &signed_body,
+        )
+        .await
+        .map(|_| ())
+        .expect("tělo sedí k podpisu");
+        testkit::forget(&state.pool, &identity, &[&address]).await;
+    }
+
+    /// Extraktor vrací otisk bajtů, jak přišly, a odmítá jako `Json`.
+    #[tokio::test]
+    async fn hashed_json_vraci_otisk_tela() {
+        const RAW: &str = r#"{ "a": 1 }"#;
+        let request = |content_type: &str, body: &'static str| {
+            Request::builder()
+                .method("POST")
+                .header(header::CONTENT_TYPE, content_type)
+                .body(Body::from(body))
+                .expect("požadavek")
+        };
+        let parsed = HashedJson::<serde_json::Value>::from_request(
+            request("application/json", RAW),
+            &(),
+        )
+        .await
+        .ok()
+        .expect("platné tělo");
+        assert_eq!(parsed.value["a"], 1);
+        assert_eq!(parsed.sha256.as_slice(), Sha256::digest(RAW).as_slice());
+
+        for (content_type, body, status) in [
+            ("text/plain", RAW, StatusCode::UNSUPPORTED_MEDIA_TYPE),
+            ("application/json", "{", StatusCode::BAD_REQUEST),
+        ] {
+            let rejected = HashedJson::<serde_json::Value>::from_request(
+                request(content_type, body),
+                &(),
+            )
+            .await
+            .err()
+            .expect("odmítnutí");
+            assert_eq!(rejected.status(), status, "{content_type} {body}");
+        }
+    }
+
+    /// Sonda DB se mezi dotazy na `/v1/ready` sdílí: druhý dotaz v době
+    /// platnosti do databáze nejde.
+    #[tokio::test]
+    #[ignore = "vyžaduje běžící Postgres (dev DB)"]
+    async fn ready_sdili_vysledek_sondy() {
+        let unreachable = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(200))
+            .connect_lazy("postgres://127.0.0.1:1/nic")
+            .expect("líný pool");
+        assert!(!ReadyProbe::default().check(&unreachable).await, "DB neodpovídá");
+
+        let probe = ReadyProbe::default();
+        assert!(probe.check(&testkit::shared_pool(1).await).await);
+        assert!(
+            probe.check(&unreachable).await,
+            "platný výsledek se vrací bez dotazu do DB"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "vyžaduje běžící Postgres (dev DB)"]
     async fn nekanonicky_zapis_klice_neobejde_blokaci() {
@@ -1493,7 +1830,8 @@ mod db_tests {
                 HeaderValue::from_str(&format!("{ts}.{}", BASE64_STANDARD.encode(proof))).unwrap(),
             );
 
-            let result = register_device(&state, &headers, alias.key.clone(), body).await;
+            let result =
+                register_device(&state, &headers, alias.key.clone(), body, &[0; SHA256_LEN]).await;
             let Err(error) = result else {
                 sqlx::query("DELETE FROM identities WHERE identity_key = $1")
                     .bind(&alias.key)

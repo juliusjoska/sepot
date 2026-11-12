@@ -17,7 +17,8 @@ use tokio::sync::{oneshot, OnceCell};
 
 use crate::fingerprint::Fingerprint;
 use crate::rest::{ApiError, PreKeyIn, RegisterIn};
-use crate::state::AppState;
+use crate::outbox::OutboxReceiver;
+use crate::state::{AppState, OnlineDevice};
 
 /// Délka Kyber1024 veřejného klíče v serializaci libsignal.
 const KYBER_PUBLIC_KEY_LEN: usize = 1569;
@@ -74,6 +75,13 @@ pub async fn state_with_pool(pool: PgPool) -> AppState {
         Arc::new(crate::net::TrustedProxies::from_env()),
         crate::limits::Limits::from_env(),
     )
+}
+
+/// Právě ověřené spojení zařízení a konec jeho fronty, který by jinak
+/// držel writer.
+pub fn device(state: &AppState) -> (Arc<OnlineDevice>, OutboxReceiver) {
+    let (outbox, queued) = crate::outbox::channel();
+    (Arc::new(OnlineDevice::new(outbox, state.now_ms())), queued)
 }
 
 /// Vlastní schéma pro test, který čte nebo mění celé tabulky (údržba,
@@ -322,10 +330,18 @@ impl TestIdentity {
 
     /// Důkaz držení klíče pro POST /v1/register.
     pub fn proof_headers(&self) -> HeaderMap {
+        self.proof(None)
+    }
+
+    /// Důkaz držení klíče, který kryje i tělo s daným otiskem.
+    pub fn proof_headers_for_body(&self, body_sha256: &[u8; 32]) -> HeaderMap {
+        self.proof(Some(body_sha256))
+    }
+
+    fn proof(&self, body_sha256: Option<&[u8; 32]>) -> HeaderMap {
         let ts = chrono::Utc::now().timestamp_millis();
-        let signature = self.sign(format!("POST /v1/register\n{ts}").as_bytes());
-        let value = format!("{ts}.{}", BASE64_STANDARD.encode(signature));
-        let mut headers = HeaderMap::new();
+        let (message, mut headers) = signed_message("POST /v1/register", ts, body_sha256);
+        let value = format!("{ts}.{}", BASE64_STANDARD.encode(self.sign(message.as_bytes())));
         headers.insert(
             "x-sepot-identity-proof",
             HeaderValue::from_str(&value).expect("hlavička"),
@@ -335,20 +351,60 @@ impl TestIdentity {
 
     /// X-Sepot-Auth zařízení pro `method_path`.
     pub fn auth_headers(&self, device_uuid: &[u8], method_path: &str) -> HeaderMap {
+        self.auth(device_uuid, method_path, None)
+    }
+
+    /// X-Sepot-Auth, který kryje i tělo s daným otiskem.
+    pub fn auth_headers_for_body(
+        &self,
+        device_uuid: &[u8],
+        method_path: &str,
+        body_sha256: &[u8; 32],
+    ) -> HeaderMap {
+        self.auth(device_uuid, method_path, Some(body_sha256))
+    }
+
+    fn auth(
+        &self,
+        device_uuid: &[u8],
+        method_path: &str,
+        body_sha256: Option<&[u8; 32]>,
+    ) -> HeaderMap {
         let ts = chrono::Utc::now().timestamp_millis();
-        let signature = self.sign(format!("{method_path}\n{ts}").as_bytes());
+        let (message, mut headers) = signed_message(method_path, ts, body_sha256);
         let value = format!(
             "{}.{ts}.{}",
             hex::encode(device_uuid),
-            BASE64_STANDARD.encode(signature)
+            BASE64_STANDARD.encode(self.sign(message.as_bytes()))
         );
-        let mut headers = HeaderMap::new();
         headers.insert(
             "x-sepot-auth",
             HeaderValue::from_str(&value).expect("hlavička"),
         );
         headers
     }
+}
+
+/// Zpráva k podpisu, jak ji skládá klient, a hlavička s otiskem těla,
+/// pokud ho podpis kryje.
+fn signed_message(
+    method_path: &str,
+    ts: i64,
+    body_sha256: Option<&[u8; 32]>,
+) -> (String, HeaderMap) {
+    let mut headers = HeaderMap::new();
+    let message = match body_sha256 {
+        Some(digest) => {
+            let digest = hex::encode(digest);
+            headers.insert(
+                crate::rest::BODY_HASH_HEADER,
+                HeaderValue::from_str(&digest).expect("hlavička"),
+            );
+            format!("{method_path}\n{ts}\n{digest}")
+        }
+        None => format!("{method_path}\n{ts}"),
+    };
+    (message, headers)
 }
 
 #[derive(Debug)]
@@ -368,6 +424,8 @@ pub async fn register(
         &identity.proof_headers(),
         identity.key.clone(),
         identity.register_body(address),
+        // Důkaz z `proof_headers` tělo nekryje, na otisku nezáleží.
+        &[0; 32],
     )
     .await?;
     Ok(Registered {

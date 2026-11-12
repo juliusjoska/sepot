@@ -83,6 +83,19 @@ impl Budgets {
     }
 }
 
+/// Kolik bajtů odečíst z kvóty `full` za položku o `bytes` bajtech, pro
+/// kterou platí nižší kvóta `reduced`: položka se započte tolikrát dráž,
+/// kolikrát je její kvóta menší. Jedna společná kvóta tak drží oba stropy
+/// a snížený příděl se nesčítá s plným. Nulová nebo nemenší `reduced`
+/// (stejně jako neomezená `full`) = bez přirážky.
+pub fn scaled_cost(bytes: u64, full: u64, reduced: u64) -> u64 {
+    if full == 0 || reduced == 0 || reduced >= full {
+        return bytes;
+    }
+    let scaled = u128::from(bytes) * u128::from(full) / u128::from(reduced);
+    u64::try_from(scaled).unwrap_or(u64::MAX)
+}
+
 /// Kolik bajtů má účet právě uložených (příloh v rámci TTL). Účetnictví po
 /// dnech: na účet nejvýš `ttl_days` čísel, ne seznam blobů — paměť je pevná
 /// a vazba na jednotlivé bloby nevzniká.
@@ -106,12 +119,18 @@ impl StoredLedger {
     }
 
     /// Zarezervuje `bytes`; `false` = účet by přesáhl strop uloženého.
-    pub fn try_reserve(&self, key: &[u8], bytes: u64) -> bool {
-        self.try_reserve_on(key, bytes, Self::today())
+    /// `lower_cap` strop pro tenhle účet sníží (čerstvý účet); zvýšit ho
+    /// nad strop úložiště neumí.
+    pub fn try_reserve(&self, key: &[u8], bytes: u64, lower_cap: Option<u64>) -> bool {
+        self.try_reserve_on(key, bytes, lower_cap, Self::today())
     }
 
-    fn try_reserve_on(&self, key: &[u8], bytes: u64, day: i64) -> bool {
-        if self.cap == 0 {
+    fn try_reserve_on(&self, key: &[u8], bytes: u64, lower_cap: Option<u64>, day: i64) -> bool {
+        let cap = match (self.cap, lower_cap) {
+            (0, lower) => lower.unwrap_or(0),
+            (cap, lower) => lower.map_or(cap, |lower| lower.min(cap)),
+        };
+        if cap == 0 {
             return true;
         }
         let mut days = self.map.entry(key.to_vec()).or_default();
@@ -120,7 +139,7 @@ impl StoredLedger {
             days.pop_front();
         }
         let used: u64 = days.iter().map(|(_, b)| b).sum();
-        if used.saturating_add(bytes) > self.cap {
+        if used.saturating_add(bytes) > cap {
             return false;
         }
         match days.back_mut() {
@@ -165,6 +184,22 @@ mod tests {
     }
 
     #[test]
+    fn snizena_kvota_se_uctuje_draz() {
+        const FULL: u64 = 32 << 20;
+        const REDUCED: u64 = 8 << 20;
+        assert_eq!(scaled_cost(1000, FULL, REDUCED), 4000);
+        assert_eq!(scaled_cost(1000, FULL, FULL), 1000);
+        assert_eq!(scaled_cost(1000, FULL, 0), 1000, "0 = bez snížené kvóty");
+        assert_eq!(scaled_cost(1000, 0, REDUCED), 1000, "neomezená kvóta");
+        assert_eq!(scaled_cost(u64::MAX, FULL, 1), u64::MAX, "bez přetečení");
+
+        // Společná kvóta: snížený příděl vyčerpá celou a plný pak nezbývá.
+        let q = Budgets::new(0, FULL, Duration::from_secs(3600));
+        assert!(q.try_take(b"a", scaled_cost(REDUCED, FULL, REDUCED)));
+        assert!(!q.try_take(b"a", 1));
+    }
+
+    #[test]
     fn budget_nula_znamena_bez_omezeni() {
         let q = Budgets::new(0, 0, Duration::from_secs(1));
         for _ in 0..1000 {
@@ -183,12 +218,27 @@ mod tests {
     #[test]
     fn ledger_drzi_strop_a_stare_dny_uvolni() {
         let l = StoredLedger::new(1000, 30);
-        assert!(l.try_reserve_on(b"a", 800, 100));
-        assert!(!l.try_reserve_on(b"a", 300, 100));
-        assert!(l.try_reserve_on(b"b", 300, 100), "jiný účet");
+        assert!(l.try_reserve_on(b"a", 800, None, 100));
+        assert!(!l.try_reserve_on(b"a", 300, None, 100));
+        assert!(l.try_reserve_on(b"b", 300, None, 100), "jiný účet");
         l.release(b"a", 500);
-        assert!(l.try_reserve_on(b"a", 600, 101));
+        assert!(l.try_reserve_on(b"a", 600, None, 101));
         // po TTL dnech od nahrání je místo zase volné
-        assert!(l.try_reserve_on(b"a", 1000, 132));
+        assert!(l.try_reserve_on(b"a", 1000, None, 132));
+    }
+
+    #[test]
+    fn ledger_nizsi_strop_pro_cerstvy_ucet() {
+        let l = StoredLedger::new(1000, 30);
+        assert!(l.try_reserve_on(b"a", 200, Some(300), 100));
+        assert!(!l.try_reserve_on(b"a", 200, Some(300), 100), "nižší strop");
+        assert!(l.try_reserve_on(b"a", 200, None, 100), "plný strop");
+        assert!(
+            !l.try_reserve_on(b"b", 1001, Some(5000), 100),
+            "nižší strop ten plný nezvedne"
+        );
+        let unlimited = StoredLedger::new(0, 30);
+        assert!(unlimited.try_reserve_on(b"a", 1 << 40, None, 100));
+        assert!(!unlimited.try_reserve_on(b"a", 301, Some(300), 100));
     }
 }
