@@ -92,6 +92,21 @@ const VOIP_LABELS: LogLabels = LogLabels {
     failed: "APNs VoIP push selhal",
 };
 
+/// Odešle požadavek a při chybě spojení ho jednou zopakuje. APNs zavírá
+/// nečinná HTTP/2 spojení a první push po pauze pak skončil chybou „error
+/// sending request“ — iPhone o budíček přišel (v produkci zhruba jednou
+/// denně). Timeout se neopakuje: požadavek mohl dorazit a druhý VoIP push
+/// by rozezvonil telefon podruhé.
+async fn send_retrying(request: reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    let Some(second) = request.try_clone() else {
+        return request.send().await;
+    };
+    match request.send().await {
+        Err(e) if !e.is_timeout() && (e.is_connect() || e.is_request()) => second.send().await,
+        other => other,
+    }
+}
+
 /// Vyhodnotí odpověď APNs; `true` = token je natrvalo mrtvý. Loguje jen
 /// stav, nikdy token.
 async fn token_is_dead(resp: reqwest::Result<reqwest::Response>, labels: &LogLabels) -> bool {
@@ -212,7 +227,7 @@ impl ApnsSender {
             return false;
         };
         let url = format!("{}/3/device/{}", self.host, device_token);
-        let resp = client
+        let request = client
             .post(&url)
             .header("authorization", format!("bearer {jwt}"))
             .header("apns-topic", &self.topic)
@@ -221,9 +236,8 @@ impl ApnsSender {
             .header("apns-expiration", wake_expiration(Utc::now()).to_string())
             // Víc budíčků pro jedno zařízení APNs sloučí do jednoho.
             .header("apns-collapse-id", "wake")
-            .body(r#"{"aps":{"content-available":1}}"#)
-            .send()
-            .await;
+            .body(r#"{"aps":{"content-available":1}}"#);
+        let resp = send_retrying(request).await;
         token_is_dead(resp, &WAKE_LABELS).await
     }
 
@@ -240,7 +254,7 @@ impl ApnsSender {
             return false;
         };
         let url = format!("{}/3/device/{}", self.host, device_token);
-        let resp = client
+        let request = client
             .post(&url)
             .header("authorization", format!("bearer {jwt}"))
             .header("apns-topic", &self.topic)
@@ -248,9 +262,8 @@ impl ApnsSender {
             .header("apns-priority", "10")
             .header("apns-expiration", wake_expiration(Utc::now()).to_string())
             .header("apns-collapse-id", "msg")
-            .body(MESSAGE_ALERT_BODY)
-            .send()
-            .await;
+            .body(MESSAGE_ALERT_BODY);
+        let resp = send_retrying(request).await;
         token_is_dead(resp, &ALERT_LABELS).await
     }
 
@@ -267,22 +280,46 @@ impl ApnsSender {
         };
         let url = format!("{}/3/device/{}", self.host, voip_token);
         let expiration = Utc::now().timestamp() + CALL_RING_SECONDS;
-        let resp = client
+        let request = client
             .post(&url)
             .header("authorization", format!("bearer {jwt}"))
             .header("apns-topic", format!("{}.voip", self.topic))
             .header("apns-push-type", "voip")
             .header("apns-priority", "10")
             .header("apns-expiration", expiration.to_string())
-            .body(r#"{"aps":{},"k":"call"}"#)
-            .send()
-            .await;
+            .body(r#"{"aps":{},"k":"call"}"#);
+        let resp = send_retrying(request).await;
         token_is_dead(resp, &VOIP_LABELS).await
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// První spojení server zavře bez odpovědi (tak se chová nečinné
+    /// spojení k APNs), druhé odpoví 200.
+    #[tokio::test]
+    async fn chyba_spojeni_se_jednou_zopakuje() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (first, _) = listener.accept().await.unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = second.read(&mut buf).await.unwrap();
+            second
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let client = reqwest::Client::new();
+        let request = client.post(format!("http://{addr}/3/device/x")).body("{}");
+        let resp = super::send_retrying(request).await.expect("druhý pokus projde");
+        assert!(resp.status().is_success());
+        server.await.unwrap();
+    }
+
     use super::*;
 
     #[test]
